@@ -44,6 +44,8 @@ targets:
         product: RuyioProtocol
       - package: RuyioKit
         product: RuyioCore
+      - package: RuyioKit
+        product: RuyioSourceTransport
       - target: RuyioFinderSync
         embed: true
         codeSign: true
