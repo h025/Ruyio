@@ -7,17 +7,18 @@ import RuyioCore
 
 /// Builds a real, ad-hoc signed, sandboxed plugin package around the test executable.
 enum PackageFixture {
-    static let actions = ["echo", "slow", "crash", "block-main", "storage", "undeclared-capability", "sandbox-probe", "read-path", "network-probe"]
+    static let actions = ["echo", "slow", "crash", "block-main", "storage", "undeclared-capability", "sandbox-probe", "read-path", "network-probe", "storage-read", "version"]
 
-    static func manifest() -> PluginManifest {
+    static func manifest(version: String = "1.0.0", permissions: [Permission] = [.clipboardWrite]) -> PluginManifest {
         PluginManifest(
-            id: PluginID("org.ruyio.test-plugin"), name: "Test Plugin", version: SemanticVersion("1.0.0")!,
+            id: PluginID("org.ruyio.test-plugin"), name: "Test Plugin", version: SemanticVersion(version)!,
             bundlePath: "Test.app", executable: "Test.app/Contents/MacOS/RuyioTestPlugin",
-            permissions: [.clipboardWrite],
+            permissions: permissions,
             actions: actions.map { ActionDeclaration(id: ActionID($0), title: $0, presentations: [Presentation(type: .commandPalette, title: $0)]) })
     }
 
-    static func build(sandbox: Bool = true, extraEntitlements: [String: Any] = [:], infoOverrides: [String: Any] = [:]) throws -> URL {
+    static func build(sandbox: Bool = true, extraEntitlements: [String: Any] = [:], infoOverrides: [String: Any] = [:],
+                      version: String = "1.0.0", failMigration: Bool = false) throws -> URL {
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("pkg-\(UUID().uuidString)")
         let root = work.appendingPathComponent("Test.ruyioplugin")
         let contents = root.appendingPathComponent("Test.app/Contents")
@@ -31,7 +32,8 @@ enum PackageFixture {
         ]
         info.merge(infoOverrides) { $1 }
         try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
-        let manifestData = try JSONCoding.encoder().encode(manifest())
+        let manifestData = try JSONCoding.encoder().encode(manifest(version: version))
+        if failMigration { try Data().write(to: contents.appendingPathComponent("Resources/fail-migration")) }
         try manifestData.write(to: root.appendingPathComponent("manifest.json"))
         try manifestData.write(to: contents.appendingPathComponent("Resources/manifest.json"))
         var entitlements: [String: Any] = sandbox ? ["com.apple.security.app-sandbox": true] : [:]

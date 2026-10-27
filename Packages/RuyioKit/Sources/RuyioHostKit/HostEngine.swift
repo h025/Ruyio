@@ -24,6 +24,7 @@ public final class HostEngine: @unchecked Sendable {
     public let contexts: InvocationContexts
     public let fileBroker: FileBroker
     public let markets: MarketService
+    public private(set) var updater: UpdateCoordinator!
 
     private let lock = NSLock()
     private var bundled: [PluginID: BundledPackage] = [:]
@@ -62,6 +63,7 @@ public final class HostEngine: @unchecked Sendable {
         }
 
         services.addEventSink { [weak self] envelope, session in self?.handlePluginEvent(envelope, session: session) }
+        updater = UpdateCoordinator(engine: self)
     }
 
     public var locale: String { lock.withLock { _locale } }
@@ -82,6 +84,7 @@ public final class HostEngine: @unchecked Sendable {
             state: { [weak self] id, state in Task { await self?.registry.setProcessState(id, state) } })
         let recovered = try fileBroker.recoverInterruptedOperations()
         try await registry.load()
+        await updater.recover()
         for (id, ops) in Dictionary(grouping: recovered, by: \.pluginID) {
             if let pid = PluginID(rawValue: id) { await registry.setPendingOutcomes(pid, count: ops.count) }
         }
@@ -98,8 +101,11 @@ public final class HostEngine: @unchecked Sendable {
                 _ = try? await install(bundled: package, enable: true)
             } else if let installed, installed.isDefault, let current = SemanticVersion(installed.version),
                       current < package.manifest.version, installed.updateChannel == .bundledWithHost {
-                // PRD §23 #12 (decided A12): defaults update with the host when the signer matches.
-                _ = try? await install(bundled: package, enable: installed.enabledPreference)
+                // PRD §23 #12 (decided A12): defaults update with the host through the normal transaction.
+                if let preview = try? installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256),
+                   preview.isInstallable {
+                    _ = await updater.update(with: preview)
+                }
             }
         }
 

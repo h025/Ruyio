@@ -5,7 +5,11 @@ import RuyioPluginSDK
 /// Fixture plugin for real-process integration tests. Not shipped.
 final class TestPlugin: RuyioPlugin, @unchecked Sendable {
     let context: PluginContext
-    init(context: PluginContext) { self.context = context }
+    init(context: PluginContext) {
+        self.context = context
+        // Test hook: a marker resource makes the migration session fail, exercising update rollback.
+        if context.runtimeMode == .migration, Bundle.main.url(forResource: "fail-migration", withExtension: nil) != nil { exit(3) }
+    }
 
     func perform(_ invocation: ActionInvocation, execution: ExecutionID, operation: OperationID?) async throws -> ActionResult {
         switch invocation.actionID.rawValue {
@@ -27,6 +31,11 @@ final class TestPlugin: RuyioPlugin, @unchecked Sendable {
             try await context.storage.put(doc)
             let loaded = try await context.storage.get(collection: "notes", id: "n1")
             return .succeeded(.notice(loaded?.body["v"]?.stringValue ?? "missing"))
+        case "storage-read":
+            let loaded = try await context.storage.get(collection: "notes", id: "n1")
+            return .succeeded(.notice(loaded?.body["v"]?.stringValue ?? "missing"))
+        case "version":
+            return .succeeded(.notice(context.manifest.version.description))
         case "undeclared-capability":
             try await context.capabilities.openWebLink("https://example.com")
             return .succeeded()
@@ -63,8 +72,8 @@ let manifest = PluginManifest(
     id: PluginID("org.ruyio.test-plugin"), name: "Test Plugin", version: SemanticVersion("1.0.0")!,
     bundlePath: "Test.app", executable: "Test.app/Contents/MacOS/RuyioTestPlugin",
     permissions: [.clipboardWrite],
-    actions: ["echo", "slow", "crash", "block-main", "storage", "undeclared-capability", "sandbox-probe", "read-path", "network-probe"].map {
+    actions: ["echo", "slow", "crash", "block-main", "storage", "undeclared-capability", "sandbox-probe", "read-path", "network-probe", "storage-read", "version"].map {
         ActionDeclaration(id: ActionID($0), title: $0, presentations: presentations)
     }
 )
-PluginRuntime.run(TestPlugin.self, manifest: manifest)
+PluginRuntime.run(TestPlugin.self, manifest: PluginRuntime.loadBundledManifest() ?? manifest)
