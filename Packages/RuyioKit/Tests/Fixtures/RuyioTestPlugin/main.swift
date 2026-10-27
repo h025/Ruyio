@@ -35,6 +35,23 @@ final class TestPlugin: RuyioPlugin, @unchecked Sendable {
             let home = ProcessInfo.processInfo.environment["HOME"] ?? "?"
             let desktop = FileManager.default.homeDirectoryForCurrentUser.path
             return .succeeded(.notice("home=\(home) cwd=\(FileManager.default.currentDirectoryPath) desktop=\(desktop)"))
+        case "read-path":
+            // P0-02: a sandboxed plugin must not read files outside its container.
+            let path = invocation.parameters["path"]?.stringValue ?? ""
+            let readable = FileManager.default.contents(atPath: path) != nil
+            return .succeeded(.notice(readable ? "readable" : "denied"))
+        case "network-probe":
+            // P0-02: without network.client the sandbox must refuse outbound connections.
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            defer { close(fd) }
+            var address = sockaddr_in()
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = in_port_t(443).bigEndian
+            address.sin_addr.s_addr = inet_addr("1.1.1.1")
+            let result = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
+            return .succeeded(.notice(result == 0 ? "connected" : "blocked errno=\(errno)"))
         default:
             throw RuyioError(.actionNotFound, objectID: invocation.actionID.rawValue)
         }
@@ -46,7 +63,7 @@ let manifest = PluginManifest(
     id: PluginID("org.ruyio.test-plugin"), name: "Test Plugin", version: SemanticVersion("1.0.0")!,
     bundlePath: "Test.app", executable: "Test.app/Contents/MacOS/RuyioTestPlugin",
     permissions: [.clipboardWrite],
-    actions: ["echo", "slow", "crash", "block-main", "storage", "undeclared-capability", "sandbox-probe"].map {
+    actions: ["echo", "slow", "crash", "block-main", "storage", "undeclared-capability", "sandbox-probe", "read-path", "network-probe"].map {
         ActionDeclaration(id: ActionID($0), title: $0, presentations: presentations)
     }
 )

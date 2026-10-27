@@ -36,6 +36,7 @@ public actor PluginSupervisor {
     private var stateHandler: ProcessStateHandler?
     private var locale: String
     private var idleTask: Task<Void, Never>?
+    private var launchedOnce: Set<PluginID> = []
 
     public init(services: PluginServiceHandler, locale: String) {
         self.services = services
@@ -73,11 +74,13 @@ public actor PluginSupervisor {
                                dataGeneration: spec.dataGeneration, isDevelopment: spec.isDevelopment)
         let session = PluginSession(info: info, executable: spec.executable, services: services)
         let locale = self.locale
-        let task = Task { try await session.start(locale: locale); return session }
+        let firstLaunch = !launchedOnce.contains(id)
+        let task = Task { try await session.start(locale: locale, firstLaunch: firstLaunch); return session }
         starting[id] = task
         do {
             let started = try await task.value
             starting[id] = nil
+            launchedOnce.insert(id)
             sessions[id] = started
             started.onTermination { [weak self] error in
                 Task { await self?.sessionEnded(id, session: started, error: error) }

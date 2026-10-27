@@ -45,6 +45,8 @@ public final class PluginSession: @unchecked Sendable {
     private var _lastActivity = ContinuousClock.now
 
     public static let handshakeTimeout: Duration = .seconds(3)
+    /// First launch of a sandboxed bundle creates its container; allow more time once (plan §8.1 table).
+    public static let firstLaunchHandshakeTimeout: Duration = .seconds(15)
     public static let stopGrace: Duration = .seconds(2)
 
     public init(info: SessionInfo, executable: URL, services: PluginServiceHandler) {
@@ -62,7 +64,7 @@ public final class PluginSession: @unchecked Sendable {
     }
 
     /// Spawns the process and completes the handshake, or throws and leaves nothing running.
-    public func start(locale: String) async throws {
+    public func start(locale: String, firstLaunch: Bool = false) async throws {
         let process = try PluginProcess.spawn(executable: executable, options: .init(locale: locale))
         let peer = RPCPeer(readFD: process.readFD, writeFD: process.writeFD, label: info.pluginID.rawValue)
         lock.withLock {
@@ -101,7 +103,8 @@ public final class PluginSession: @unchecked Sendable {
                                  uiSchemaVersions: HostInfo.supportedUISchemaVersions, expectedPluginID: info.pluginID,
                                  locale: locale, runtimeMode: info.runtimeMode)
         do {
-            let reply = try await peer.request(Method.hello, hello, as: HelloReply.self, timeout: Self.handshakeTimeout)
+            let reply = try await peer.request(Method.hello, hello, as: HelloReply.self,
+                                         timeout: firstLaunch ? Self.firstLaunchHandshakeTimeout : Self.handshakeTimeout)
             // The self-reported ID never replaces signature checks; it must merely agree with them.
             guard reply.nonce == nonce, reply.pluginID == info.pluginID, reply.version == info.manifest.version,
                   HostInfo.supportedIPCVersions.contains(reply.ipcVersion),
