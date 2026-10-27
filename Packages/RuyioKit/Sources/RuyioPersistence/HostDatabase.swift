@@ -8,11 +8,27 @@ import RuyioProtocol
 public final class HostDatabase: Sendable {
     let dbQueue: DatabaseQueue
 
-    public init(url: URL) throws {
+    /// Opens Host.sqlite. Pending migrations run only after a consistent backup; a failed migration
+    /// leaves the original backup in place and surfaces `HostDatabaseError.migrationFailed` (plan §19.1).
+    public init(url: URL, backupDirectory: URL? = nil) throws {
         var config = Configuration()
         config.prepareDatabase { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
         dbQueue = try DatabaseQueue(path: url.path, configuration: config)
-        try Self.migrator.migrate(dbQueue)
+        let migrator = Self.migrator
+        let pending = try dbQueue.read { db in try !migrator.hasCompletedMigrations(db) }
+        let isNew = try dbQueue.read { db in try !db.tableExists("installed_plugin") }
+        var backupURL: URL?
+        if pending && !isNew, let backupDirectory {
+            try FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
+            let target = backupDirectory.appendingPathComponent("Host-before-migration-\(Int(Date().timeIntervalSince1970)).sqlite")
+            try backup(to: target)
+            backupURL = target
+        }
+        do {
+            try migrator.migrate(dbQueue)
+        } catch {
+            throw HostDatabaseError.migrationFailed(backup: backupURL, underlying: String(describing: error))
+        }
     }
 
     /// In-memory database for tests.
@@ -131,6 +147,10 @@ public final class HostDatabase: Sendable {
         let target = try DatabaseQueue(path: url.path)
         try dbQueue.backup(to: target)
     }
+}
+
+public enum HostDatabaseError: Error, Sendable {
+    case migrationFailed(backup: URL?, underlying: String)
 }
 
 // MARK: - Records

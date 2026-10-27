@@ -27,10 +27,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let engine = try HostEngine(paths: paths, locale: language)
             model = AppModel(engine: engine)
         } catch {
+            // Host database recovery window: no plugin and no Finder request runs (plan §19.1, R09).
+            let l = L10n(Localization.hostLanguage(for: Locale.preferredLanguages))
             let alert = NSAlert()
-            alert.messageText = "Ruyio"
-            alert.informativeText = error.localizedDescription
-            alert.runModal()
+            alert.messageText = l.recoveryTitle
+            var detail = l.recoveryBody
+            if case HostDatabaseError.migrationFailed(let backup, let underlying) = error {
+                detail += "\n\n" + (backup.map { l.t("迁移前备份：", "Backup before migration: ") + $0.path } ?? "") + "\n" + underlying
+            } else {
+                detail += "\n\n" + error.localizedDescription
+            }
+            alert.informativeText = detail
+            alert.addButton(withTitle: l.t("退出", "Quit"))
+            alert.addButton(withTitle: l.t("打开数据位置", "Show Data Folder"))
+            if alert.runModal() == .alertSecondButtonReturn, let paths = try? AppPaths.standard() {
+                NSWorkspace.shared.activateFileViewerSelecting([paths.applicationSupport])
+            }
             NSApp.terminate(nil)
             return
         }

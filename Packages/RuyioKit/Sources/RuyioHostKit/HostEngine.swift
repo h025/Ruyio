@@ -25,6 +25,7 @@ public final class HostEngine: @unchecked Sendable {
     public let fileBroker: FileBroker
     public let markets: MarketService
     public private(set) var updater: UpdateCoordinator!
+    public let log: DiagnosticLog
 
     private let lock = NSLock()
     private var bundled: [PluginID: BundledPackage] = [:]
@@ -33,11 +34,13 @@ public final class HostEngine: @unchecked Sendable {
     private var noticeHandler: (@Sendable (String) -> Void)?
     private var _locale: String
     private var _developerMode = false
+    private var _availableUpdates: [PluginID: AvailableUpdate] = [:]
 
     public init(paths: AppPaths, locale: String, fetcher: any RemoteFetching = SourceFetcher()) throws {
         self.paths = paths
         self._locale = locale
-        database = try HostDatabase(url: paths.hostDatabase)
+        log = DiagnosticLog(directory: paths.logs)
+        database = try HostDatabase(url: paths.hostDatabase, backupDirectory: paths.transactionsRoot)
         registry = PluginRegistry(database: database, locale: locale)
         contexts = InvocationContexts()
         let db = database
@@ -82,6 +85,7 @@ public final class HostEngine: @unchecked Sendable {
         await supervisor.setHandlers(
             crash: { [weak self] id, error in Task { await self?.pluginCrashed(id, error: error) } },
             state: { [weak self] id, state in Task { await self?.registry.setProcessState(id, state) } })
+        log.record(.hostStarted, ["version": HostInfo.version.description, "os": OSVersion.current.description])
         let recovered = try fileBroker.recoverInterruptedOperations()
         try await registry.load()
         await updater.recover()
@@ -172,6 +176,7 @@ public final class HostEngine: @unchecked Sendable {
     public func commitInstall(_ preview: InstallPreview, updateChannel: UpdateChannel, source: String?) async throws -> PluginID {
         let record = try installer.commit(preview, isDefault: false, updateChannel: updateChannel, source: source)
         try await registry.insert(record)
+        log.record(.pluginInstalled, ["plugin": preview.manifest.id.rawValue, "version": preview.manifest.version.description, "trust": preview.trust.rawValue])
         await enable(preview.manifest.id, userInitiated: true)
         return preview.manifest.id
     }
@@ -222,11 +227,13 @@ public final class HostEngine: @unchecked Sendable {
                 await pushSettings(id)
             }
             try await registry.setActivation(id, .enabled)
+            log.record(.pluginEnabled, ["plugin": id.rawValue, "version": manifest.version.description])
             return nil
         } catch {
             let failure = (error as? RuyioError) ?? RuyioError(.internalError, objectID: id.rawValue, diagnostic: String(describing: error))
             await supervisor.stop(id)
             try? await registry.setActivation(id, .disabled, error: failure)
+            log.record(.pluginEnabled, ["plugin": id.rawValue, "result": failure.code.rawValue])
             return failure
         }
     }
@@ -238,6 +245,7 @@ public final class HostEngine: @unchecked Sendable {
         await supervisor.unregister(id)
         contexts.revokeAll(pluginID: id)
         try? await registry.setActivation(id, .disabled, preference: false)
+        log.record(.pluginDisabled, ["plugin": id.rawValue])
     }
 
     public struct UninstallPlan: Sendable {
@@ -273,12 +281,75 @@ public final class HostEngine: @unchecked Sendable {
             try? FileManager.default.removeItem(at: services.stores.dataRoot(pluginID: id, development: record.isDevelopment))
         }
         try await registry.remove(id, asUninstalledDefault: record.isDefault, keptData: !deleteData)
+        log.record(.pluginUninstalled, ["plugin": id.rawValue, "deletedData": String(deleteData)])
+    }
+
+    // MARK: Update checks (PRD §19.11): check only, never download or install
+
+    public struct AvailableUpdate: Sendable {
+        public var pluginID: PluginID
+        public var version: SemanticVersion
+        public var descriptor: PluginDescriptor?
+        public var descriptorURL: URL?
+        public var release: PluginDescriptor.Release?
+        public var bundled: BundledPackage?
+    }
+
+    private var availableUpdates: [PluginID: AvailableUpdate] {
+        get { lock.withLock { _availableUpdates } }
+        set { lock.withLock { _availableUpdates = newValue } }
+    }
+
+    public func availableUpdate(_ id: PluginID) -> AvailableUpdate? { availableUpdates[id] }
+
+    @discardableResult
+    public func checkForUpdate(_ id: PluginID) async -> AvailableUpdate? {
+        guard let record = await registry.record(id), let installed = SemanticVersion(record.version) else { return nil }
+        try? await registry.update(id) { $0.updateState = .checking }
+        var found: AvailableUpdate?
+        switch record.updateChannel {
+        case .bundledWithHost:
+            if let package = lock.withLock({ bundled[id] }), package.manifest.version > installed {
+                found = AvailableUpdate(pluginID: id, version: package.manifest.version, bundled: package)
+            }
+        case .descriptor:
+            if let source = record.source, let url = URL(string: source), let (descriptor, descriptorURL) = try? await markets.descriptor(at: url),
+               descriptor.id == id, let best = descriptor.bestRelease(), best.version > installed {
+                found = AvailableUpdate(pluginID: id, version: best.version, descriptor: descriptor, descriptorURL: descriptorURL, release: best)
+            }
+        case .market:
+            if let source = record.source, source.hasPrefix("market:"),
+               let (descriptor, descriptorURL) = await markets.descriptor(marketID: String(source.dropFirst(7)), pluginID: id),
+               let best = descriptor.bestRelease(), best.version > installed {
+                found = AvailableUpdate(pluginID: id, version: best.version, descriptor: descriptor, descriptorURL: descriptorURL, release: best)
+            }
+        case .none, .development:
+            break
+        }
+        availableUpdates[id] = found
+        try? await registry.update(id) { $0.updateState = found == nil ? .none : .available }
+        return found
+    }
+
+    /// Downloads (or reads the bundled package) and fully verifies the update candidate.
+    public func prepareUpdate(_ update: AvailableUpdate, progress: (@Sendable (Int64, Int64?) -> Void)? = nil) async throws -> InstallPreview {
+        if let bundled = update.bundled {
+            return try installer.inspect(package: bundled.url, trust: .bundledDefault, expectedSHA256: bundled.expectedSHA256)
+        }
+        guard let descriptor = update.descriptor, let url = update.descriptorURL, let release = update.release else {
+            throw RuyioError(.sourceInvalid, diagnostic: "no update source")
+        }
+        return try await markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release, progress: progress)
     }
 
     // MARK: Actions and views
 
     public func invoke(_ request: InvocationRequest) async -> ExecutionReport {
-        await router.invoke(request)
+        let report = await router.invoke(request)
+        // Result codes only; never parameters, paths or outputs (PRD §21).
+        log.record(.actionCompleted, ["action": request.ref.description, "entry": request.entry?.rawValue ?? "-",
+                                      "state": report.state.rawValue, "error": report.error?.code.rawValue ?? "-"])
+        return report
     }
 
     /// Opens a plugin view and holds a lease until `closeView`.
@@ -365,6 +436,7 @@ public final class HostEngine: @unchecked Sendable {
 
     /// Crash: mark runtimeFailed, keep files and diagnostics, never auto-restart in a loop (PRD §17).
     private func pluginCrashed(_ id: PluginID, error: RuyioError) async {
+        log.record(.pluginCrashed, ["plugin": id.rawValue, "code": error.code.rawValue])
         guard let record = await registry.record(id), record.activationState == .enabled || record.activationState == .needsPermission else { return }
         guard let manifest = await registry.manifest(id) else { return }
         if manifest.permissions.contains(.background) {

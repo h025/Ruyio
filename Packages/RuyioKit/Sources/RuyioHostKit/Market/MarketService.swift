@@ -188,6 +188,25 @@ public actor MarketService {
         return state
     }
 
+    /// Reads a plugin descriptor directly (independent URL installs check updates here, PRD §19.11).
+    public func descriptor(at url: URL) async throws -> (PluginDescriptor, URL) {
+        let result = try await fetcher.fetch(url, maxBytes: PluginDescriptor.maxBytes, accept: "application/json")
+        guard result.statusCode == 200 else { throw RuyioError(.sourceInvalid, diagnostic: "HTTP \(result.statusCode)") }
+        return (try PluginDescriptor.decode(result.data), result.finalURL)
+    }
+
+    /// Descriptor of one entry in a recorded market, loading it if needed.
+    public func descriptor(marketID: String, pluginID: PluginID) async -> (PluginDescriptor, URL)? {
+        let states = await entries(marketID, load: 0)
+        guard var state = states.first(where: { $0.id == pluginID }) else { return nil }
+        if state.descriptor == nil, let (market, indexURL) = index(marketID), let entry = market.plugins.first(where: { $0.id == pluginID }) {
+            state = await loadDescriptor(entry: entry, marketID: marketID, indexURL: indexURL, base: state)
+            entryCache["\(marketID)#\(pluginID.rawValue)"] = state
+        }
+        guard let descriptor = state.descriptor, let url = state.descriptorURL else { return nil }
+        return (descriptor, url)
+    }
+
     // MARK: Install preparation (PRD §19.10)
 
     /// Downloads to an isolated staging file, checks size and SHA-256, then runs full verification.

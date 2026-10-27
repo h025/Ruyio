@@ -232,7 +232,7 @@ struct GeneralPage: View {
                     HStack {
                         Button(l.rerunOnboarding) { NSApp.sendAction(#selector(AppDelegate.showOnboarding), to: nil, from: nil) }
                         Button(l.openLogs) { NSWorkspace.shared.open(model.engine.paths.logs) }
-                        Button(l.clearLogs) { try? FileManager.default.contentsOfDirectory(at: model.engine.paths.logs, includingPropertiesForKeys: nil).forEach { try? FileManager.default.removeItem(at: $0) } }
+                        Button(l.clearLogs) { model.engine.log.clear() }
                         Button(l.licenses) { if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") { NSWorkspace.shared.open(url) } }
                     }
                     Text("Ruyio \(HostInfo.version) · macOS \(OSVersion.current) · arm64").font(.caption).foregroundStyle(.secondary)

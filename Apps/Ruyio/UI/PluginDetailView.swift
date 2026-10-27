@@ -49,7 +49,7 @@ struct PluginDetailView: View {
                     case 1: actions
                     case 2: permissions
                     case 3: PluginSettingsTab(model: model, summary: summary)
-                    default: versionTab
+                    default: UpdateSection(model: model, summary: summary)
                     }
                     Divider().padding(.top, 20)
                     HStack {
@@ -127,6 +127,92 @@ struct PluginDetailView: View {
                 Text(summary.status.updateChannel == .bundledWithHost ? l.updatesWithHost : (summary.status.updateChannel == .none ? l.noUpdateSource : summary.status.updateChannel.rawValue))
             }
             GridRow { Text("ID").foregroundStyle(.secondary); Text(summary.id.rawValue).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
+        }
+    }
+}
+
+/// Version tab with check / update (PRD §19.11): differences are shown before the user confirms.
+struct UpdateSection: View {
+    @ObservedObject var model: AppModel
+    let summary: PluginSummary
+    @State private var checking = false
+    @State private var available: HostEngine.AvailableUpdate?
+    @State private var checked = false
+    @State private var working = false
+    @State private var result: String?
+    var l: L10n { model.l }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
+                GridRow { Text(l.version).foregroundStyle(.secondary); Text(summary.version.description).font(.system(.body, design: .monospaced)) }
+                GridRow {
+                    Text(l.updateChannel).foregroundStyle(.secondary)
+                    Text(summary.status.updateChannel == .bundledWithHost ? l.updatesWithHost : (summary.status.updateChannel == .none ? l.noUpdateSource : summary.status.updateChannel.rawValue))
+                }
+                GridRow { Text("ID").foregroundStyle(.secondary); Text(summary.id.rawValue).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
+            }
+            HStack {
+                Button(l.t("检查更新", "Check for Update")) { check() }.disabled(checking || working || summary.status.updateChannel == .none)
+                if checking || working { ProgressView().controlSize(.small) }
+                if let available {
+                    Text(l.t("发现新版本 \(available.version)", "Version \(available.version) is available"))
+                    Button(l.t("更新…", "Update…")) { update(available) }.disabled(working)
+                } else if checked {
+                    Text(l.t("已是最新版本", "Up to date")).foregroundStyle(.secondary)
+                }
+            }
+            if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
+        }
+    }
+
+    func check() {
+        checking = true
+        Task {
+            available = await model.engine.checkForUpdate(summary.id)
+            checked = true
+            checking = false
+        }
+    }
+
+    func update(_ update: HostEngine.AvailableUpdate) {
+        working = true
+        result = nil
+        Task {
+            defer { working = false }
+            do {
+                let preview = try await model.engine.prepareUpdate(update)
+                guard preview.isInstallable else {
+                    result = l.errorText(RuyioError(.sourceInvalid, diagnostic: preview.failureSummary))
+                    model.engine.installer.discard(preview)
+                    return
+                }
+                let diff = await model.engine.updater.diff(for: preview)
+                let alert = NSAlert()
+                alert.messageText = l.t("更新到 \(preview.manifest.version)？", "Update to \(preview.manifest.version)?")
+                var lines = [l.t("当前版本 \(summary.version)", "Current version \(summary.version)")]
+                if let diff, !diff.addedPermissions.isEmpty {
+                    lines.append(l.t("新增权限：", "New permissions: ") + diff.addedPermissions.map { l.permissionName($0) }.joined(separator: "、"))
+                }
+                if diff?.signerChanged == true { lines.append(l.t("签名者已变化，不能普通更新。", "The signer changed; this cannot be a normal update.")) }
+                alert.informativeText = lines.joined(separator: "\n")
+                alert.addButton(withTitle: l.cancel)
+                alert.addButton(withTitle: l.t("更新", "Update"))
+                guard alert.runModal() == .alertSecondButtonReturn else { model.engine.installer.discard(preview); return }
+                switch await model.engine.updater.update(with: preview) {
+                case .completed(let version):
+                    result = l.t("已更新到 \(version)", "Updated to \(version)")
+                    available = nil
+                case .rolledBack(let still, let error):
+                    result = l.t("更新失败，已恢复，仍在使用 \(still)。", "Update failed and was rolled back; still using \(still). ") + l.errorText(error)
+                case .committedWithRuntimeError(let version, let error):
+                    result = l.t("更新已提交（\(version)），但运行异常；新数据已保留。", "Update to \(version) was committed but the plugin failed to run; new data was kept. ") + l.errorText(error)
+                }
+            } catch let error as RuyioError {
+                result = l.errorText(error)
+            } catch {
+                result = error.localizedDescription
+            }
         }
     }
 }

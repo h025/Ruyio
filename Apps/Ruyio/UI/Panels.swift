@@ -201,8 +201,14 @@ final class OverlayController {
         guard let context else { return false }
         let selection = context.localSelection
         switch KeyCommand(event) {
-        case .up: context.moveSelection(-1); return true
-        case .down: context.moveSelection(1); return true
+        case .up, .down:
+            context.moveSelection(KeyCommand(event) == .up ? -1 : 1)
+            // Selection changes are announced while focus stays in the search field (R31 / interaction §19).
+            if let title = context.collection?.list.items.first(where: { $0.id == context.localSelection }).map({ $0.accessibilityLabel ?? $0.title }) {
+                NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                     userInfo: [.announcement: title, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+            }
+            return true
         case .enter: context.send(.invoke(actionID: "paste", itemID: selection)); return true
         case .optionEnter: context.send(.invoke(actionID: "paste-plain", itemID: selection)); return true
         case .commandEnter: context.send(.invoke(actionID: "copy-only", itemID: selection)); return true
