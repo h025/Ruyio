@@ -357,6 +357,26 @@ public final class HostEngine: @unchecked Sendable {
         return try await markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release, progress: progress)
     }
 
+    // MARK: Outcomes that need checking (PRD §20.3, R15)
+
+    /// Target folders of operations whose result is unknown, for "Show in Finder".
+    public func pendingOutcomeLocations(_ id: PluginID) -> [URL] {
+        let records = (try? database.unresolvedOperations(pluginID: id)) ?? []
+        return records.compactMap { record in
+            guard let request = try? JSONCoding.decoder().decode(FileWriteRequest.self, from: Data(record.intent.utf8)) else { return nil }
+            return URL(fileURLWithPath: request.directory.path)
+        }
+    }
+
+    /// The user checked the targets; nothing is retried automatically.
+    public func markOutcomesResolved(_ id: PluginID) async {
+        for var record in (try? database.unresolvedOperations(pluginID: id)) ?? [] {
+            record.phase = .resolved
+            try? database.saveOperation(record)
+        }
+        await registry.setPendingOutcomes(id, count: 0)
+    }
+
     // MARK: Same-identity source switch (R08 / SOURCE-04)
 
     /// Verifies that the new source serves the same plugin ID signed by the same identity, then changes

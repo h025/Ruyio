@@ -71,9 +71,18 @@ struct PluginDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             if let description = summary.displayDescription { Text(description) }
             if summary.status.pendingOutcomeCount > 0 {
-                HStack {
-                    Image(systemName: "questionmark.circle").foregroundStyle(.orange)
-                    Text(l.pendingOutcomes)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: "questionmark.circle").foregroundStyle(.orange)
+                        Text(l.pendingOutcomes)
+                    }
+                    HStack {
+                        Button(l.t("在 Finder 中查看", "Show in Finder")) {
+                            let urls = model.engine.pendingOutcomeLocations(summary.id)
+                            if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+                        }
+                        Button(l.markResolved) { Task { await model.engine.markOutcomesResolved(summary.id) } }
+                    }
                 }
             }
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
