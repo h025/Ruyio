@@ -342,6 +342,36 @@ public final class HostEngine: @unchecked Sendable {
         return try await markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release, progress: progress)
     }
 
+    // MARK: Same-identity source switch (R08 / SOURCE-04)
+
+    /// Verifies that the new source serves the same plugin ID signed by the same identity, then changes
+    /// only the source binding. Code, data, permissions and entry preferences stay as they are.
+    public func switchSource(_ id: PluginID, to resolved: ResolvedSource) async throws {
+        guard let record = await registry.record(id) else { throw RuyioError(.pluginNotFound, objectID: id.rawValue) }
+        let preview: InstallPreview
+        let newSource: String
+        let channel: UpdateChannel
+        switch resolved.kind {
+        case .plugin(let descriptor, let url):
+            guard descriptor.id == id, let release = descriptor.bestRelease() else { throw RuyioError(.sourceInvalid, diagnostic: "source does not provide this plugin") }
+            preview = try await markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release)
+            newSource = url.absoluteString
+            channel = .descriptor
+        default:
+            throw RuyioError(.sourceInvalid, diagnostic: "choose a plugin descriptor address")
+        }
+        defer { installer.discard(preview) }
+        guard preview.isInstallable, preview.manifest.id == id,
+              preview.signing.teamID == record.teamID, preview.signing.identifier == record.signingIdentifier else {
+            throw RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "new source is not the same publisher identity")
+        }
+        try await registry.update(id) {
+            $0.source = newSource
+            $0.updateChannel = channel
+            $0.sourceState = .linked
+        }
+    }
+
     // MARK: Actions and views
 
     public func invoke(_ request: InvocationRequest) async -> ExecutionReport {

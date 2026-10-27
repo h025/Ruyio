@@ -233,6 +233,7 @@ struct GeneralPage: View {
                         Button(l.rerunOnboarding) { NSApp.sendAction(#selector(AppDelegate.showOnboarding), to: nil, from: nil) }
                         Button(l.openLogs) { NSWorkspace.shared.open(model.engine.paths.logs) }
                         Button(l.clearLogs) { model.engine.log.clear() }
+                        Button(l.t("导出日志…", "Export Logs…")) { exportLogs() }
                         Button(l.licenses) { if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") { NSWorkspace.shared.open(url) } }
                     }
                     Text(verbatim: "Ruyio \(HostInfo.version) · macOS \(OSVersion.current) · arm64").font(.caption).foregroundStyle(.secondary)
@@ -240,6 +241,21 @@ struct GeneralPage: View {
             }
             .formStyle(.grouped)
         }
+    }
+
+    /// Shows the included fields first, then lets the user choose where to save (PRD §21).
+    func exportLogs() {
+        let alert = NSAlert()
+        alert.messageText = l.t("导出诊断日志", "Export Diagnostic Logs")
+        alert.informativeText = l.t("日志只包含以下字段，不含剪贴板内容、文件内容、路径或完整网址：\n", "Logs contain only these fields — no clipboard or file content, paths or full URLs:\n")
+            + DiagnosticLog.exportedFields.joined(separator: ", ")
+        alert.addButton(withTitle: l.continueAction)
+        alert.addButton(withTitle: l.cancel)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Ruyio-diagnostics.log"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try model.engine.log.export(to: url) } catch { model.show(error.localizedDescription) }
     }
 
     func loadDevelopmentPlugin() {

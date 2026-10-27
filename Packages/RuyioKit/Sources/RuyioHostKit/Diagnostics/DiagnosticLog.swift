@@ -48,6 +48,20 @@ public final class DiagnosticLog: @unchecked Sendable {
         return components.string ?? "-"
     }
 
+    /// Fields any exported line may contain (shown to the user before export, PRD §21).
+    public static let exportedFields = ["time", "event", "plugin", "version", "os", "action", "entry", "state", "error", "code", "result", "trust", "deletedData"]
+
+    /// Concatenates the retained logs into one file chosen by the user.
+    public func export(to destination: URL) throws {
+        try queue.sync {
+            let files = ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "log" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            var combined = Data()
+            for file in files { combined.append((try? Data(contentsOf: file)) ?? Data()) }
+            try combined.write(to: destination, options: .atomic)
+        }
+    }
+
     public func clear() {
         queue.sync {
             for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
