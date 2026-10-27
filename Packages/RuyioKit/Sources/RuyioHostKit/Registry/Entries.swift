@@ -100,6 +100,13 @@ public struct RegistrySnapshot: Sendable, Hashable {
     public var plugins: [PluginSummary]
     public var restorableDefaults: [RestorableDefault]
     public var entries: EntryProjection
+
+    public init(generation: Int, plugins: [PluginSummary], restorableDefaults: [RestorableDefault], entries: EntryProjection) {
+        self.generation = generation
+        self.plugins = plugins
+        self.restorableDefaults = restorableDefaults
+        self.entries = entries
+    }
 }
 
 public struct RestorableDefault: Sendable, Hashable, Identifiable {

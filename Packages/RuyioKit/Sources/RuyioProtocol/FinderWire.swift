@@ -15,6 +15,25 @@ public enum FinderWire {
     public static let maxRequestBytes = 64 * 1024
     public static let maxTitleCharacters = 60
 
+    /// Where host and extension exchange snapshots and requests. Team-signed builds use the App Group
+    /// container; ad-hoc development builds use a home-relative folder the sandboxed extension may
+    /// access through a temporary-exception entitlement (decision A20).
+    public static func channelDirectory(infoDictionary: [String: Any]?) -> URL? {
+        let mode = infoDictionary?["RuyioFinderChannel"] as? String ?? "home"
+        if mode == "group", let group = infoDictionary?["RuyioAppGroup"] as? String,
+           let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) {
+            return url
+        }
+        guard let home = realHomeDirectory() else { return nil }
+        return URL(fileURLWithPath: home).appendingPathComponent("Library/Application Support/Ruyio/FinderBridge", isDirectory: true)
+    }
+
+    /// Inside a sandbox HOME points at the container; the account's real home comes from the user database.
+    public static func realHomeDirectory() -> String? {
+        guard let entry = getpwuid(getuid()), let dir = entry.pointee.pw_dir else { return nil }
+        return String(cString: dir)
+    }
+
     public static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
