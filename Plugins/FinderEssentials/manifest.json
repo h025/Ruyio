@@ -1,0 +1,231 @@
+{
+  "actions": [
+    {
+      "id": "copy-path",
+      "presentations": [
+        {
+          "contexts": {
+            "selection": [
+              "single",
+              "multiple"
+            ],
+            "targets": [
+              "file",
+              "directory"
+            ]
+          },
+          "order": 0,
+          "title": "Copy Full Path",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "doc.on.doc",
+      "title": "Copy Full Path"
+    },
+    {
+      "id": "copy-name",
+      "presentations": [
+        {
+          "contexts": {
+            "selection": [
+              "single",
+              "multiple"
+            ],
+            "targets": [
+              "file",
+              "directory"
+            ]
+          },
+          "order": 1,
+          "title": "Copy Name",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "textformat",
+      "title": "Copy Name"
+    },
+    {
+      "id": "copy-parent",
+      "presentations": [
+        {
+          "contexts": {
+            "selection": [
+              "single",
+              "multiple"
+            ],
+            "targets": [
+              "file",
+              "directory"
+            ]
+          },
+          "order": 2,
+          "title": "Copy Parent Folder Path",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "folder",
+      "title": "Copy Parent Folder Path"
+    },
+    {
+      "id": "open-terminal",
+      "presentations": [
+        {
+          "contexts": {
+            "selection": [
+              "none",
+              "single",
+              "multiple"
+            ],
+            "targets": [
+              "directory",
+              "file"
+            ]
+          },
+          "order": 3,
+          "title": "Open in Terminal",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "terminal",
+      "title": "Open in Terminal"
+    },
+    {
+      "id": "open-editor",
+      "presentations": [
+        {
+          "contexts": {
+            "selection": [
+              "none",
+              "single",
+              "multiple"
+            ],
+            "targets": [
+              "directory",
+              "file"
+            ]
+          },
+          "order": 4,
+          "title": "Open in Editor",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "chevron.left.forwardslash.chevron.right",
+      "title": "Open in Editor"
+    },
+    {
+      "hasSideEffects": true,
+      "id": "new-text-file",
+      "presentations": [
+        {
+          "contexts": {
+            "requiresWritableTarget": true,
+            "selection": [
+              "none"
+            ],
+            "targets": [
+              "directory"
+            ]
+          },
+          "order": 5,
+          "title": "New Text File…",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "doc.badge.plus",
+      "title": "New Text File…"
+    },
+    {
+      "hasSideEffects": true,
+      "id": "new-markdown-file",
+      "presentations": [
+        {
+          "contexts": {
+            "requiresWritableTarget": true,
+            "selection": [
+              "none"
+            ],
+            "targets": [
+              "directory"
+            ]
+          },
+          "order": 6,
+          "title": "New Markdown File…",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "doc.richtext",
+      "title": "New Markdown File…"
+    },
+    {
+      "id": "toggle-hidden-files",
+      "presentations": [
+        {
+          "contexts": {
+            "selection": [
+              "none"
+            ],
+            "targets": [
+              "directory"
+            ]
+          },
+          "order": 7,
+          "title": "Show or Hide Hidden Files",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "eye",
+      "title": "Show or Hide Hidden Files"
+    }
+  ],
+  "architectures": [
+    "arm64"
+  ],
+  "author": "Ruyio",
+  "bundlePath": "FinderEssentials.app",
+  "defaultLocale": "en",
+  "description": "Copy paths, create files and open folders in Terminal or your editor.",
+  "executable": "FinderEssentials.app/Contents/MacOS/FinderEssentials",
+  "id": "app.ruyio.finder-essentials",
+  "license": "MIT",
+  "localizations": {
+    "zh-Hans": {
+      "action.copy-name.finder": "复制文件名",
+      "action.copy-name.title": "复制文件名",
+      "action.copy-parent.finder": "复制父目录路径",
+      "action.copy-parent.title": "复制父目录路径",
+      "action.copy-path.finder": "复制完整路径",
+      "action.copy-path.title": "复制完整路径",
+      "action.new-markdown-file.finder": "新建 Markdown 文件…",
+      "action.new-markdown-file.title": "新建 Markdown 文件…",
+      "action.new-text-file.finder": "新建文本文件…",
+      "action.new-text-file.title": "新建文本文件…",
+      "action.open-editor.finder": "在编辑器中打开",
+      "action.open-editor.title": "在编辑器中打开",
+      "action.open-terminal.finder": "在终端中打开",
+      "action.open-terminal.title": "在终端中打开",
+      "action.toggle-hidden-files.finder": "显示或隐藏隐藏文件",
+      "action.toggle-hidden-files.title": "显示或隐藏隐藏文件",
+      "description": "复制路径、新建文件、在终端或编辑器中打开。",
+      "name": "Finder 基础工具"
+    }
+  },
+  "minimumHostVersion": "1.0.0",
+  "minimumMacOSVersion": "15.0",
+  "name": "Finder Essentials",
+  "permissions": [
+    "clipboard.write",
+    "files.write",
+    "apps.open"
+  ],
+  "runtime": "native-isolated",
+  "schemaVersion": 1,
+  "source": "https://github.com/ruyio/ruyio",
+  "storageSchemaVersion": 1,
+  "supportedIPC": [
+    1
+  ],
+  "supportedUISchema": [
+    1
+  ],
+  "version": "1.0.0"
+}

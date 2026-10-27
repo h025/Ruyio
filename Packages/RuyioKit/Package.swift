@@ -13,6 +13,8 @@ let package = Package(
         .library(name: "RuyioSourceTransport", targets: ["RuyioSourceTransport"]),
         .library(name: "RuyioHostKit", targets: ["RuyioHostKit"]),
         .library(name: "RuyioUI", targets: ["RuyioUI"]),
+        .library(name: "ClipboardHistoryKit", targets: ["ClipboardHistoryKit"]),
+        .library(name: "FinderEssentialsKit", targets: ["FinderEssentialsKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", exact: "7.11.1"),
@@ -31,12 +33,15 @@ let package = Package(
             dependencies: ["RuyioCore", "RuyioProtocol", "RuyioPersistence", "RuyioSourceTransport"]
         ),
         .target(name: "RuyioUI", dependencies: ["RuyioCore", "RuyioProtocol"]),
+        .target(name: "ClipboardHistoryKit", dependencies: ["RuyioPluginSDK"]),
+        .target(name: "FinderEssentialsKit", dependencies: ["RuyioPluginSDK"]),
         .executableTarget(name: "RuyioTestPlugin", dependencies: ["RuyioPluginSDK"], path: "Tests/Fixtures/RuyioTestPlugin"),
 
         .testTarget(name: "RuyioCoreTests", dependencies: ["RuyioCore"]),
         .testTarget(name: "RuyioProtocolTests", dependencies: ["RuyioProtocol"]),
         .testTarget(name: "RuyioPersistenceTests", dependencies: ["RuyioPersistence"]),
         .testTarget(name: "RuyioSourceTransportTests", dependencies: ["RuyioSourceTransport"]),
+        .testTarget(name: "PluginKitTests", dependencies: ["ClipboardHistoryKit", "FinderEssentialsKit"]),
         .testTarget(name: "RuyioHostKitTests", dependencies: ["RuyioHostKit", "RuyioPluginSDK", "RuyioTestPlugin"]),
     ]
 )

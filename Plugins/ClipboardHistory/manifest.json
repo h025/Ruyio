@@ -1,0 +1,161 @@
+{
+  "actions": [
+    {
+      "completion": "closePanel",
+      "id": "show-history",
+      "keywords": [
+        "clipboard",
+        "paste",
+        "history",
+        "剪贴板",
+        "粘贴"
+      ],
+      "opensView": "history",
+      "presentations": [
+        {
+          "title": "Show Clipboard History",
+          "type": "commandPalette"
+        },
+        {
+          "defaultShortcut": "command+shift+v",
+          "type": "globalHotkey"
+        },
+        {
+          "title": "Open History",
+          "type": "menuBar"
+        }
+      ],
+      "symbol": "doc.on.clipboard",
+      "title": "Show Clipboard History"
+    },
+    {
+      "id": "toggle-recording",
+      "keywords": [
+        "pause",
+        "resume",
+        "暂停",
+        "恢复"
+      ],
+      "presentations": [
+        {
+          "menuRole": "captureToggle",
+          "title": "Pause Recording",
+          "type": "menuBar"
+        },
+        {
+          "title": "Pause or Resume Clipboard Recording",
+          "type": "commandPalette"
+        }
+      ],
+      "symbol": "pause.circle",
+      "title": "Pause or Resume Recording"
+    },
+    {
+      "hasSideEffects": true,
+      "id": "paste-recent",
+      "presentations": [
+        {
+          "childrenProvider": "recentItems",
+          "contexts": {
+            "requiresWritableTarget": true,
+            "selection": [
+              "none"
+            ],
+            "targets": [
+              "directory"
+            ]
+          },
+          "group": "clipboard",
+          "order": 0,
+          "presentation": "groupItems",
+          "title": "Save as File",
+          "type": "finderContextMenu"
+        }
+      ],
+      "symbol": "square.and.arrow.down",
+      "title": "Save as File"
+    },
+    {
+      "id": "show-all-history",
+      "opensView": "history",
+      "presentations": [
+        {
+          "contexts": {
+            "selection": [
+              "none",
+              "single",
+              "multiple"
+            ],
+            "targets": [
+              "directory",
+              "file"
+            ]
+          },
+          "group": "clipboard",
+          "order": 1,
+          "title": "Show All History…",
+          "type": "finderContextMenu"
+        }
+      ],
+      "title": "Show All History…"
+    }
+  ],
+  "architectures": [
+    "arm64"
+  ],
+  "author": "Ruyio",
+  "bundlePath": "ClipboardHistory.app",
+  "defaultLocale": "en",
+  "description": "Record, search and reuse what you copied.",
+  "executable": "ClipboardHistory.app/Contents/MacOS/ClipboardHistory",
+  "id": "app.ruyio.clipboard-history",
+  "license": "MIT",
+  "localizations": {
+    "zh-Hans": {
+      "action.paste-recent.finder": "存为文件",
+      "action.paste-recent.title": "存为文件",
+      "action.show-all-history.finder": "显示全部历史…",
+      "action.show-all-history.title": "显示全部历史…",
+      "action.show-history.menu": "打开历史",
+      "action.show-history.palette": "显示历史剪贴板",
+      "action.show-history.title": "显示历史剪贴板",
+      "action.toggle-recording.menu": "暂停记录",
+      "action.toggle-recording.palette": "暂停或恢复剪贴板记录",
+      "action.toggle-recording.title": "暂停或恢复记录",
+      "description": "记录、查找并再次使用复制过的内容。",
+      "name": "历史剪贴板"
+    }
+  },
+  "minimumHostVersion": "1.0.0",
+  "minimumMacOSVersion": "15.0",
+  "name": "Clipboard History",
+  "permissions": [
+    "clipboard.read",
+    "clipboard.write",
+    "files.write",
+    "background"
+  ],
+  "runtime": "native-isolated",
+  "schemaVersion": 1,
+  "source": "https://github.com/ruyio/ruyio",
+  "storageSchemaVersion": 1,
+  "supportedIPC": [
+    1
+  ],
+  "supportedUISchema": [
+    1
+  ],
+  "version": "1.0.0",
+  "views": [
+    {
+      "id": "history",
+      "placement": "overlay",
+      "title": "Clipboard History"
+    },
+    {
+      "id": "settings",
+      "placement": "settings",
+      "title": "Settings"
+    }
+  ]
+}
