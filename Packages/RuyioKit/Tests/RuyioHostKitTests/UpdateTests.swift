@@ -146,3 +146,62 @@ struct ReviewRegressionTests {
         #expect(throws: RuyioError.self) { _ = try store.appendUpload(BlobPutRequest(uploadID: nil, chunk: chunk, isFinal: false)) }
     }
 }
+
+@Suite(.serialized)
+struct DowngradeTests {
+    let id = PluginID("org.ruyio.test-plugin")
+    func ref(_ a: String) -> ActionRef { ActionRef(pluginID: id, actionID: ActionID(a)) }
+
+    func engine(starting version: String, schema: Int = 1) async throws -> HostEngine {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("dg-\(UUID().uuidString)")
+        let paths = AppPaths(applicationSupport: base.appendingPathComponent("S"), caches: base.appendingPathComponent("C"))
+        try paths.ensureDirectories()
+        let engine = try HostEngine(paths: paths, locale: "en")
+        engine.setBridge(TestBridge())
+        try await engine.start(bundledPackages: [try PackageFixture.build(version: version, schema: schema)])
+        _ = await engine.invoke(InvocationRequest(ref: ref("storage"), entry: .commandPalette))
+        return engine
+    }
+
+    @Test func sameSchemaCanKeepCurrentData() async throws {
+        let engine = try await engine(starting: "1.1.0")
+        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0"), trust: .bundledDefault)
+        let choices = await engine.updater.downgradeChoices(for: preview)
+        #expect(choices.contains(.keepCurrent))
+        #expect(await engine.updater.downgrade(with: preview, data: .keepCurrent) == .completed(version: SemanticVersion("1.0.0")!))
+        #expect(await engine.invoke(InvocationRequest(ref: ref("version"), entry: .commandPalette)).output == .notice("1.0.0"))
+        #expect(await engine.invoke(InvocationRequest(ref: ref("storage-read"), entry: .commandPalette)).output == .notice("中文内容"))
+        await engine.shutdown()
+    }
+
+    @Test func incompatibleSchemaOnlyOffersFreshDataAndKeepsCurrentOnDisk() async throws {
+        let engine = try await engine(starting: "1.1.0", schema: 2)
+        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault)
+        let choices = await engine.updater.downgradeChoices(for: preview)
+        #expect(choices == [.fresh])
+        // Confirming a risk is not enough: keeping incompatible data is refused (R16).
+        guard case .rolledBack = await engine.updater.downgrade(with: try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault), data: .keepCurrent) else {
+            Issue.record("incompatible keepCurrent accepted"); return
+        }
+        #expect(await engine.updater.downgrade(with: preview, data: .fresh) == .completed(version: SemanticVersion("1.0.0")!))
+        #expect(await engine.invoke(InvocationRequest(ref: ref("storage-read"), entry: .commandPalette)).output == .notice("missing"))
+        let root = engine.services.stores.dataRoot(pluginID: id, development: false)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("1/Store.sqlite").path), "previous data kept for recovery")
+        await engine.shutdown()
+    }
+
+    @Test func retainedGenerationIsOfferedAsSnapshot() async throws {
+        let engine = try await engine(starting: "1.0.0")
+        let upgrade = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", schema: 2), trust: .bundledDefault)
+        #expect(await engine.updater.update(with: upgrade) == .completed(version: SemanticVersion("1.1.0")!))
+        let back = try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault)
+        let choices = await engine.updater.downgradeChoices(for: back)
+        guard let snapshot = choices.first(where: { if case .snapshot = $0 { return true }; return false }) else {
+            Issue.record("snapshot not offered: \(choices)"); return
+        }
+        #expect(!choices.contains(.keepCurrent))
+        #expect(await engine.updater.downgrade(with: back, data: snapshot) == .completed(version: SemanticVersion("1.0.0")!))
+        #expect(await engine.invoke(InvocationRequest(ref: ref("storage-read"), entry: .commandPalette)).output == .notice("中文内容"))
+        await engine.shutdown()
+    }
+}

@@ -2,6 +2,7 @@ import AppKit
 import RuyioCore
 import RuyioHostKit
 import RuyioProtocol
+import RuyioSourceTransport
 import RuyioUI
 import SwiftUI
 
@@ -140,6 +141,8 @@ struct UpdateSection: View {
     @State private var checked = false
     @State private var working = false
     @State private var result: String?
+    @State private var olderReleases: [PluginDescriptor.Release] = []
+    @State private var source: (PluginDescriptor, URL)?
     var l: L10n { model.l }
 
     var body: some View {
@@ -163,6 +166,61 @@ struct UpdateSection: View {
                 }
             }
             if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
+            if !olderReleases.isEmpty {
+                Menu(l.t("安装其他版本…", "Install Another Version…")) {
+                    ForEach(olderReleases, id: \.version) { release in
+                        Button(release.version.description) { downgrade(release) }
+                    }
+                }
+                .fixedSize()
+                .disabled(working)
+            }
+        }
+        .task(id: summary.version) {
+            if let (descriptor, url) = await model.engine.sourceDescriptor(summary.id) {
+                olderReleases = descriptor.releases.filter { $0.version < summary.version }.sorted { $0.version > $1.version }
+                source = (descriptor, url)
+            }
+        }
+    }
+
+    /// Older versions need a data decision; only choices compatible with the target are offered (R16).
+    func downgrade(_ release: PluginDescriptor.Release) {
+        guard let (descriptor, url) = source else { return }
+        working = true
+        Task {
+            defer { working = false }
+            do {
+                let preview = try await model.engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release)
+                guard preview.isInstallable else {
+                    result = l.errorText(RuyioError(.sourceInvalid, diagnostic: preview.failureSummary))
+                    model.engine.installer.discard(preview)
+                    return
+                }
+                let choices = await model.engine.updater.downgradeChoices(for: preview)
+                let alert = NSAlert()
+                alert.messageText = l.t("安装旧版本 \(release.version)？", "Install older version \(release.version)?")
+                alert.informativeText = l.t("当前数据会保留在磁盘上，可随时恢复。旧版本之后的记录不会出现在快照中。", "Current data stays on disk for recovery. Records created after a snapshot will not appear in it.")
+                for choice in choices {
+                    switch choice {
+                    case .keepCurrent: alert.addButton(withTitle: l.t("保留当前数据", "Keep Current Data"))
+                    case .snapshot(_, let date): alert.addButton(withTitle: l.t("使用 \(date.formatted(date: .abbreviated, time: .shortened)) 的快照", "Use Snapshot from \(date.formatted(date: .abbreviated, time: .shortened))"))
+                    case .fresh: alert.addButton(withTitle: l.t("新建空数据", "Start with Empty Data"))
+                    }
+                }
+                alert.addButton(withTitle: l.cancel)
+                let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+                guard index >= 0, index < choices.count else { model.engine.installer.discard(preview); return }
+                switch await model.engine.updater.downgrade(with: preview, data: choices[index]) {
+                case .completed(let version): result = l.t("已切换到 \(version)", "Switched to \(version)")
+                case .rolledBack(let still, let error): result = l.t("未完成，仍在使用 \(still)。", "Not completed; still using \(still). ") + l.errorText(error)
+                case .committedWithRuntimeError(let version, let error): result = l.t("已切换到 \(version)，但运行异常。", "Switched to \(version) but it failed to run. ") + l.errorText(error)
+                }
+            } catch let error as RuyioError {
+                result = l.errorText(error)
+            } catch {
+                result = error.localizedDescription
+            }
         }
     }
 

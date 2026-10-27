@@ -332,6 +332,20 @@ public final class HostEngine: @unchecked Sendable {
         return found
     }
 
+    /// Descriptor for a plugin's recorded source, for listing historical versions (PRD §19.11).
+    public func sourceDescriptor(_ id: PluginID) async -> (PluginDescriptor, URL)? {
+        guard let record = await registry.record(id), let source = record.source else { return nil }
+        switch record.updateChannel {
+        case .descriptor:
+            guard let url = URL(string: source) else { return nil }
+            return try? await markets.descriptor(at: url)
+        case .market where source.hasPrefix("market:"):
+            return await markets.descriptor(marketID: String(source.dropFirst(7)), pluginID: id)
+        default:
+            return nil
+        }
+    }
+
     /// Downloads (or reads the bundled package) and fully verifies the update candidate.
     public func prepareUpdate(_ update: AvailableUpdate, progress: (@Sendable (Int64, Int64?) -> Void)? = nil) async throws -> InstallPreview {
         if let bundled = update.bundled {

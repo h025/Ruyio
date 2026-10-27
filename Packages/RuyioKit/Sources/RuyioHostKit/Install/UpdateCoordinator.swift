@@ -61,7 +61,64 @@ public actor UpdateCoordinator {
                     signerChanged: signerChanged, isDowngrade: preview.manifest.version < current.version)
     }
 
+    // MARK: Downgrade (R16 / DIST-06)
+
+    /// How data is handled when installing an older version. The current data is never modified.
+    public enum DataChoice: Sendable, Hashable {
+        /// Only when the target declares the same storage schema as the current data.
+        case keepCurrent
+        /// A retained generation whose recorded schema matches the target; the UI shows its date.
+        case snapshot(generation: Int, createdAt: Date)
+        /// A new empty partition; current data stays on disk for recovery.
+        case fresh
+    }
+
+    public struct GenerationInfo: Codable, Sendable, Hashable {
+        public var storageSchemaVersion: Int
+        public var pluginVersion: String
+        public var createdAt: Date
+    }
+
+    public func downgradeChoices(for preview: InstallPreview) async -> [DataChoice] {
+        guard let record = await engine.registry.record(preview.manifest.id), let current = try? record.decodedManifest() else { return [] }
+        var choices: [DataChoice] = []
+        if preview.manifest.storageSchemaVersion == current.storageSchemaVersion { choices.append(.keepCurrent) }
+        let root = engine.services.stores.dataRoot(pluginID: preview.manifest.id, development: record.isDevelopment)
+        for name in ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).sorted(by: >) {
+            guard let generation = Int(name), generation != record.dataGeneration,
+                  let info = Self.readGenerationInfo(root.appendingPathComponent(name)),
+                  info.storageSchemaVersion == preview.manifest.storageSchemaVersion else { continue }
+            choices.append(.snapshot(generation: generation, createdAt: info.createdAt))
+        }
+        choices.append(.fresh)
+        return choices
+    }
+
+    /// User-initiated install of an older version from the plugin detail (PRD §19.11).
+    public func downgrade(with preview: InstallPreview, data choice: DataChoice) async -> Outcome {
+        guard await downgradeChoices(for: preview).contains(choice) else {
+            engine.installer.discard(preview)
+            let still = SemanticVersion((await engine.registry.record(preview.manifest.id))?.version ?? "0.0.0") ?? preview.manifest.version
+            return .rolledBack(stillUsing: still, error: RuyioError(.sourceInvalid, diagnostic: "data choice not compatible with this version"))
+        }
+        return await apply(preview, allowOlder: true, data: choice)
+    }
+
+    static func readGenerationInfo(_ directory: URL) -> GenerationInfo? {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("generation.json")) else { return nil }
+        return try? JSONCoding.decoder().decode(GenerationInfo.self, from: data)
+    }
+
+    static func writeGenerationInfo(_ info: GenerationInfo, to directory: URL) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? JSONCoding.encoder().encode(info).write(to: directory.appendingPathComponent("generation.json"), options: .atomic)
+    }
+
     public func update(with preview: InstallPreview) async -> Outcome {
+        await apply(preview, allowOlder: false, data: .keepCurrent)
+    }
+
+    private func apply(_ preview: InstallPreview, allowOlder: Bool, data choice: DataChoice) async -> Outcome {
         let id = preview.manifest.id
         guard let record = await engine.registry.record(id), let oldVersion = SemanticVersion(record.version) else {
             return .rolledBack(stillUsing: preview.manifest.version, error: RuyioError(.pluginNotFound, objectID: id.rawValue))
@@ -71,9 +128,10 @@ public actor UpdateCoordinator {
             engine.installer.discard(preview)
             return .rolledBack(stillUsing: oldVersion, error: RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "signer changed; reinstall required"))
         }
-        guard preview.manifest.version > oldVersion else {
+        guard allowOlder ? preview.manifest.version < oldVersion : preview.manifest.version > oldVersion else {
             engine.installer.discard(preview)
-            return .rolledBack(stillUsing: oldVersion, error: RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "not a newer version"))
+            return .rolledBack(stillUsing: oldVersion, error: RuyioError(.sourceInvalid, objectID: id.rawValue,
+                                                                       diagnostic: allowOlder ? "not an older version" : "not a newer version"))
         }
         var journal = Journal(id: UUID().uuidString.lowercased(), pluginID: id, phase: .prepared, oldVersion: record.version,
                               newVersion: preview.manifest.version.description, oldGeneration: record.dataGeneration,
@@ -88,8 +146,25 @@ public actor UpdateCoordinator {
             try await engine.registry.setActivation(id, .disabling)
             await engine.supervisor.unregister(id)
 
-            // backedUp: consistent copy of the stopped store into the candidate generation.
-            try copyGeneration(pluginID: id, development: record.isDevelopment, from: journal.oldGeneration, to: journal.newGeneration)
+            // backedUp: the candidate generation starts from current data, a matching snapshot, or nothing.
+            let root = engine.services.stores.dataRoot(pluginID: id, development: record.isDevelopment)
+            journal.newGeneration = max(record.dataGeneration, Self.highestGeneration(in: root)) + 1
+            try write(journal)
+            switch choice {
+            case .keepCurrent:
+                try copyGeneration(pluginID: id, development: record.isDevelopment, from: journal.oldGeneration, to: journal.newGeneration)
+            case .snapshot(let generation, _):
+                try copyGeneration(pluginID: id, development: record.isDevelopment, from: generation, to: journal.newGeneration)
+            case .fresh:
+                try FileManager.default.createDirectory(at: root.appendingPathComponent(String(journal.newGeneration)), withIntermediateDirectories: true)
+            }
+            // The old generation is kept and labelled so it can serve as a compatible snapshot later.
+            if let current = try? record.decodedManifest(), Self.readGenerationInfo(root.appendingPathComponent(String(journal.oldGeneration))) == nil {
+                Self.writeGenerationInfo(GenerationInfo(storageSchemaVersion: current.storageSchemaVersion, pluginVersion: record.version, createdAt: Date()),
+                                         to: root.appendingPathComponent(String(journal.oldGeneration)))
+            }
+            Self.writeGenerationInfo(GenerationInfo(storageSchemaVersion: preview.manifest.storageSchemaVersion, pluginVersion: preview.manifest.version.description,
+                                                    createdAt: Date()), to: root.appendingPathComponent(String(journal.newGeneration)))
             journal.phase = .backedUp
             try write(journal)
 
@@ -184,6 +259,10 @@ public actor UpdateCoordinator {
         try? write(journal)
     }
 
+    static func highestGeneration(in root: URL) -> Int {
+        ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).compactMap(Int.init).max() ?? 0
+    }
+
     private func cleanup(_ journal: Journal) {
         // Old backup is removed only after the new version is healthy (plan §15.2 step 8).
         if journal.oldInstallPath != journal.newInstallPath {
@@ -200,6 +279,7 @@ public actor UpdateCoordinator {
         if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         guard fm.fileExists(atPath: source.appendingPathComponent("Store.sqlite").path) else { return }
+        defer { try? fm.removeItem(at: destination.appendingPathComponent("generation.json")) }
         // SQLite online backup, never a raw copy of a live db/WAL pair.
         let store = try engine.services.stores.store(pluginID: pluginID, generation: old, development: development)
         try store.backup(to: destination.appendingPathComponent("Store.sqlite"))
