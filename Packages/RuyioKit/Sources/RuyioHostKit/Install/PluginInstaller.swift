@@ -130,8 +130,10 @@ public final class PluginInstaller: Sendable {
         // The signed inner manifest is authoritative; the outer copy must match byte for byte (plan §7.1).
         check("manifest", innerData == outerData, "outer and signed manifest differ")
 
-        let compatible = manifest.minimumMacOSVersion <= OSVersion.current && manifest.minimumHostVersion.precedence(comparedTo: HostInfo.version) != .orderedDescending
+        let osOK = manifest.minimumMacOSVersion <= OSVersion.current
+        let hostOK = manifest.minimumHostVersion.precedence(comparedTo: HostInfo.version) != .orderedDescending
             || (HostInfo.version.isPrerelease && manifest.minimumHostVersion.major <= HostInfo.version.major)
+        let compatible = osOK && hostOK
         check("compatibility", compatible, "requires macOS \(manifest.minimumMacOSVersion) / host \(manifest.minimumHostVersion)")
 
         let executable = packageRoot.appendingPathComponent(manifest.executable)
@@ -179,8 +181,12 @@ public final class PluginInstaller: Sendable {
         let agent = (plist["LSUIElement"] as? Bool) == true || (plist["LSUIElement"] as? String) == "1"
             || (plist["LSBackgroundOnly"] as? Bool) == true
         if !agent { problems.append("LSUIElement required") }
-        let executableName = (manifest.executable as NSString).lastPathComponent
-        if (plist["CFBundleExecutable"] as? String) != executableName { problems.append("CFBundleExecutable mismatch") }
+        // The launched file must be exactly the bundle's main executable, the one the signature checks cover.
+        if let main = plist["CFBundleExecutable"] as? String, !main.contains("/") {
+            if manifest.executable != manifest.bundlePath + "/Contents/MacOS/" + main { problems.append("executable is not the bundle's main executable") }
+        } else {
+            problems.append("CFBundleExecutable missing or invalid")
+        }
         let forbidden = ["CFBundleURLTypes", "CFBundleDocumentTypes", "UTExportedTypeDeclarations", "UTImportedTypeDeclarations",
                          "NSServices", "NSExtension", "LSEnvironment", "OSAScriptingDefinition", "SMPrivilegedExecutables"]
         for key in forbidden where plist[key] != nil { problems.append("forbidden key \(key)") }

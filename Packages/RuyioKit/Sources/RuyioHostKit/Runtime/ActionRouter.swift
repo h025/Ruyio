@@ -115,7 +115,7 @@ public actor ActionRouter {
         do {
             let session = try await supervisor.acquireLease(ref.pluginID)
             running[execution] = (ref, session)
-            defer { Task { await supervisor.release(ref.pluginID) } }
+            defer { Task { await supervisor.release(session) } }
             let result = try await session.invoke(invocation, execution: execution, operation: operation, registryGeneration: generation, timeout: timeout)
             if result.state == .succeeded { try? database.recordUsage(ref) }
             return report(result.state, result.output, result.error, op: operation)
@@ -158,10 +158,11 @@ public actor ActionRouter {
     private func releaseGate(_ key: String) {
         if var waiters = gateWaiters[key], !waiters.isEmpty {
             let next = waiters.removeFirst()
-            gateWaiters[key] = waiters
+            gateWaiters[key] = waiters.isEmpty ? nil : waiters
             next.resume()
         } else {
-            gates[key] = 0
+            gates[key] = nil
+            gateWaiters[key] = nil
         }
     }
 }

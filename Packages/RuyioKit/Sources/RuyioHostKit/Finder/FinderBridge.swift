@@ -181,6 +181,37 @@ public final class FinderBridge: @unchecked Sendable {
             reject?(request, RuyioError(.invalidRequest))
             return
         }
+        // Re-validate against the current snapshot, not the one the extension clicked on (plan §13.1–13.2):
+        // the action must still be offered, apply to the real target and selection, and a dynamic child
+        // must still be a live, non-excluded item.
+        let current = buildSnapshot()
+        guard let group = current.groups.first(where: { $0.pluginID == request.pluginID }),
+              let item = group.items.first(where: { $0.actionID == request.actionID }) else {
+            reject?(request, RuyioError(.contextExpired, recovery: .retry, diagnostic: "action no longer offered"))
+            return
+        }
+        let isDirectory: (URL) -> Bool = { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        let directories = selection.filter(isDirectory)
+        let context = FinderContextMatcher.Context(
+            targetIsDirectory: target.map(isDirectory) ?? false, selectionCount: selection.count,
+            selectionHasDirectories: !directories.isEmpty, selectionHasFiles: directories.count < selection.count,
+            clipboardKinds: current.clipboardKinds)
+        guard FinderContextMatcher.applies(item, to: context) else {
+            reject?(request, RuyioError(.contextExpired, recovery: .retry, diagnostic: "context no longer matches"))
+            return
+        }
+        if let child = request.dynamicItemID, item.children?.contains(where: { $0.id == child }) != true {
+            reject?(request, RuyioError(.contextExpired, recovery: .retry, diagnostic: "item no longer available"))
+            return
+        }
+        if item.children != nil && request.dynamicItemID == nil {
+            reject?(request, RuyioError(.invalidRequest))
+            return
+        }
+        if item.requiresWritableTarget, let target, !FileManager.default.isWritableFile(atPath: target.path) {
+            reject?(request, RuyioError(.fileAccessDenied, objectID: target.lastPathComponent, recovery: .openSystemSettings))
+            return
+        }
         let invocation = InvocationRequest(ref: ActionRef(pluginID: pluginID, actionID: actionID), entry: .finderContextMenu,
                                            finder: FinderTargets(targetDirectory: target, selection: selection, dynamicItemID: request.dynamicItemID))
         if let handler { Task { await handler(request, invocation) } }

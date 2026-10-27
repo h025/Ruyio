@@ -85,3 +85,64 @@ struct UpdateTests {
         await engine.shutdown()
     }
 }
+
+@Suite(.serialized)
+struct ReviewRegressionTests {
+    @Test func terminalNeverReceivesFiles() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("term-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("run.command")
+        try "echo hi".write(to: file, atomically: true, encoding: .utf8)
+        #expect(try HostServices.terminalDirectory(for: file).standardizedFileURL == dir.standardizedFileURL)
+        #expect(try HostServices.terminalDirectory(for: dir).standardizedFileURL == dir.standardizedFileURL)
+        let link = dir.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        #expect(throws: RuyioError.self) { try HostServices.terminalDirectory(for: link) }
+        let app = dir.appendingPathComponent("Fake.app")
+        try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        #expect(throws: RuyioError.self) { try HostServices.terminalDirectory(for: app) }
+    }
+
+    @Test func executableMustBeTheBundleMainExecutable() {
+        var manifest = PackageFixture.manifest()
+        manifest.executable = "Test.app/Contents/MacOS/Other/RuyioTestPlugin"
+        let problems = PluginInstaller.infoPlistViolations(["CFBundleExecutable": "RuyioTestPlugin", "LSUIElement": true], manifest: manifest)
+        #expect(problems.contains("executable is not the bundle's main executable"))
+        #expect(PluginInstaller.infoPlistViolations(["CFBundleExecutable": "RuyioTestPlugin", "LSUIElement": true], manifest: PackageFixture.manifest()).isEmpty)
+    }
+
+    @Test func recoveryAfterCommitBeforeJournalKeepsNewVersion() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(UUID().uuidString)")
+        let paths = AppPaths(applicationSupport: base.appendingPathComponent("S"), caches: base.appendingPathComponent("C"))
+        try paths.ensureDirectories()
+        let engine = try HostEngine(paths: paths, locale: "en")
+        engine.setBridge(TestBridge())
+        let id = PluginID("org.ruyio.test-plugin")
+        try await engine.start(bundledPackages: [try PackageFixture.build(version: "1.0.0")])
+        let old = try #require(await engine.registry.record(id))
+        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
+        _ = await engine.updater.update(with: preview)
+        let committed = try #require(await engine.registry.record(id))
+        #expect(committed.version == "1.1.0")
+        // Simulate a crash between the Host.sqlite commit and the journal write.
+        let journal = UpdateCoordinator.Journal(id: "late", pluginID: id, phase: .ready, oldVersion: "1.0.0", newVersion: "1.1.0",
+                                                oldGeneration: 1, newGeneration: committed.dataGeneration, oldInstallPath: old.installPath,
+                                                oldExecutablePath: old.executablePath, newInstallPath: committed.installPath,
+                                                wasEnabled: true, updatedAt: Date(), oldRecord: old)
+        try JSONCoding.encoder().encode(journal).write(to: paths.transactionsRoot.appendingPathComponent("late.json"))
+        await engine.updater.recover()
+        let after = try #require(await engine.registry.record(id))
+        #expect(after.version == "1.1.0")
+        #expect(FileManager.default.fileExists(atPath: after.executablePath))
+        #expect(FileManager.default.fileExists(atPath: engine.services.stores.dataRoot(pluginID: id, development: false).appendingPathComponent(String(after.dataGeneration)).path))
+        await engine.shutdown()
+    }
+
+    @Test func uploadStagingIsBounded() throws {
+        let store = try PluginStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("up-\(UUID().uuidString)"))
+        let chunk = Data(count: 1024)
+        _ = try store.appendUpload(BlobPutRequest(uploadID: nil, chunk: chunk, isFinal: false))
+        _ = try store.appendUpload(BlobPutRequest(uploadID: nil, chunk: chunk, isFinal: false))
+        #expect(throws: RuyioError.self) { _ = try store.appendUpload(BlobPutRequest(uploadID: nil, chunk: chunk, isFinal: false)) }
+    }
+}

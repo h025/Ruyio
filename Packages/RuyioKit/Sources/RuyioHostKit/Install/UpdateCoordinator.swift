@@ -25,6 +25,8 @@ public actor UpdateCoordinator {
         public var newInstallPath: String?
         public var wasEnabled: Bool
         public var updatedAt: Date
+        /// The committed record before the update; rollback restores exactly this.
+        public var oldRecord: InstalledPluginRecord?
     }
 
     public enum Outcome: Sendable, Equatable {
@@ -77,7 +79,7 @@ public actor UpdateCoordinator {
                               newVersion: preview.manifest.version.description, oldGeneration: record.dataGeneration,
                               newGeneration: record.dataGeneration + 1, oldInstallPath: record.installPath,
                               oldExecutablePath: record.executablePath, newInstallPath: nil,
-                              wasEnabled: record.enabledPreference, updatedAt: Date())
+                              wasEnabled: record.enabledPreference, updatedAt: Date(), oldRecord: record)
         do {
             try write(journal)
             // quiescing: stop new invocations, finish or cancel work, stop the process.
@@ -102,7 +104,11 @@ public actor UpdateCoordinator {
                                        isDevelopment: record.isDevelopment)
                 let session = PluginSession(info: info, executable: URL(fileURLWithPath: newRecord.executablePath), services: engine.services)
                 try await session.start(locale: engine.locale, firstLaunch: true)
-                guard await session.ping() else { throw RuyioError(.handshakeFailed, objectID: id.rawValue, diagnostic: "\(mode.rawValue) check failed") }
+                guard await session.ping() else {
+                    // Never leave a hung migration process writing into the candidate being discarded.
+                    await session.kill()
+                    throw RuyioError(.handshakeFailed, objectID: id.rawValue, diagnostic: "\(mode.rawValue) check failed")
+                }
                 await session.stop()
                 journal.phase = mode == .migration ? .migrated : .ready
                 try write(journal)
@@ -143,7 +149,12 @@ public actor UpdateCoordinator {
             case .rolledBack, .failed:
                 try? FileManager.default.removeItem(at: file)
             default:
-                if let record = await engine.registry.record(journal.pluginID) {
+                guard let record = await engine.registry.record(journal.pluginID) else { continue }
+                // The Host.sqlite switch is the commit point: if it already happened, finish, never roll back.
+                if record.version == journal.newVersion && record.dataGeneration == journal.newGeneration {
+                    if journal.wasEnabled { _ = await engine.enable(journal.pluginID, userInitiated: false) }
+                    cleanup(journal)
+                } else {
                     await rollback(journal, record: record)
                 }
             }
@@ -152,8 +163,9 @@ public actor UpdateCoordinator {
 
     // MARK: Internals
 
-    private func rollback(_ journal: Journal, record: InstalledPluginRecord) async {
+    private func rollback(_ journal: Journal, record current: InstalledPluginRecord) async {
         var journal = journal
+        let record = journal.oldRecord ?? current
         // Old code and old data generation are still the committed state; discard the candidates.
         let candidate = engine.services.stores.dataRoot(pluginID: journal.pluginID, development: record.isDevelopment)
             .appendingPathComponent(String(journal.newGeneration))

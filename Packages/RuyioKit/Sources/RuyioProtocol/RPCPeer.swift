@@ -21,6 +21,9 @@ public final class RPCPeer: @unchecked Sendable {
     private var pending: [String: CheckedContinuation<Envelope, Error>] = [:]
     private var closed = false
     private var started = false
+    /// Guarded by `writeQueue`: once set, no write ever touches the (possibly reused) descriptor number.
+    private var writeClosed = false
+    private var inboundInFlight = 0
     private var onRequest: RequestHandler?
     private var onEvent: EventHandler?
     private var onClose: CloseHandler?
@@ -134,10 +137,20 @@ public final class RPCPeer: @unchecked Sendable {
         waiting = Array(pending.values)
         pending.removeAll()
         handler = onClose
+        let readerRunning = started
         lock.unlock()
 
-        Darwin.close(readFD)
-        writeQueue.sync { _ = Darwin.close(writeFD) }
+        if readerRunning {
+            // Keep the number reserved: point it at /dev/null so the reader sees EOF and closes it itself.
+            let devNull = open("/dev/null", O_RDONLY)
+            if devNull >= 0 { dup2(devNull, readFD); Darwin.close(devNull) }
+        } else {
+            Darwin.close(readFD)
+        }
+        writeQueue.sync {
+            writeClosed = true
+            _ = Darwin.close(writeFD)
+        }
         let error = reason ?? RuyioError(.pluginCrashed, diagnostic: "connection closed")
         for continuation in waiting { continuation.resume(throwing: error) }
         handler?(reason)
@@ -149,6 +162,10 @@ public final class RPCPeer: @unchecked Sendable {
         let frame = try Framing.encode(envelope)
         var failure: Error?
         writeQueue.sync {
+            if writeClosed {
+                failure = RuyioError(.pluginCrashed, diagnostic: "connection closed")
+                return
+            }
             frame.withUnsafeBytes { raw in
                 guard var pointer = raw.baseAddress else { return }
                 var remaining = raw.count
@@ -165,7 +182,7 @@ public final class RPCPeer: @unchecked Sendable {
             }
         }
         if let failure {
-            close(reason: failure as? RuyioError)
+            if !isClosed { close(reason: failure as? RuyioError) }
             throw failure
         }
     }
@@ -178,6 +195,8 @@ public final class RPCPeer: @unchecked Sendable {
     }
 
     private func readLoop() {
+        // The reader owns the read descriptor's final close (see `close`).
+        defer { Darwin.close(readFD) }
         var decoder = FrameDecoder()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
@@ -224,7 +243,18 @@ public final class RPCPeer: @unchecked Sendable {
                 reply(to: envelope, payload: .null, error: RuyioError(.invalidRequest, diagnostic: "method not allowed: \(envelope.method)"))
                 return
             }
+            // Inbound requests are bounded like outbound ones (plan §8.2: ≤ 16 in flight per connection).
+            let admitted = lock.withLock { () -> Bool in
+                guard inboundInFlight < maxInFlight else { return false }
+                inboundInFlight += 1
+                return true
+            }
+            guard admitted else {
+                reply(to: envelope, payload: .null, error: RuyioError(.invalidRequest, retryable: true, diagnostic: "too many in-flight requests"))
+                return
+            }
             Task {
+                defer { lock.withLock { inboundInFlight -= 1 } }
                 do {
                     let payload = try await requestHandler(envelope)
                     reply(to: envelope, payload: payload, error: nil)

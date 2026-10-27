@@ -17,6 +17,12 @@ struct FinderBridgeTests {
 
     @Test func consumesValidRequestOnceAndRejectsExpiredOrForeignVersion() async throws {
         let bridge = bridge()
+        let plugin = PluginID("app.ruyio.finder-essentials")
+        let contexts = FinderContexts(targets: ["file", "directory"], selection: ["single", "multiple"])
+        bridge.update(projection: EntryProjection(generation: 3, commands: [], hotkeys: [], menuBar: [], finder: [
+            FinderGroupEntry(pluginID: plugin, title: "Finder Essentials", items: [
+                FinderItemEntry(ref: ActionRef(pluginID: plugin, actionID: ActionID("copy-path")), title: "Copy Full Path", contexts: contexts,
+                                childrenProvider: nil, visible: true, order: 0)], order: 0)]), locale: "en", strings: [:])
         let received = LockedBox<[InvocationRequest]>([])
         let rejected = LockedBox<[ErrorCode]>([])
         bridge.onRequest({ _, invocation in received.value.append(invocation) }, rejected: { _, error in rejected.value.append(error.code) })
@@ -42,6 +48,30 @@ struct FinderBridgeTests {
         #expect(received.value.first?.entry == .finderContextMenu)
         #expect(Set(rejected.value) == [.contextExpired, .incompatibleProtocol])
         #expect(try FileManager.default.contentsOfDirectory(atPath: bridge.requestsURL.path).isEmpty)
+    }
+
+    @Test func rejectsActionsNoLongerOfferedOrWithStaleDynamicItems() async throws {
+        let bridge = bridge()
+        let rejected = LockedBox<[ErrorCode]>([])
+        let received = LockedBox<Int>(0)
+        bridge.onRequest({ _, _ in received.value += 1 }, rejected: { _, error in rejected.value.append(error.code) })
+        let plugin = PluginID("app.ruyio.clipboard-history")
+        bridge.update(projection: EntryProjection(generation: 1, commands: [], hotkeys: [], menuBar: [], finder: [
+            FinderGroupEntry(pluginID: plugin, title: "Clipboard", items: [
+                FinderItemEntry(ref: ActionRef(pluginID: plugin, actionID: ActionID("paste-recent")), title: "Save",
+                                contexts: FinderContexts(targets: ["directory"], selection: ["none"]), childrenProvider: "recentItems", visible: true, order: 0)],
+                             order: 0)]), locale: "en", strings: [:])
+        bridge.update(dynamicItems: DynamicItemsReport(provider: "recentItems", items: [.init(id: "r1", title: "Text · 10:00", kind: "text")]), pluginID: plugin)
+        let dir = FileManager.default.temporaryDirectory.path
+        // Excluded / deleted record: not among the current children any more.
+        try write(FinderRequest(pluginID: plugin.rawValue, actionID: "paste-recent", dynamicItemID: "gone", targetDirectory: dir, selection: [], snapshotGeneration: 1), to: bridge)
+        // Unknown action.
+        try write(FinderRequest(pluginID: plugin.rawValue, actionID: "delete-everything", dynamicItemID: nil, targetDirectory: dir, selection: [], snapshotGeneration: 1), to: bridge)
+        // Valid.
+        try write(FinderRequest(pluginID: plugin.rawValue, actionID: "paste-recent", dynamicItemID: "r1", targetDirectory: dir, selection: [], snapshotGeneration: 1), to: bridge)
+        bridge.drainQueue()
+        #expect(await Fixture.waitUntil(timeout: .seconds(2)) { received.value == 1 })
+        #expect(rejected.value == [.contextExpired, .contextExpired])
     }
 
     @Test func snapshotCarriesOnlyMetadataAndHidesEmptyDynamicGroups() throws {

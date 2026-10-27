@@ -426,15 +426,31 @@ public final class PluginStore: Sendable {
 final class UploadTable: @unchecked Sendable {
     private let lock = NSLock()
     private var sizes: [String: Int] = [:]
+    private var started: [String: Date] = [:]
+    private var files: [String: URL] = [:]
+    /// Plan §11.5: at most 2 concurrent uploads, 128 MiB staged per plugin, abandoned after 10 minutes.
+    static let maxActive = 2
+    static let maxStagedBytes = 128 << 20
+    static let expiry: TimeInterval = 600
 
     func append(id: String, data: Data, to url: URL, limit: Int) throws -> Int {
         try lock.withLock {
-            let current = sizes[id] ?? 0
-            guard current + data.count <= limit else {
-                sizes[id] = nil
-                try? FileManager.default.removeItem(at: url)
-                throw RuyioError(.storageQuotaExceeded, diagnostic: "upload exceeds \(limit) bytes")
+            let now = Date()
+            for (key, date) in started where now.timeIntervalSince(date) > Self.expiry && key != id {
+                if let file = files[key] { try? FileManager.default.removeItem(at: file) }
+                sizes[key] = nil; started[key] = nil; files[key] = nil
             }
+            let current = sizes[id] ?? 0
+            if current == 0 && sizes.count >= Self.maxActive {
+                throw RuyioError(.storageQuotaExceeded, retryable: true, diagnostic: "too many concurrent uploads")
+            }
+            let staged = sizes.values.reduce(0, +)
+            guard current + data.count <= limit, staged + data.count <= Self.maxStagedBytes else {
+                sizes[id] = nil; started[id] = nil; files[id] = nil
+                try? FileManager.default.removeItem(at: url)
+                throw RuyioError(.storageQuotaExceeded, diagnostic: "upload exceeds staging limits")
+            }
+            if current == 0 { started[id] = now; files[id] = url }
             if current == 0 {
                 guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
                     throw RuyioError(.storageFailure, diagnostic: "cannot create upload")
@@ -451,6 +467,10 @@ final class UploadTable: @unchecked Sendable {
     }
 
     func finish(id: String) throws {
-        lock.withLock { _ = sizes.removeValue(forKey: id) }
+        lock.withLock {
+            sizes[id] = nil
+            started[id] = nil
+            files[id] = nil
+        }
     }
 }

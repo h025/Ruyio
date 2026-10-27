@@ -35,6 +35,7 @@ public final class HostEngine: @unchecked Sendable {
     private var _locale: String
     private var _developerMode = false
     private var _availableUpdates: [PluginID: AvailableUpdate] = [:]
+    private var viewSessions: [String: PluginSession] = [:]
 
     public init(paths: AppPaths, locale: String, fetcher: any RemoteFetching = SourceFetcher()) throws {
         self.paths = paths
@@ -389,9 +390,15 @@ public final class HostEngine: @unchecked Sendable {
         }
         let session = try await supervisor.acquireLease(pluginID)
         do {
-            return try await session.openView(ViewOpenRequest(viewID: viewID, parameters: parameters, locale: locale))
+            let document = try await session.openView(ViewOpenRequest(viewID: viewID, parameters: parameters, locale: locale))
+            let previous = lock.withLock { () -> PluginSession? in
+                defer { viewSessions["\(pluginID)/\(viewID)"] = session }
+                return viewSessions["\(pluginID)/\(viewID)"]
+            }
+            if let previous { await supervisor.release(previous) }
+            return document
         } catch {
-            await supervisor.release(pluginID)
+            await supervisor.release(session)
             throw error
         }
     }
@@ -404,8 +411,9 @@ public final class HostEngine: @unchecked Sendable {
     }
 
     public func closeView(pluginID: PluginID, viewID: String) async {
-        if let session = await supervisor.session(for: pluginID) { session.closeView(viewID) }
-        await supervisor.release(pluginID)
+        guard let session = lock.withLock({ viewSessions.removeValue(forKey: "\(pluginID)/\(viewID)") }) else { return }
+        session.closeView(viewID)
+        await supervisor.release(session)
     }
 
     public func refreshDynamicItems(pluginID: PluginID, provider: String) async {

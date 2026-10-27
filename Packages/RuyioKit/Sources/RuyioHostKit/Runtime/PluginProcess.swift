@@ -31,7 +31,9 @@ public final class PluginProcess: @unchecked Sendable {
     public static func spawn(executable: URL, options: Options = Options()) throws -> PluginProcess {
         var toChild: [Int32] = [-1, -1]
         var fromChild: [Int32] = [-1, -1]
-        guard pipe(&toChild) == 0, pipe(&fromChild) == 0 else {
+        guard pipe(&toChild) == 0 else { throw RuyioError(.pluginLaunchFailed, diagnostic: "pipe errno=\(errno)") }
+        guard pipe(&fromChild) == 0 else {
+            close(toChild[0]); close(toChild[1])
             throw RuyioError(.pluginLaunchFailed, diagnostic: "pipe errno=\(errno)")
         }
 
@@ -85,7 +87,16 @@ public final class PluginProcess: @unchecked Sendable {
         DispatchQueue.global().async { [weak self] in self?.reapIfExited() }
     }
 
-    deinit { exitSource.cancel() }
+    deinit {
+        exitSource.cancel()
+        // Never leave a running or unreaped child behind when the owner goes away.
+        if !hasExited {
+            let pid = self.pid
+            killpg(pid, SIGKILL)
+            kill(pid, SIGKILL)
+            DispatchQueue.global().async { var status: Int32 = 0; _ = waitpid(pid, &status, 0) }
+        }
+    }
 
     public var hasExited: Bool { lock.withLock { exitStatus != nil } }
 

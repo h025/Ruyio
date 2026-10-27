@@ -78,7 +78,7 @@ struct PluginProcessTests {
     @Test func handshakeAndInvoke() async throws {
         let services = FakeServices()
         let session = Fixture.session(services)
-        try await session.start(locale: "zh-Hans")
+        try await session.start(locale: "zh-Hans", firstLaunch: true)
         let result = try await session.invoke(Fixture.invocation("echo", ["text": "hi"]), execution: ExecutionID(), operation: nil, registryGeneration: 1)
         #expect(result.state == .succeeded)
         #expect(result.output == .notice("echo:hi:zh-Hans"))
@@ -91,7 +91,7 @@ struct PluginProcessTests {
         var manifest = Fixture.manifest()
         manifest.id = PluginID("org.ruyio.someone-else")
         let session = Fixture.session(services, manifest: manifest)
-        await #expect(throws: RuyioError.self) { try await session.start(locale: "en") }
+        await #expect(throws: RuyioError.self) { try await session.start(locale: "en", firstLaunch: true) }
         #expect(!session.isAlive)
     }
 
@@ -100,7 +100,7 @@ struct PluginProcessTests {
         var manifest = Fixture.manifest()
         manifest.version = SemanticVersion("2.0.0")!
         let session = Fixture.session(services, manifest: manifest)
-        await #expect(throws: RuyioError.self) { try await session.start(locale: "en") }
+        await #expect(throws: RuyioError.self) { try await session.start(locale: "en", firstLaunch: true) }
     }
 
     @Test func crashIsIsolatedAndReported() async throws {
@@ -108,7 +108,7 @@ struct PluginProcessTests {
         let session = Fixture.session(services)
         let reported = LockedBox<RuyioError?>(nil)
         session.onTermination { reported.value = $0 }
-        try await session.start(locale: "en")
+        try await session.start(locale: "en", firstLaunch: true)
         await #expect(throws: RuyioError.self) {
             _ = try await session.invoke(Fixture.invocation("crash"), execution: ExecutionID(), operation: nil, registryGeneration: 1)
         }
@@ -120,7 +120,7 @@ struct PluginProcessTests {
     @Test func pluginExitsWhenHostClosesChannelEvenIfMainThreadBlocked() async throws {
         let services = FakeServices()
         let session = Fixture.session(services)
-        try await session.start(locale: "en")
+        try await session.start(locale: "en", firstLaunch: true)
         _ = try await session.invoke(Fixture.invocation("block-main"), execution: ExecutionID(), operation: nil, registryGeneration: 1)
         let pid = try #require(session.pid)
         #expect(Fixture.isAlive(pid))
@@ -132,7 +132,7 @@ struct PluginProcessTests {
     @Test func storageRoundTripThroughHost() async throws {
         let services = FakeServices()
         let session = Fixture.session(services)
-        try await session.start(locale: "en")
+        try await session.start(locale: "en", firstLaunch: true)
         let result = try await session.invoke(Fixture.invocation("storage"), execution: ExecutionID(), operation: nil, registryGeneration: 1)
         #expect(result.output == .notice("中文内容"))
         await session.stop()
@@ -141,7 +141,7 @@ struct PluginProcessTests {
     @Test func undeclaredCapabilityIsRejected() async throws {
         let services = FakeServices()
         let session = Fixture.session(services)
-        try await session.start(locale: "en")
+        try await session.start(locale: "en", firstLaunch: true)
         let result = try await session.invoke(Fixture.invocation("undeclared-capability"), execution: ExecutionID(), operation: nil, registryGeneration: 1)
         #expect(result.state == .failed)
         #expect(result.error?.code == .permissionNotDeclared)
@@ -151,7 +151,7 @@ struct PluginProcessTests {
     @Test func cancelStopsLongAction() async throws {
         let services = FakeServices()
         let session = Fixture.session(services)
-        try await session.start(locale: "en")
+        try await session.start(locale: "en", firstLaunch: true)
         let execution = ExecutionID()
         async let result = session.invoke(Fixture.invocation("slow"), execution: execution, operation: nil, registryGeneration: 1, timeout: .seconds(20))
         try await Task.sleep(for: .milliseconds(200))

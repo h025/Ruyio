@@ -69,6 +69,8 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
     private weak var bridge: SystemBridge?
     private let lock = NSLock()
     private var eventSinks: [@Sendable (Envelope, SessionInfo) -> Void] = []
+    /// Blocking SQLite work runs here, never on the cooperative thread pool.
+    private let storageQueue = DispatchQueue(label: "ruyio.storage", qos: .userInitiated, attributes: .concurrent)
 
     public init(stores: StoreProvider, fileBroker: FileBroker, contexts: InvocationContexts, database: HostDatabase, bridge: SystemBridge?) {
         self.stores = stores
@@ -91,7 +93,11 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
 
     public func handleRequest(_ envelope: Envelope, session: SessionInfo) async throws -> JSONValue {
         if envelope.method.hasPrefix(Method.storagePrefix) {
-            return try handleStorage(envelope, session: session)
+            return try await withCheckedThrowingContinuation { continuation in
+                storageQueue.async {
+                    continuation.resume(with: Result { try self.handleStorage(envelope, session: session) })
+                }
+            }
         }
         if envelope.method.hasPrefix(Method.capabilityPrefix) {
             // Migration and health sessions get no side-effect capabilities (plan §8.3).
@@ -179,7 +185,8 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
 
         case CapabilityMethod.openTerminalDirectory:
             let request = try JSONCoding.decode(DirectoryRequest.self, from: envelope.payload)
-            let urls = try request.directories.map { try contexts.resolve($0, for: pluginID) }
+            // Terminal only ever receives directories: files map to their parent; links and packages are refused.
+            let urls = try request.directories.map { try Self.terminalDirectory(for: try contexts.resolve($0, for: pluginID)) }
             let unique = Array(Set(urls.map(\.standardizedFileURL))).sorted { $0.path < $1.path }
             guard !unique.isEmpty else { throw RuyioError(.invalidRequest) }
             if unique.count > 1, !(await bridge.confirmBatch(title: "terminal", count: unique.count)) {
@@ -219,10 +226,12 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
             return try JSONCoding.value(reply)
 
         case CapabilityMethod.fileReveal:
-            // Only paths this plugin legitimately produced or was handed may be revealed.
+            // Only files this plugin created through the file broker may be revealed.
             let request = try JSONCoding.decode(RevealRequest.self, from: envelope.payload)
-            let urls = request.paths.prefix(64).map { URL(fileURLWithPath: $0).standardizedFileURL }
-            await bridge.reveal(Array(urls))
+            let allowed = fileBroker.revealablePaths(for: pluginID)
+            let urls = request.paths.prefix(64).filter { allowed.contains($0) }.map { URL(fileURLWithPath: $0) }
+            guard !urls.isEmpty else { throw RuyioError(.permissionDenied, diagnostic: "path not produced by this plugin") }
+            await bridge.reveal(urls)
             return .null
 
         case CapabilityMethod.finderToggleHiddenFiles:
@@ -230,6 +239,22 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
 
         default:
             throw RuyioError(.invalidRequest, diagnostic: envelope.method)
+        }
+    }
+
+    static func terminalDirectory(for url: URL) throws -> URL {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { throw RuyioError(.contextExpired, objectID: url.lastPathComponent) }
+        switch info.st_mode & S_IFMT {
+        case S_IFDIR:
+            if (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) == true {
+                throw RuyioError(.invalidRequest, objectID: url.lastPathComponent, diagnostic: "packages cannot be opened in Terminal")
+            }
+            return url
+        case S_IFREG:
+            return url.deletingLastPathComponent()
+        default:
+            throw RuyioError(.invalidRequest, objectID: url.lastPathComponent, diagnostic: "unsupported file type for Terminal")
         }
     }
 

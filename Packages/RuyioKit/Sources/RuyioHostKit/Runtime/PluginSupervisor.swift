@@ -31,7 +31,10 @@ public actor PluginSupervisor {
     private var sessions: [PluginID: PluginSession] = [:]
     private var starting: [PluginID: Task<PluginSession, Error>] = [:]
     private var specs: [PluginID: PluginLaunchSpec] = [:]
-    private var leases: [PluginID: Int] = [:]
+    /// Leases are counted per session object so a stale holder can never release a newer session (R-review P2-7).
+    private var leases: [ObjectIdentifier: Int] = [:]
+    /// Bumped by stop/unregister; a start that finishes after a stop is discarded.
+    private var stopEpoch: [PluginID: Int] = [:]
     private var crashHandler: CrashHandler?
     private var stateHandler: ProcessStateHandler?
     private var locale: String
@@ -55,6 +58,8 @@ public actor PluginSupervisor {
     public func unregister(_ id: PluginID) async {
         specs[id] = nil
         await stop(id)
+        // A start already in flight finishes and is then discarded by the epoch check.
+        if let pending = starting[id] { _ = try? await pending.value }
     }
 
     public func isRunning(_ id: PluginID) -> Bool { sessions[id]?.isAlive == true }
@@ -74,12 +79,18 @@ public actor PluginSupervisor {
                                dataGeneration: spec.dataGeneration, isDevelopment: spec.isDevelopment)
         let session = PluginSession(info: info, executable: spec.executable, services: services)
         let locale = self.locale
+        let epoch = stopEpoch[id, default: 0]
         let firstLaunch = !launchedOnce.contains(id)
         let task = Task { try await session.start(locale: locale, firstLaunch: firstLaunch); return session }
         starting[id] = task
         do {
             let started = try await task.value
             starting[id] = nil
+            guard specs[id] != nil, stopEpoch[id, default: 0] == epoch else {
+                await started.stop()
+                stateHandler?(id, .stopped)
+                throw RuyioError(.pluginNotInvocable, objectID: id.rawValue, diagnostic: "stopped while starting")
+            }
             launchedOnce.insert(id)
             sessions[id] = started
             started.onTermination { [weak self] error in
@@ -97,26 +108,28 @@ public actor PluginSupervisor {
 
     /// Keeps the plugin alive while `body` runs (an open panel or a running action holds a lease).
     public func withLease<T: Sendable>(_ id: PluginID, _ body: @Sendable (PluginSession) async throws -> T) async throws -> T {
-        let session = try await ensureRunning(id)
-        leases[id, default: 0] += 1
-        defer { Task { await self.release(id) } }
+        let session = try await acquireLease(id)
+        defer { Task { await self.release(session) } }
         return try await body(session)
     }
 
     public func acquireLease(_ id: PluginID) async throws -> PluginSession {
         let session = try await ensureRunning(id)
-        leases[id, default: 0] += 1
+        leases[ObjectIdentifier(session), default: 0] += 1
         return session
     }
 
-    public func release(_ id: PluginID) {
-        leases[id] = max(0, (leases[id] ?? 0) - 1)
+    public func release(_ session: PluginSession) {
+        let key = ObjectIdentifier(session)
+        guard let count = leases[key] else { return }
+        leases[key] = count <= 1 ? nil : count - 1
         scheduleIdleCheck()
     }
 
     public func stop(_ id: PluginID) async {
+        stopEpoch[id, default: 0] += 1
         guard let session = sessions.removeValue(forKey: id) else { return }
-        leases[id] = nil
+        leases[ObjectIdentifier(session)] = nil
         stateHandler?(id, .stopping)
         await session.stop()
         stateHandler?(id, .stopped)
@@ -134,9 +147,9 @@ public actor PluginSupervisor {
     // MARK: Internals
 
     private func sessionEnded(_ id: PluginID, session: PluginSession, error: RuyioError?) {
+        leases[ObjectIdentifier(session)] = nil
         guard sessions[id] === session else { return }
         sessions[id] = nil
-        leases[id] = nil
         if let error {
             stateHandler?(id, .failed)
             crashHandler?(id, error)
@@ -158,7 +171,7 @@ public actor PluginSupervisor {
         var anyAlive = false
         for (id, session) in sessions {
             guard let spec = specs[id] else { continue }
-            if spec.isBackground || (leases[id] ?? 0) > 0 { anyAlive = true; continue }
+            if spec.isBackground || (leases[ObjectIdentifier(session)] ?? 0) > 0 { anyAlive = true; continue }
             if now - session.lastActivity >= Self.idleTimeout {
                 await stop(id)
             } else {

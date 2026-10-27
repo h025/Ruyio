@@ -40,6 +40,10 @@ public final class FileBroker: Sendable {
         set { delegateBox.value = newValue }
     }
     private let delegateBox = WeakBox<FileBrokerDelegate>()
+    private let revealable = RevealablePaths()
+
+    /// Files this plugin created through the broker; the only paths it may ask the host to reveal.
+    public func revealablePaths(for pluginID: PluginID) -> Set<String> { revealable.paths(for: pluginID) }
 
     public static let receiptRetention: TimeInterval = 7 * 24 * 3600
 
@@ -78,6 +82,9 @@ public final class FileBroker: Sendable {
         var stickyResolution: ConflictResolution?
         var cancelled = false
         for (index, item) in request.items.enumerated() {
+            // Once the execution has ended (timeout, cancel, disable) its grants are revoked: stop here,
+            // and report what was already committed (plan §13.3).
+            if !cancelled, (try? contexts.resolve(request.directory, for: pluginID)) == nil { cancelled = true }
             if cancelled {
                 outcomes.append(FileWriteOutcome(requestedName: item.fileName, finalPath: nil, status: .cancelled))
                 continue
@@ -133,7 +140,10 @@ public final class FileBroker: Sendable {
         // "partial" tells the caller some files exist even though the whole request did not complete.
         let effect: DataEffect = (written > 0 && written < outcomes.count) ? .partial : .unmodified
         let reply = FileWriteReply(outcomes: outcomes, dataEffect: effect)
-        record.phase = .completed
+        revealable.add(outcomes.compactMap(\.finalPath), for: pluginID)
+        // If the router already reported "outcome unknown", keep that state for the user and attach the receipt.
+        let latest = (try? database.operation(operationID)) ?? nil
+        record.phase = latest?.phase == .unknown ? .unknown : .completed
         record.receipt = String(decoding: try JSONCoding.encoder().encode(reply), as: UTF8.self)
         try database.saveOperation(record)
         return reply
@@ -262,6 +272,18 @@ public final class FileBroker: Sendable {
         default: return RuyioError(.fileWriteFailed, objectID: name, retryable: true, diagnostic: "errno \(code)")
         }
     }
+}
+
+final class RevealablePaths: @unchecked Sendable {
+    private let lock = NSLock()
+    private var byPlugin: [PluginID: [String]] = [:]
+
+    func add(_ paths: [String], for pluginID: PluginID) {
+        guard !paths.isEmpty else { return }
+        lock.withLock { byPlugin[pluginID] = Array((byPlugin[pluginID] ?? []) + paths).suffix(500) }
+    }
+
+    func paths(for pluginID: PluginID) -> Set<String> { lock.withLock { Set(byPlugin[pluginID] ?? []) } }
 }
 
 final class WeakBox<T>: @unchecked Sendable {

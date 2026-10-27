@@ -40,6 +40,7 @@ public final class PluginSession: @unchecked Sendable {
     private var peer: RPCPeer?
     private var terminationHandlers: [@Sendable (RuyioError?) -> Void] = []
     private var terminated = false
+    private var terminationReason: RuyioError?
     private var stopping = false
     private weak var services: PluginServiceHandler?
     private var _lastActivity = ContinuousClock.now
@@ -59,8 +60,14 @@ public final class PluginSession: @unchecked Sendable {
     public var isAlive: Bool { lock.withLock { !terminated && peer != nil } }
     public var lastActivity: ContinuousClock.Instant { lock.withLock { _lastActivity } }
 
+    /// Runs immediately when the session has already ended, so a fast crash is never missed.
     public func onTermination(_ handler: @escaping @Sendable (RuyioError?) -> Void) {
-        lock.withLock { terminationHandlers.append(handler) }
+        let (ended, reason) = lock.withLock { () -> (Bool, RuyioError?) in
+            if terminated { return (true, terminationReason) }
+            terminationHandlers.append(handler)
+            return (false, nil)
+        }
+        if ended { handler(reason) }
     }
 
     /// Spawns the process and completes the handshake, or throws and leaves nothing running.
@@ -240,6 +247,7 @@ public final class PluginSession: @unchecked Sendable {
         let (handlers, process, peer, wasStopping): ([@Sendable (RuyioError?) -> Void], PluginProcess?, RPCPeer?, Bool) = lock.withLock {
             if terminated { return ([], nil, nil, stopping) }
             terminated = true
+            terminationReason = stopping ? nil : reason
             let handlers = terminationHandlers
             terminationHandlers.removeAll()
             return (handlers, self.process, self.peer, stopping)
