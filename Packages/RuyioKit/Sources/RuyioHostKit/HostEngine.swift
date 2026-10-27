@@ -2,6 +2,7 @@ import Foundation
 import RuyioCore
 import RuyioPersistence
 import RuyioProtocol
+import RuyioSourceTransport
 
 /// A bundled default plugin package (plan §15.3: shipped as data inside the signed host).
 public struct BundledPackage: Sendable, Hashable {
@@ -22,6 +23,7 @@ public final class HostEngine: @unchecked Sendable {
     public let installer: PluginInstaller
     public let contexts: InvocationContexts
     public let fileBroker: FileBroker
+    public let markets: MarketService
 
     private let lock = NSLock()
     private var bundled: [PluginID: BundledPackage] = [:]
@@ -31,7 +33,7 @@ public final class HostEngine: @unchecked Sendable {
     private var _locale: String
     private var _developerMode = false
 
-    public init(paths: AppPaths, locale: String) throws {
+    public init(paths: AppPaths, locale: String, fetcher: any RemoteFetching = SourceFetcher()) throws {
         self.paths = paths
         self._locale = locale
         database = try HostDatabase(url: paths.hostDatabase)
@@ -53,6 +55,7 @@ public final class HostEngine: @unchecked Sendable {
         supervisor = PluginSupervisor(services: services, locale: locale)
         router = ActionRouter(registry: registry, supervisor: supervisor, database: database, contexts: contexts, locale: locale)
         installer = PluginInstaller(paths: paths)
+        markets = MarketService(database: database, fetcher: fetcher, installer: installer, paths: paths, registry: registry)
         stores.excludeFromBackup = { [weak database] _ in
             // PRD §23 #10 (decided A11): sensitive plugin data is excluded unless the user opts in.
             !(((try? database?.setting("data.includeInBackup", as: Bool.self)) ?? false) ?? false)
