@@ -158,7 +158,7 @@ public final class PluginStore: Sendable {
             let order = query.ascending ? "ASC" : "DESC"
             let sql = "SELECT d.collection, d.id FROM document d WHERE \(clauses.joined(separator: " AND ")) ORDER BY d.sort_key \(order), d.id \(order) LIMIT ?"
             arguments += [limit + 1]
-            let keys = try Row.fetchAll(db, sql: sql, arguments: arguments).map { (String($0[0]) ?? "", String($0[1]) ?? "") }
+            let keys = try Row.fetchAll(db, sql: sql, arguments: arguments).map { row -> (String, String) in (row[0], row[1]) }
             var documents: [StoredDocument] = []
             for (collection, id) in keys.prefix(limit) {
                 if let doc = try Self.load(db, collection: collection, id: id) { documents.append(doc) }

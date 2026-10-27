@@ -43,7 +43,7 @@ struct MainView: View {
                 Spacer()
                 VStack(alignment: .leading, spacing: 2) {
                     Text(l.tagline)
-                    Text("Ruyio \(HostInfo.version)")
+                    Text(verbatim: "Ruyio \(HostInfo.version)")
                 }
                 .font(.caption).foregroundStyle(.secondary).padding(16)
             }
@@ -164,7 +164,7 @@ struct PluginsPage: View {
                                     PluginIcon(id: item.id)
                                     VStack(alignment: .leading) {
                                         Text(item.displayName)
-                                        Text("\(item.version) · \(l.official)").font(.caption).foregroundStyle(.secondary)
+                                        Text(verbatim: "\(item.version) · \(l.official)").font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
                                     Button(l.restore) { model.restoreDefault(item.id) }

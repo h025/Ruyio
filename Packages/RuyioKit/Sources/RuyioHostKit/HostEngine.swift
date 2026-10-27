@@ -62,7 +62,7 @@ public final class HostEngine: @unchecked Sendable {
         markets = MarketService(database: database, fetcher: fetcher, installer: installer, paths: paths, registry: registry)
         stores.excludeFromBackup = { [weak database] _ in
             // PRD §23 #10 (decided A11): sensitive plugin data is excluded unless the user opts in.
-            !(((try? database?.setting("data.includeInBackup", as: Bool.self)) ?? false) ?? false)
+            !((try? database?.setting("data.includeInBackup", as: Bool.self)) ?? false)
         }
 
         services.addEventSink { [weak self] envelope, session in self?.handlePluginEvent(envelope, session: session) }

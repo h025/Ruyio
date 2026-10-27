@@ -235,7 +235,7 @@ struct GeneralPage: View {
                         Button(l.clearLogs) { model.engine.log.clear() }
                         Button(l.licenses) { if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") { NSWorkspace.shared.open(url) } }
                     }
-                    Text("Ruyio \(HostInfo.version) · macOS \(OSVersion.current) · arm64").font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: "Ruyio \(HostInfo.version) · macOS \(OSVersion.current) · arm64").font(.caption).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)

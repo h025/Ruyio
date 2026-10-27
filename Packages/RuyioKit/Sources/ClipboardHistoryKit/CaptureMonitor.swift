@@ -139,8 +139,8 @@ public final class CaptureMonitor {
     private func installObservers() {
         guard observers.isEmpty else { return }
         let ws = NSWorkspace.shared.notificationCenter
-        let suspend: (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.suspended = true; self?.evaluate() } }
-        let resume: (Notification) -> Void = { [weak self] _ in
+        let suspend: @Sendable (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.suspended = true; self?.evaluate() } }
+        let resume: @Sendable (Notification) -> Void = { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.suspended = false

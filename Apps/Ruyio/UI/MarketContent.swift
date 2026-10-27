@@ -291,7 +291,7 @@ struct PluginInstallPreviewView: View {
             Label(descriptor?.name ?? packageURL?.lastPathComponent ?? "", systemImage: "puzzlepiece.extension").font(.headline)
             if let descriptor {
                 if let description = descriptor.description { Text(description) }
-                Text("\(descriptor.id) · \(descriptor.bestRelease()?.version.description ?? l.t("无兼容版本", "No compatible release"))").font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: "\(descriptor.id) · \(descriptor.bestRelease()?.version.description ?? l.t("无兼容版本", "No compatible release"))").font(.caption).foregroundStyle(.secondary)
                 if let src = descriptor.source { Text(l.source + ": " + src + " " + l.sourceUnverified).font(.caption).foregroundStyle(.secondary) }
             }
             Text(l.t("来源：", "Source: ") + source).font(.caption).foregroundStyle(.secondary).lineLimit(2)
