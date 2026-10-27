@@ -49,6 +49,9 @@ targets:
       - target: RuyioFinderSync
         embed: true
         codeSign: true
+      - target: RuyioMediaDecoder
+        embed: true
+        codeSign: true
       - target: ClipboardHistory
         embed: false
         link: false
@@ -108,6 +111,26 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ruyio.mac.FinderSync
         PRODUCT_NAME: RuyioFinderSync
+  RuyioMediaDecoder:
+    type: xpc-service
+    platform: macOS
+    sources:
+      - path: Services/MediaDecoder
+    info:
+      path: Services/MediaDecoder/Info.plist
+      properties:
+        CFBundleDisplayName: RuyioMediaDecoder
+        XPCService:
+          ServiceType: Application
+    entitlements:
+      path: Services/MediaDecoder/MediaDecoder.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ruyio.mac.MediaDecoder
+        PRODUCT_NAME: RuyioMediaDecoder
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
   ClipboardHistory:
     type: application
     platform: macOS

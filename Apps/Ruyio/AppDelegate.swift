@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeySignature = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if CommandLine.arguments.contains("--selftest-media") { runMediaSelfTest(); return }
+        #endif
         do {
             let paths = try AppPaths.standard()
             let language = Self.initialLanguage(paths: paths)
@@ -81,6 +84,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !model.settings.onboardingCompleted { showOnboarding() }
         }
     }
+
+    #if DEBUG
+    /// Development check that untrusted image decoding really goes through the sandboxed XPC service.
+    private func runMediaSelfTest() {
+        let image = NSImage(size: NSSize(width: 640, height: 400), flipped: false) { rect in
+            NSColor.systemTeal.setFill(); rect.fill(); return true
+        }
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { print("SELFTEST png failed"); exit(1) }
+        Task {
+            let decoded = await MediaDecoderClient.shared.image(from: png, maxPixel: 256)
+            let garbage = await MediaDecoderClient.shared.image(from: Data(repeating: 0x41, count: 4096), maxPixel: 256)
+            print("SELFTEST decoded=\(decoded.map { "\(Int($0.size.width))x\(Int($0.size.height))" } ?? "nil") garbageRejected=\(garbage == nil)")
+            exit(decoded != nil && garbage == nil ? 0 : 1)
+        }
+    }
+    #endif
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 

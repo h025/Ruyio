@@ -166,6 +166,9 @@ struct UpdateSection: View {
                 }
             }
             if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
+            if summary.status.updateChannel == .descriptor || summary.status.updateChannel == .market {
+                Button(l.t("更换来源…", "Change Source…")) { changeSource() }.disabled(working)
+            }
             if !olderReleases.isEmpty {
                 Menu(l.t("安装其他版本…", "Install Another Version…")) {
                     ForEach(olderReleases, id: \.version) { release in
@@ -180,6 +183,71 @@ struct UpdateSection: View {
             if let (descriptor, url) = await model.engine.sourceDescriptor(summary.id) {
                 olderReleases = descriptor.releases.filter { $0.version < summary.version }.sorted { $0.version > $1.version }
                 source = (descriptor, url)
+            }
+        }
+    }
+
+    /// Same-identity source switch (R08): verified first, then only the binding changes.
+    func changeSource() {
+        let alert = NSAlert()
+        alert.messageText = l.t("更换来源", "Change Source")
+        alert.informativeText = l.t("输入同一插件的另一个描述文件地址。只有发布者签名一致时才会更换，代码、数据和权限保持不变。",
+                                    "Enter another descriptor address for the same plugin. The source changes only if the publisher signature matches; code, data and permissions stay as they are.")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.placeholderString = "https://"
+        alert.accessoryView = field
+        alert.addButton(withTitle: l.resolve)
+        alert.addButton(withTitle: l.cancel)
+        guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty else { return }
+        working = true
+        Task {
+            defer { working = false }
+            do {
+                let resolved = try await model.engine.markets.resolve(field.stringValue)
+                try await model.engine.switchSource(summary.id, to: resolved)
+                result = l.t("来源已更换。", "Source changed.")
+            } catch let error as RuyioError {
+                result = l.errorText(error) + (error.diagnostic.map { " (\($0))" } ?? "")
+            } catch {
+                result = error.localizedDescription
+            }
+        }
+    }
+
+    /// Publisher changed (R08 / DIST-07): two confirmed steps, new data partition, nothing carried over.
+    func reinstallAcrossIdentity(_ preview: InstallPreview) {
+        let first = NSAlert()
+        first.messageText = l.t("发布者身份已变化", "The publisher identity changed")
+        first.informativeText = l.t("这不是普通更新。第 1 步：卸载当前插件，其数据保留并仍归原发布者；第 2 步：按新身份安装，使用全新的数据和权限确认。旧数据不会交给新发布者。",
+                                    "This is not a normal update. Step 1 uninstalls the current plugin and keeps its data under the original publisher. Step 2 installs the new identity with fresh data and permission confirmation. Old data is never handed to the new publisher.")
+        first.addButton(withTitle: l.cancel)
+        first.addButton(withTitle: l.t("第 1 步：卸载旧身份", "Step 1: Uninstall Current"))
+        guard first.runModal() == .alertSecondButtonReturn else { model.engine.installer.discard(preview); return }
+        Task {
+            do {
+                try await model.engine.uninstall(summary.id, deleteData: false)
+            } catch let error as RuyioError {
+                result = l.errorText(error)
+                model.engine.installer.discard(preview)
+                return
+            }
+            let second = NSAlert()
+            second.messageText = l.t("第 2 步：按新身份安装？", "Step 2: Install the new identity?")
+            second.informativeText = l.t("权限：", "Permissions: ") + preview.manifest.permissions.map { l.permissionName($0) }.joined(separator: "、")
+                + "\nTeam: " + (preview.signing.teamID ?? "—")
+            second.addButton(withTitle: l.cancel)
+            second.addButton(withTitle: l.t("安装", "Install"))
+            guard second.runModal() == .alertSecondButtonReturn else {
+                model.engine.installer.discard(preview)
+                model.show(l.t("旧版本已卸载，数据保留。可以从插件页或原来源重新安装。", "The old version was uninstalled and its data kept. Reinstall it from Plugins or its original source."))
+                return
+            }
+            do {
+                let id = try await model.engine.commitInstall(preview, updateChannel: summary.status.updateChannel, source: nil)
+                model.selectedPlugin = id
+            } catch let error as RuyioError {
+                // A failed second step leaves the plugin uninstalled; it never claims to be restored.
+                model.show(l.t("新身份安装失败，旧版本保持已卸载、数据保留：", "Installing the new identity failed; the old version stays uninstalled with its data kept: ") + l.errorText(error))
             }
         }
     }
@@ -252,7 +320,10 @@ struct UpdateSection: View {
                 if let diff, !diff.addedPermissions.isEmpty {
                     lines.append(l.t("新增权限：", "New permissions: ") + diff.addedPermissions.map { l.permissionName($0) }.joined(separator: "、"))
                 }
-                if diff?.signerChanged == true { lines.append(l.t("签名者已变化，不能普通更新。", "The signer changed; this cannot be a normal update.")) }
+                if diff?.signerChanged == true {
+                    reinstallAcrossIdentity(preview)
+                    return
+                }
                 alert.informativeText = lines.joined(separator: "\n")
                 alert.addButton(withTitle: l.cancel)
                 alert.addButton(withTitle: l.t("更新", "Update"))

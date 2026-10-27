@@ -185,7 +185,8 @@ final class OverlayController {
         guard let record = await engine.registry.record(pluginID),
               let store = try? engine.services.stores.store(pluginID: pluginID, generation: record.dataGeneration, development: record.isDevelopment),
               let data = try? store.blobData(blobID, maxBytes: 8 << 20) else { return nil }
-        return SafeImageDecoder.image(from: data)
+        // Decoding happens in the sandboxed media decoder service, never in the host (R43).
+        return await MediaDecoderClient.shared.image(from: data)
     }
 
     func close() {
