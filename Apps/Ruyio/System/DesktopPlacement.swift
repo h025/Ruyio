@@ -3,14 +3,15 @@ import Carbon
 
 /// Puts files created from a right-click on the Desktop where the user clicked, as Finder's own
 /// "New Folder" does. macOS has no public API for icon positions, so Finder is asked with fixed Apple
-/// Events ("set/get desktop position of <file>") built in process: no script source, and the file only
-/// ever travels as an alias. (`position` would move the icon in the Desktop folder's window instead.) The first use asks for Automation consent; a refusal, a file outside the Desktop or
+/// Events ("set/get desktop position of item <name> of desktop") built in process: no script source, and
+/// the file name only travels as data. Finder does not resolve an alias container for these (-1728). The first use asks for Automation consent; a refusal, a file outside the Desktop or
 /// a sorted or stacked Desktop simply leaves the icon where Finder put it (A38). Plugins cannot send Apple
 /// Events themselves: their entitlements are allow-listed without it.
 enum DesktopPlacement {
     private static let notAuthorized = -1743
-    /// Finder's "desktop position" property.
-    private static let desktopPosition: OSType = "dpos".utf8.reduce(0) { $0 << 8 | OSType($1) }
+    private static func fourCC(_ code: String) -> OSType { code.utf8.reduce(0) { $0 << 8 | OSType($1) } }
+    /// Finder's "desktop position" (dpos), "desktop" (desk) and "item" (cobj).
+    private static let desktopPosition = fourCC("dpos")
     private static let queue = DispatchQueue(label: "ruyio.desktop-placement")
 
     static func place(_ urls: [URL], at location: CGPoint, log: @escaping @Sendable ([String: String]) -> Void) async {
@@ -40,11 +41,12 @@ enum DesktopPlacement {
         }
     }
 
-    /// Finder may not list a brand-new file for a moment, so a few attempts are made.
+    /// Finder lists a brand-new Desktop file only after it notices it (a second or more), so attempts
+    /// continue for about five seconds while it is "not found" (-1728).
     private static func setPosition(of url: URL, to target: (Int32, Int32)) async -> Int {
         var code = -1
-        for attempt in 0..<6 {
-            if attempt > 0 { try? await Task.sleep(for: .milliseconds(250)) }
+        for attempt in 0..<12 {
+            if attempt > 0 { try? await Task.sleep(for: .milliseconds(400)) }
             code = await send(setEvent(url, target)).code
             if code == 0 || code == notAuthorized { return code }
         }
@@ -66,14 +68,24 @@ enum DesktopPlacement {
         return event
     }
 
-    /// `<id> desktop position of <alias>` addressed to Finder.
+    /// One object-specifier level: `want`, `form`, `seld`, `from`.
+    private static func specifier(_ want: OSType, _ form: OSType, _ selector: NSAppleEventDescriptor,
+                                  from container: NSAppleEventDescriptor) -> NSAppleEventDescriptor? {
+        guard let spec = NSAppleEventDescriptor.record().coerce(toDescriptorType: DescType(typeObjectSpecifier)) else { return nil }
+        spec.setDescriptor(NSAppleEventDescriptor(typeCode: want), forKeyword: AEKeyword(keyAEDesiredClass))
+        spec.setDescriptor(NSAppleEventDescriptor(enumCode: form), forKeyword: AEKeyword(keyAEKeyForm))
+        spec.setDescriptor(selector, forKeyword: AEKeyword(keyAEKeyData))
+        spec.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
+        return spec
+    }
+
+    /// `<id> desktop position of item "<name>" of desktop` addressed to Finder.
     private static func event(_ id: AEEventID, _ url: URL) -> NSAppleEventDescriptor? {
-        guard let alias = NSAppleEventDescriptor(fileURL: url).coerce(toDescriptorType: DescType(typeAlias)),
-              let property = NSAppleEventDescriptor.record().coerce(toDescriptorType: DescType(typeObjectSpecifier)) else { return nil }
-        property.setDescriptor(NSAppleEventDescriptor(typeCode: OSType(cProperty)), forKeyword: AEKeyword(keyAEDesiredClass))
-        property.setDescriptor(NSAppleEventDescriptor(enumCode: OSType(formPropertyID)), forKeyword: AEKeyword(keyAEKeyForm))
-        property.setDescriptor(NSAppleEventDescriptor(typeCode: desktopPosition), forKeyword: AEKeyword(keyAEKeyData))
-        property.setDescriptor(alias, forKeyword: AEKeyword(keyAEContainer))
+        guard let desktop = specifier(OSType(cProperty), OSType(formPropertyID), NSAppleEventDescriptor(typeCode: fourCC("desk")),
+                                      from: NSAppleEventDescriptor.null()),
+              let item = specifier(fourCC("cobj"), OSType(formName), NSAppleEventDescriptor(string: url.lastPathComponent), from: desktop),
+              let property = specifier(OSType(cProperty), OSType(formPropertyID), NSAppleEventDescriptor(typeCode: desktopPosition), from: item)
+        else { return nil }
         let event = NSAppleEventDescriptor(eventClass: AEEventClass(kAECoreSuite), eventID: id,
                                            targetDescriptor: NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder"),
                                            returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
