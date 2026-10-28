@@ -10,6 +10,11 @@ final class FinderSync: FIFinderSync {
     private var pending: [Int: (group: FinderMenuSnapshot.Group, item: FinderMenuSnapshot.Item, childID: String?)] = [:]
     /// Tags carry the menu build they belong to, so a click on an older menu never maps to a newer item.
     private var menuBuild = 0
+    /// Target and selection the menu was built for. A click sends these, not a fresh query: for a click on a
+    /// folder's background Finder reports the folder (or earlier-selected items) as selected by then, which
+    /// would no longer match the "nothing selected" context the item was offered for.
+    private var menuTarget: URL?
+    private var menuSelection: [URL] = []
 
     override init() {
         super.init()
@@ -48,6 +53,8 @@ final class FinderSync: FIFinderSync {
         let menu = NSMenu(title: "")
         pending.removeAll()
         menuBuild = (menuBuild + 1) % 1_000
+        menuTarget = target
+        menuSelection = selection
 
         guard let snapshot else {
             let item = NSMenuItem(title: "Ruyio › Open Ruyio to Load", action: #selector(openHost(_:)), keyEquivalent: "")
@@ -109,10 +116,8 @@ final class FinderSync: FIFinderSync {
     /// Freezes the click (target, selection, action, snapshot version) and hands it to the host.
     @objc private func runMenuItem(_ sender: NSMenuItem) {
         guard sender.tag / 10_000 == menuBuild, let entry = pending[sender.tag], let snapshot else { return }
-        let controller = FIFinderSyncController.default()
         let request = FinderRequest(pluginID: entry.group.pluginID, actionID: entry.item.actionID, dynamicItemID: entry.childID,
-                                    targetDirectory: controller.targetedURL()?.path,
-                                    selection: (controller.selectedItemURLs() ?? []).map(\.path),
+                                    targetDirectory: menuTarget?.path, selection: menuSelection.map(\.path),
                                     snapshotGeneration: snapshot.generation)
         guard let directory = containerURL?.appendingPathComponent(FinderWire.requestsDirectoryName, isDirectory: true),
               let data = try? FinderWire.encoder().encode(request), data.count <= FinderWire.maxRequestBytes else { return }

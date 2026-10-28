@@ -293,7 +293,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 guard let self else { return }
                 // Identifiers and the result code only; never the selection or target paths (PRD §21).
-                self.model.engine.log.record(.finderRequest, ["plugin": request.pluginID, "action": request.actionID, "result": error.code.rawValue])
+                self.model.engine.log.record(.finderRequest, ["plugin": request.pluginID, "action": request.actionID, "result": error.code.rawValue,
+                                                              "detail": error.diagnostic ?? "-"])
                 self.model.show(error.code == .contextExpired ? self.model.l.requestExpired : self.model.l.errorText(error))
             }
         })
