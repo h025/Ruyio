@@ -161,10 +161,21 @@ public struct CollectionPanelView: View {
                 EmptyStateView(spec: empty, context: context)
             } else {
                 ScrollViewReader { proxy in
-                    List(selection: Binding(get: { context.localSelection }, set: { id in if let id { context.select(id) } })) {
+                    // Selection is drawn here, not by the list: keyboard focus stays in the search field, so the
+                    // list's own highlight would be its unfocused grey block, and its separators read as heavy
+                    // lines on glass. Arrow keys move the selection from the panel (moveSelection).
+                    List {
                         ForEach(spec.list.items) { item in
+                            let isSelected = item.id == context.localSelection
                             ItemRow(item: item, context: context)
-                                .tag(item.id)
+                                .contentShape(Rectangle())
+                                .simultaneousGesture(TapGesture().onEnded { context.select(item.id) })
+                                .simultaneousGesture(TapGesture(count: 2).onEnded {
+                                    if let event = context.invocation(itemID: item.id) { context.send(event) }
+                                })
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(SelectionBackground(isSelected: isSelected))
+                                .accessibilityAddTraits(isSelected ? .isSelected : [])
                                 .id(item.id)
                                 .onAppear {
                                     if item.id == spec.list.items.last?.id, let cursor = spec.list.nextCursor { context.send(.loadNextPage(cursor: cursor)) }
@@ -174,10 +185,6 @@ public struct CollectionPanelView: View {
                     .listStyle(.inset)
                     .scrollContentBackground(.hidden)
                     .alternatingRowBackgrounds(.disabled)
-                    // Native double-click / Return-on-row handling; item menus come from the row.
-                    .contextMenu(forSelectionType: String.self) { _ in } primaryAction: { ids in
-                        if let id = ids.first, let event = context.invocation(itemID: id) { context.send(event) }
-                    }
                     .onChange(of: context.localSelection) { _, id in if let id { proxy.scrollTo(id) } }
                 }
             }
@@ -275,5 +282,16 @@ public struct CollectionPanelView: View {
         case let key: text += key.uppercased()
         }
         return text
+    }
+}
+
+/// The selected row on glass: a soft vibrant fill with continuous corners, as Spotlight draws it.
+private struct SelectionBackground: View {
+    let isSelected: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(isSelected ? AnyShapeStyle(.fill.secondary) : AnyShapeStyle(.clear))
+            .padding(.horizontal, 6)
     }
 }
