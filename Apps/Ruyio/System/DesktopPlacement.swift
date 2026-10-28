@@ -93,6 +93,22 @@ enum DesktopPlacement {
         return event
     }
 
+    /// A point comes back as a list of integers, or as a QuickDraw point (vertical, then horizontal).
+    private static func numbers(in descriptor: NSAppleEventDescriptor?) -> [Int32] {
+        guard let descriptor else { return [] }
+        let list = descriptor.numberOfItems > 0 ? descriptor : descriptor.coerce(toDescriptorType: DescType(typeAEList))
+        if let list, list.numberOfItems > 0 {
+            return (1...list.numberOfItems).map { list.atIndex($0)?.int32Value ?? 0 }
+        }
+        let data = descriptor.data
+        if descriptor.descriptorType == DescType(typeQDPoint), data.count == 4 {
+            let v = data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: Int16.self) }
+            let h = data.withUnsafeBytes { $0.load(fromByteOffset: 2, as: Int16.self) }
+            return [Int32(h), Int32(v)]
+        }
+        return []
+    }
+
     /// Sends off the main thread (the first send waits for the Automation consent dialog). Returns the
     /// error number and, for a reply that is a list, its integers.
     private static func send(_ event: NSAppleEventDescriptor?) async -> (code: Int, numbers: [Int32]) {
@@ -103,11 +119,7 @@ enum DesktopPlacement {
                 do {
                     let reply = try message.sendEvent(options: [.waitForReply, .canInteract], timeout: 60)
                     let error = Int(reply.paramDescriptor(forKeyword: AEKeyword(keyErrorNumber))?.int32Value ?? 0)
-                    var numbers: [Int32] = []
-                    if let list = reply.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)), list.numberOfItems > 0 {
-                        for index in 1...list.numberOfItems { numbers.append(list.atIndex(index)?.int32Value ?? 0) }
-                    }
-                    continuation.resume(returning: (error, numbers))
+                    continuation.resume(returning: (error, numbers(in: reply.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)))))
                 } catch {
                     continuation.resume(returning: ((error as NSError).code, []))
                 }

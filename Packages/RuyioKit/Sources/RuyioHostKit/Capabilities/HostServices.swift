@@ -273,7 +273,8 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
             // A file created from a right-click on the Desktop goes where the user clicked (A38).
             let created = reply.outcomes.filter { $0.status == .written }.compactMap(\.finalPath).map { URL(fileURLWithPath: $0) }
             if let location = contexts.placement(of: request.directory, for: pluginID), !created.isEmpty {
-                await bridge.place(created, at: location)
+                // Finder may take seconds to list the file; the plugin's reply does not wait for that.
+                Task { await bridge.place(created, at: location) }
             }
             if request.revealAfterWrite {
                 let written = reply.outcomes.compactMap(\.finalPath).map { URL(fileURLWithPath: $0) }

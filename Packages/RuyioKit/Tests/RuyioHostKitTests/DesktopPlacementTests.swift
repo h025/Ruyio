@@ -44,6 +44,8 @@ struct DesktopPlacementTests {
         let location = CGPoint(x: 400, y: 300)
         let placed = contexts.issue(target, for: manifest.id, execution: ExecutionID(), placement: location)
         try await write("Note.txt", into: placed)
+        // Placement runs after the reply, off the plugin's path.
+        for _ in 0..<50 where bridge.placements.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
         #expect(bridge.placements.count == 1)
         #expect(bridge.placements.first?.urls.map(\.lastPathComponent) == ["Note.txt"])
         #expect(bridge.placements.first?.location == location)
@@ -53,6 +55,7 @@ struct DesktopPlacementTests {
         #expect(bridge.placements.count == 1)
 
         try await write("Other.txt", into: contexts.issue(target, for: manifest.id, execution: ExecutionID()))
+        try await Task.sleep(for: .milliseconds(200))
         #expect(bridge.placements.count == 1)
     }
 
