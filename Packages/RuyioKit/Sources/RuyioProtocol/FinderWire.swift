@@ -134,9 +134,13 @@ public struct FinderRequest: Codable, Sendable, Hashable {
     public var targetDirectory: String?
     public var selection: [String]
     public var snapshotGeneration: Int
+    /// Where a folder's background was right-clicked, in screen coordinates (x, y); lets a new file land
+    /// there on the Desktop. Optional, so older hosts and extensions interoperate.
+    public var clickLocation: [Double]?
 
     public init(requestID: String = UUID().uuidString.lowercased(), createdAt: Date = Date(), pluginID: String, actionID: String,
-                dynamicItemID: String?, targetDirectory: String?, selection: [String], snapshotGeneration: Int) {
+                dynamicItemID: String?, targetDirectory: String?, selection: [String], snapshotGeneration: Int,
+                clickLocation: [Double]? = nil) {
         wireSchemaVersion = FinderWire.wireSchemaVersion
         self.requestID = requestID
         self.createdAt = createdAt
@@ -146,6 +150,7 @@ public struct FinderRequest: Codable, Sendable, Hashable {
         self.targetDirectory = targetDirectory
         self.selection = Array(selection.prefix(1_000))
         self.snapshotGeneration = snapshotGeneration
+        self.clickLocation = clickLocation
     }
 }
 

@@ -101,6 +101,10 @@ final class SystemBridgeImpl: SystemBridge, @unchecked Sendable {
         try await CaptureService.shared.capture(model: await MainActor.run { model })
     }
 
+    func place(_ urls: [URL], at location: CGPoint) async {
+        await DesktopPlacement.place(urls, at: location)
+    }
+
     func pinImage(_ data: Data, scale: Double, pluginID: PluginID) async throws {
         // The bytes come from the plugin's store: decode them in the sandboxed service, never in the host.
         guard let image = await MediaDecoderClient.shared.image(from: data, maxPixel: 8192) else {

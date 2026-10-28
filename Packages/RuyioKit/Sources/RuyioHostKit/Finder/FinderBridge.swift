@@ -174,6 +174,11 @@ public final class FinderBridge: @unchecked Sendable {
         lock.withLock { consumed = consumed.filter { now.timeIntervalSince($0.value) < 3600 } }
     }
 
+    static func clickLocation(_ values: [Double]?) -> CGPoint? {
+        guard let values, values.count == 2, values.allSatisfy({ $0.isFinite && abs($0) < 100_000 }) else { return nil }
+        return CGPoint(x: values[0], y: values[1])
+    }
+
     func process(_ request: FinderRequest, now: Date) {
         let (handler, reject, alreadySeen) = lock.withLock { () -> (( @Sendable (FinderRequest, InvocationRequest) async -> Void)?, (@Sendable (FinderRequest, RuyioError) -> Void)?, Bool) in
             let seen = consumed[request.requestID] != nil
@@ -232,7 +237,8 @@ public final class FinderBridge: @unchecked Sendable {
             return
         }
         let invocation = InvocationRequest(ref: ActionRef(pluginID: pluginID, actionID: actionID), entry: .finderContextMenu,
-                                           finder: FinderTargets(targetDirectory: target, selection: selection, dynamicItemID: request.dynamicItemID))
+                                           finder: FinderTargets(targetDirectory: target, selection: selection, dynamicItemID: request.dynamicItemID,
+                                                                 clickLocation: Self.clickLocation(request.clickLocation)))
         if let handler { Task { await handler(request, invocation) } }
     }
 }

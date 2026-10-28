@@ -64,6 +64,8 @@ final class TestBridge: SystemBridge, @unchecked Sendable {
     var pins: [(data: Data, scale: Double, pluginID: PluginID)] = []
     func captureScreen() async throws -> CapturedScreen { try capture.get() }
     func pinImage(_ data: Data, scale: Double, pluginID: PluginID) async throws { pins.append((data, scale, pluginID)) }
+    var placements: [(urls: [URL], location: CGPoint)] = []
+    func place(_ urls: [URL], at location: CGPoint) async { placements.append((urls, location)) }
 }
 
 @Suite(.serialized)

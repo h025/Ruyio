@@ -12,6 +12,8 @@ public final class InvocationContexts: @unchecked Sendable {
         public var expiresAt: Date
         public var remainingUses: Int
         public var fileIdentity: FileIdentity?
+        /// Screen location where files written into this directory should be placed (Desktop right-click).
+        public var placement: CGPoint?
     }
 
     /// Device + inode captured when the grant was issued, re-checked before use (TOCTOU).
@@ -35,12 +37,12 @@ public final class InvocationContexts: @unchecked Sendable {
 
     public init() {}
 
-    public func issue(_ url: URL, for pluginID: PluginID, execution: ExecutionID) -> FileRef {
+    public func issue(_ url: URL, for pluginID: PluginID, execution: ExecutionID, placement: CGPoint? = nil) -> FileRef {
         let ref = UUID().uuidString.lowercased()
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
         let grant = Grant(url: url.standardizedFileURL, pluginID: pluginID, executionID: execution,
                           expiresAt: Date().addingTimeInterval(lifetime), remainingUses: uses,
-                          fileIdentity: FileIdentity.of(url))
+                          fileIdentity: FileIdentity.of(url), placement: placement)
         lock.withLock {
             purgeExpired()
             grants[ref] = grant
@@ -105,6 +107,14 @@ public final class InvocationContexts: @unchecked Sendable {
     public func hasEnded(_ execution: ExecutionID?) -> Bool {
         guard let execution else { return false }
         return lock.withLock { ended[execution] != nil }
+    }
+
+    /// The placement recorded for a directory reference of this plugin, while the reference is valid.
+    public func placement(of fileRef: FileRef, for pluginID: PluginID) -> CGPoint? {
+        lock.withLock {
+            guard let grant = grants[fileRef.ref], grant.pluginID == pluginID, grant.expiresAt > Date() else { return nil }
+            return grant.placement
+        }
     }
 
     public func revokeAll(pluginID: PluginID) {

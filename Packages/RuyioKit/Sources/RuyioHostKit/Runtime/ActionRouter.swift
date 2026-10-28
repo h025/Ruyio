@@ -8,10 +8,13 @@ public struct FinderTargets: Sendable, Hashable {
     public var targetDirectory: URL?
     public var selection: [URL]
     public var dynamicItemID: String?
-    public init(targetDirectory: URL?, selection: [URL], dynamicItemID: String? = nil) {
+    /// Right-click location on the folder's background, screen coordinates.
+    public var clickLocation: CGPoint?
+    public init(targetDirectory: URL?, selection: [URL], dynamicItemID: String? = nil, clickLocation: CGPoint? = nil) {
         self.targetDirectory = targetDirectory
         self.selection = selection
         self.dynamicItemID = dynamicItemID
+        self.clickLocation = clickLocation
     }
 }
 
@@ -95,7 +98,9 @@ public actor ActionRouter {
         var finderContext: FinderInvocationContext?
         if let finder = request.finder {
             finderContext = FinderInvocationContext(
-                targetDirectory: finder.targetDirectory.map { contexts.issue($0, for: ref.pluginID, execution: execution) },
+                targetDirectory: finder.targetDirectory.map {
+                    contexts.issue($0, for: ref.pluginID, execution: execution, placement: finder.clickLocation)
+                },
                 selection: finder.selection.prefix(10_000).map { contexts.issue($0, for: ref.pluginID, execution: execution) },
                 dynamicItemID: finder.dynamicItemID)
         }

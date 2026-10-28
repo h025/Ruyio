@@ -77,9 +77,12 @@ targets:
         RuyioAppGroup: $(RUYIO_APP_GROUP)
         RuyioFinderChannel: $(RUYIO_FINDER_CHANNEL)
         RuyioOfficialTeamID: ""
+        NSAppleEventsUsageDescription: Ruyio asks Finder to place files you create from a right-click on the Desktop where you clicked.
     entitlements:
       path: Apps/Ruyio/Ruyio.entitlements
-      properties: {}
+      properties:
+        # Only Finder is ever addressed: placing new Desktop files (A38).
+        com.apple.security.automation.apple-events: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ruyio.mac

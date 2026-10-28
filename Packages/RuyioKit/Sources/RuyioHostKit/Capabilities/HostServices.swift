@@ -20,6 +20,8 @@ public protocol SystemBridge: AnyObject, Sendable {
     func captureScreen() async throws -> CapturedScreen
     /// Shows an untrusted image (decoded out of process) in a host-drawn window above other apps.
     func pinImage(_ data: Data, scale: Double, pluginID: PluginID) async throws
+    /// Moves new Desktop files to where the Desktop was right-clicked; files elsewhere are left alone.
+    func place(_ urls: [URL], at location: CGPoint) async
 }
 
 public struct CapturedScreen: Sendable {
@@ -268,6 +270,11 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
         case CapabilityMethod.fileWrite:
             let request = try JSONCoding.decode(FileWriteRequest.self, from: envelope.payload)
             let reply = try await fileBroker.write(request, pluginID: pluginID, operationID: envelope.operationID, executionID: envelope.executionID)
+            // A file created from a right-click on the Desktop goes where the user clicked (A38).
+            let created = reply.outcomes.filter { $0.status == .written }.compactMap(\.finalPath).map { URL(fileURLWithPath: $0) }
+            if let location = contexts.placement(of: request.directory, for: pluginID), !created.isEmpty {
+                await bridge.place(created, at: location)
+            }
             if request.revealAfterWrite {
                 let written = reply.outcomes.compactMap(\.finalPath).map { URL(fileURLWithPath: $0) }
                 if !written.isEmpty { await bridge.reveal(written) }

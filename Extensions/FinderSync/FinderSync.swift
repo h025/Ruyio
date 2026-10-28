@@ -15,6 +15,8 @@ final class FinderSync: FIFinderSync {
     /// would no longer match the "nothing selected" context the item was offered for.
     private var menuTarget: URL?
     private var menuSelection: [URL] = []
+    /// Where a folder's background was right-clicked; the host places new Desktop files there.
+    private var menuClickLocation: NSPoint?
 
     override init() {
         super.init()
@@ -55,6 +57,7 @@ final class FinderSync: FIFinderSync {
         menuBuild = (menuBuild + 1) % 1_000
         menuTarget = target
         menuSelection = selection
+        menuClickLocation = menuKind == .contextualMenuForContainer ? NSEvent.mouseLocation : nil
 
         guard let snapshot else {
             let item = NSMenuItem(title: "Ruyio › Open Ruyio to Load", action: #selector(openHost(_:)), keyEquivalent: "")
@@ -118,7 +121,8 @@ final class FinderSync: FIFinderSync {
         guard sender.tag / 10_000 == menuBuild, let entry = pending[sender.tag], let snapshot else { return }
         let request = FinderRequest(pluginID: entry.group.pluginID, actionID: entry.item.actionID, dynamicItemID: entry.childID,
                                     targetDirectory: menuTarget?.path, selection: menuSelection.map(\.path),
-                                    snapshotGeneration: snapshot.generation)
+                                    snapshotGeneration: snapshot.generation,
+                                    clickLocation: menuClickLocation.map { [Double($0.x), Double($0.y)] })
         guard let directory = containerURL?.appendingPathComponent(FinderWire.requestsDirectoryName, isDirectory: true),
               let data = try? FinderWire.encoder().encode(request), data.count <= FinderWire.maxRequestBytes else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
