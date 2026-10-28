@@ -227,7 +227,8 @@ struct PluginRow: View {
                 HStack(spacing: 6) {
                     Text(summary.displayName)
                     if summary.status.isDevelopment { StatusChip(text: l.developer, tone: .purple) }
-                    if let badge = summary.status.primaryBadge, badge != .noUpdateSource {
+                    // The purple chip above already says "developer".
+                    if let badge = summary.status.primaryBadge, badge != .noUpdateSource, badge != .developer {
                         StatusChip(text: l.badge(badge), tone: summary.status.needsAttention ? .orange : .secondary)
                     }
                 }

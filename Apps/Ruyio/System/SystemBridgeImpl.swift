@@ -61,7 +61,7 @@ final class SystemBridgeImpl: SystemBridge, @unchecked Sendable {
     }
 
     func reveal(_ urls: [URL]) async {
-        await MainActor.run { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+        await MainActor.run { FileReveal.reveal(urls) }
     }
 
     func confirmBatch(title: String, count: Int) async -> Bool {
@@ -126,6 +126,16 @@ enum FinderExtensionStatus {
     static var isTranslocated: Bool {
         let path = Bundle.main.bundlePath
         return path.contains("/AppTranslocation/") || path.hasPrefix("/Volumes/")
+    }
+}
+
+enum FileReveal {
+    /// Selects files in Finder, except those directly on the Desktop: they are already in view there, and
+    /// Finder would open an extra window to select them.
+    @MainActor static func reveal(_ urls: [URL]) {
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.resolvingSymlinksInPath().path
+        let shown = urls.filter { $0.deletingLastPathComponent().resolvingSymlinksInPath().path != desktop }
+        if !shown.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(shown) }
     }
 }
 

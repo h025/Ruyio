@@ -138,7 +138,13 @@ final class FinderSync: FIFinderSync {
     @objc private func openHost(_ sender: Any?) { wakeHost() }
 
     /// Launches the containing app by location; no URL scheme is registered as a call channel (plan §13.2).
+    /// Only launches a host that is not running: the request notification already reaches a running one,
+    /// and opening a running app is a reopen event that brings up its main window.
     private func wakeHost() {
+        if let extensionID = Bundle.main.bundleIdentifier, let dot = extensionID.lastIndex(of: "."),
+           !NSRunningApplication.runningApplications(withBundleIdentifier: String(extensionID[..<dot])).isEmpty {
+            return
+        }
         let host = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = false

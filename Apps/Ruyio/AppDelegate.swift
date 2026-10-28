@@ -248,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Same rule as the reveal capability: only files this plugin wrote through the broker.
                 let allowed = model.engine.services.fileBroker.revealablePaths(for: report.ref.pluginID)
                 let urls = paths.prefix(64).filter { allowed.contains($0) }.map { URL(fileURLWithPath: $0) }
-                if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+                FileReveal.reveal(urls)
             case .none: break
             }
         case .cancelled:
