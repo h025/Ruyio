@@ -23,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
         if CommandLine.arguments.contains("--selftest-media") { runMediaSelfTest(); return }
+        if let index = CommandLine.arguments.firstIndex(of: "--ui-gallery"), CommandLine.arguments.count > index + 1 {
+            NSApp.setActivationPolicy(.accessory)
+            UIGallery.run(out: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+            return
+        }
         #endif
         do {
             let paths = try AppPaths.standard()

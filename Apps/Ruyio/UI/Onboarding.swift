@@ -1,6 +1,7 @@
 import AppKit
 import RuyioCore
 import RuyioHostKit
+import RuyioUI
 import SwiftUI
 
 /// First launch (PRD §6, §19.1): welcome → clipboard → Finder → done. No purpose questionnaire;
@@ -13,9 +14,11 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
 
     init(model: AppModel) {
         self.model = model
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 480), styleMask: [.titled, .closable, .fullSizeContentView],
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 540), styleMask: [.titled, .closable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
@@ -66,53 +69,109 @@ struct OnboardingView: View {
     @ObservedObject var state: OnboardingState
     let finish: (Bool) -> Void
     var l: L10n { model.l }
+    private var clipboardName: String { model.summary(PluginID("app.ruyio.clipboard-history"))?.displayName ?? "Clipboard History" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            switch state.step {
-            case 0: welcome
-            case 1: clipboard
-            case 2: finder
-            default: done
+        VStack(spacing: 0) {
+            stepDots.padding(.top, 22)
+            Group {
+                switch state.step {
+                case 0: welcome
+                case 1: clipboard
+                case 2: finder
+                default: done
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 56)
         }
-        .padding(32)
-        .frame(width: 600, height: 480, alignment: .topLeading)
+        .frame(width: 620, height: 540)
         .environment(\.locale, Locale(identifier: model.language))
     }
 
-    var welcome: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            BrandWordmark().frame(height: 44)
-            Text(l.welcomeTitle).font(.title.weight(.semibold))
-            Text(l.welcomeBody).fixedSize(horizontal: false, vertical: true)
-            Toggle(l.launchAtLogin, isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-            if let error = model.settingsError { Text(error).font(.caption).foregroundStyle(.red) }
-            Spacer()
-            HStack {
-                Spacer()
-                Button(l.later) { finish(false) }
-                Button(l.continueTitle) { state.step = 1 }.keyboardShortcut(.defaultAction)
+    var stepDots: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<4) { index in
+                Capsule().fill(index == state.step ? Color.accentColor : Color.primary.opacity(0.15))
+                    .frame(width: index == state.step ? 18 : 6, height: 6)
             }
+        }
+        .animation(.snappy, value: state.step)
+        .accessibilityElement()
+        .accessibilityLabel("\(state.step + 1) / 4")
+    }
+
+    /// Hero icon, title and message centred; actions pinned to the bottom (macOS welcome-screen layout).
+    func page<Content: View, Actions: View>(_ title: String, message: String? = nil, @ViewBuilder icon: () -> some View,
+                                            @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions) -> some View {
+        VStack(spacing: 14) {
+            Spacer(minLength: 12)
+            icon()
+            Text(title).font(.largeTitle.weight(.bold)).multilineTextAlignment(.center)
+            if let message { Text(message).font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true) }
+            content().padding(.top, 6)
+            Spacer(minLength: 12)
+            VStack(spacing: 10) { actions() }
+                .padding(.bottom, 28)
+        }
+    }
+
+    func tile(_ symbol: String, _ color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous).fill(color.gradient).frame(width: 76, height: 76)
+            .overlay(Image(systemName: symbol).font(.system(size: 36, weight: .medium)).foregroundStyle(.white))
+            .shadow(color: color.opacity(0.35), radius: 10, y: 4)
+            .accessibilityHidden(true)
+    }
+
+    func primary(_ title: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Text(title).frame(minWidth: 220) }
+            .controlSize(.extraLarge)
+            .buttonBorderShape(.capsule)
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!enabled)
+    }
+
+    func secondary(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action).buttonStyle(.link)
+    }
+
+    var welcome: some View {
+        page(l.welcomeTitle, message: l.welcomeBody) {
+            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 104, height: 104).accessibilityHidden(true)
+        } content: {
+            VStack(spacing: 6) {
+                Toggle(l.launchAtLogin, isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                    .toggleStyle(.checkbox)
+                if let error = model.settingsError { Text(error).font(.caption).foregroundStyle(.red) }
+            }
+        } actions: {
+            primary(l.continueTitle) { state.step = 1 }
+            secondary(l.later) { finish(false) }
         }
     }
 
     var clipboard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack { Text(model.summary(PluginID("app.ruyio.clipboard-history"))?.displayName ?? "Clipboard History").font(.headline); Spacer(); Text("1 / 2").foregroundStyle(.secondary) }
-            Text(l.clipboardStepTitle).font(.title2.weight(.semibold))
-            captureStatus
-            Text(l.thenPress("⇧⌘V"))
-            Text(l.practiceField).font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $state.practiceText).font(.body).frame(height: 90)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-            if state.clipboardDone { Label(l.clipboardStepDone, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
-            Spacer()
-            HStack {
-                Spacer()
-                Button(l.skip) { state.step = 2 }
-                Button(l.continueTitle) { state.step = 2 }.keyboardShortcut(.defaultAction).disabled(!state.clipboardDone)
+        page(l.clipboardStepTitle) {
+            tile("list.clipboard.fill", .orange)
+        } content: {
+            VStack(spacing: 12) {
+                captureStatus
+                Text(l.thenPress("⇧⌘V")).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                TextEditor(text: $state.practiceText)
+                    .font(.body).scrollContentBackground(.hidden)
+                    .padding(8).frame(height: 84)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
+                    .overlay(alignment: .topLeading) {
+                        if state.practiceText.isEmpty {
+                            Text(l.practiceField).foregroundStyle(.tertiary).padding(.horizontal, 13).padding(.vertical, 8).allowsHitTesting(false)
+                        }
+                    }
+                if state.clipboardDone { Label(l.clipboardStepDone, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             }
+        } actions: {
+            primary(l.continueTitle, enabled: state.clipboardDone) { state.step = 2 }
+            secondary(l.skip) { state.step = 2 }
         }
     }
 
@@ -122,7 +181,7 @@ struct OnboardingView: View {
         switch report?.captureState {
         case .blockedBySystem?:
             HStack {
-                Label(l.t("系统未允许读取剪贴板", "macOS is not allowing clipboard access"), systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                Label(l.t("系统未允许读取剪贴板", "macOS is not allowing clipboard access"), systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Button(l.openSystemSettings) { SystemSettings.openPasteboardPrivacy() }
             }
         case .recording?:
@@ -133,63 +192,69 @@ struct OnboardingView: View {
     }
 
     var finder: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack { Text(l.finderExtension).font(.headline); Spacer(); Text("2 / 2").foregroundStyle(.secondary) }
-            Text(l.finderStepTitle).font(.title2.weight(.semibold))
-            if FinderExtensionStatus.isTranslocated {
-                Label(l.moveToApplications, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-            }
-            HStack {
-                Text(l.finderExtension)
-                Spacer()
-                StatusChip(text: model.finderExtensionEnabled ? l.enabledState : l.notEnabled, tone: model.finderExtensionEnabled ? .green : .orange)
-            }
-            if !model.finderExtensionEnabled {
-                Text(OSVersion.current < OSVersion(major: 15, minor: 2) ? l.finderLegacyHint : l.finderNotEnabledHint).foregroundStyle(.secondary)
-                HStack {
-                    Button(l.openSystemSettings) { FinderExtensionStatus.showManagementInterface() }
-                    Button(l.recheck) { model.refreshSystemState() }
+        page(l.finderStepTitle) {
+            tile("folder.fill", .blue)
+        } content: {
+            VStack(spacing: 12) {
+                if FinderExtensionStatus.isTranslocated {
+                    Label(l.moveToApplications, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 }
-            } else {
-                Button(l.tryInFinder) { NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")) }
+                HStack {
+                    Text(l.finderExtension)
+                    Spacer()
+                    Label(model.finderExtensionEnabled ? l.enabledState : l.notEnabled,
+                          systemImage: model.finderExtensionEnabled ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(model.finderExtensionEnabled ? .green : .orange)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
+                if !model.finderExtensionEnabled {
+                    Text(OSVersion.current < OSVersion(major: 15, minor: 2) ? l.finderLegacyHint : l.finderNotEnabledHint)
+                        .foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button(l.openSystemSettings) { FinderExtensionStatus.showManagementInterface() }
+                        Button(l.recheck) { model.refreshSystemState() }
+                    }
+                } else {
+                    Button(l.tryInFinder) { NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")) }
+                }
             }
-            Spacer()
-            HStack {
-                Spacer()
-                Button(l.skip) { state.finderSkipped = true; state.step = 3 }
-                Button(l.done) { state.step = 3 }.keyboardShortcut(.defaultAction).disabled(!model.finderExtensionEnabled)
-            }
+        } actions: {
+            primary(l.done, enabled: model.finderExtensionEnabled) { state.step = 3 }
+            secondary(l.skip) { state.finderSkipped = true; state.step = 3 }
         }
         .onAppear { model.refreshSystemState() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshSystemState() }
     }
 
     var done: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(l.readyTitle).font(.title.weight(.semibold))
-            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
-                GridRow {
-                    Text(model.summary(PluginID("app.ruyio.clipboard-history"))?.displayName ?? "Clipboard History")
-                    Text("⇧⌘V").font(.system(.body, design: .monospaced))
-                    StatusChip(text: state.clipboardDone ? l.finished : l.notCompleted, tone: state.clipboardDone ? .green : .orange)
-                }
-                GridRow {
-                    Text(l.finderExtension)
-                    Text("Ruyio ›")
-                    StatusChip(text: model.finderExtensionEnabled ? l.enabledState : l.notCompleted, tone: model.finderExtensionEnabled ? .green : .orange)
-                }
-                GridRow {
-                    Text(l.commandPalette)
-                    Text(model.settings.commandPaletteShortcut.flatMap(KeyShortcut.init(manifestString:))?.displayString ?? l.notSet).font(.system(.body, design: .monospaced))
-                    Text("")
-                }
+        page(l.readyTitle) {
+            Image(systemName: "checkmark.seal.fill").font(.system(size: 72)).foregroundStyle(.green.gradient).accessibilityHidden(true)
+        } content: {
+            VStack(spacing: 0) {
+                summaryRow(clipboardName, shortcut: "⇧⌘V", ok: state.clipboardDone)
+                Divider().padding(.leading, 14)
+                summaryRow(l.finderExtension, shortcut: "Ruyio ›", ok: model.finderExtensionEnabled)
+                Divider().padding(.leading, 14)
+                summaryRow(l.commandPalette, shortcut: model.settings.commandPaletteShortcut.flatMap(KeyShortcut.init(manifestString:))?.displayString ?? l.notSet, ok: nil)
             }
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
+        } actions: {
+            primary(l.startUsing) { finish(true) }
+            secondary(l.viewPlugins) { finish(false); model.page = .plugins; NSApp.sendAction(#selector(AppDelegate.showMainWindow), to: nil, from: nil) }
+        }
+    }
+
+    func summaryRow(_ title: String, shortcut: String, ok: Bool?) -> some View {
+        HStack {
+            Text(title)
             Spacer()
-            HStack {
-                Spacer()
-                Button(l.viewPlugins) { finish(false); model.page = .plugins; NSApp.sendAction(#selector(AppDelegate.showMainWindow), to: nil, from: nil) }
-                Button(l.startUsing) { finish(true) }.keyboardShortcut(.defaultAction)
+            KeyCap(shortcut)
+            if let ok {
+                Image(systemName: ok ? "checkmark.circle.fill" : "minus.circle").foregroundStyle(ok ? .green : .secondary)
+                    .accessibilityLabel(ok ? l.finished : l.notCompleted)
             }
         }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 }

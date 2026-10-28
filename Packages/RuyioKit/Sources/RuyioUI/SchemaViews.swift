@@ -103,10 +103,14 @@ struct EmptyStateView: View {
     let spec: EmptySpec
     @ObservedObject var context: SchemaContext
     var body: some View {
-        VStack(spacing: 8) {
-            Text(spec.title).font(.headline)
+        VStack(spacing: 10) {
+            Image(systemName: spec.action == nil ? "tray" : "magnifyingglass")
+                .font(.system(size: 34, weight: .light)).foregroundStyle(.tertiary)
+            Text(spec.title).font(.title3.weight(.semibold))
             if let message = spec.message { Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center) }
-            if let action = spec.action { Button(action.title) { context.send(.invoke(actionID: action.id, itemID: nil)) } }
+            if let action = spec.action {
+                Button(action.title) { context.send(.invoke(actionID: action.id, itemID: nil)) }.ruyioGlassButton()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
@@ -264,34 +268,52 @@ struct SchemaListView: View {
             EmptyStateView(spec: empty, context: context)
         } else {
             List(spec.items, selection: Binding(get: { context.localSelection }, set: { context.localSelection = $0; context.send(.selectionChanged($0)) })) { item in
-                ItemRow(item: item, context: context).tag(item.id)
+                ItemRow(item: item, context: context, isSelected: false).tag(item.id)
             }
         }
     }
 }
 
+/// One plugin-provided row. Selection is drawn by the host as an accent capsule, as in Spotlight.
 struct ItemRow: View {
     let item: ListItem
     @ObservedObject var context: SchemaContext
+    var isSelected: Bool
+
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if let blob = item.thumbnailBlobID {
-                BlobImageView(blobID: blob, context: context, label: item.title, maxHeight: 36).frame(width: 52, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                BlobImageView(blobID: blob, context: context, label: item.title, maxHeight: 30)
+                    .frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             } else if let symbol = item.symbol {
-                Image(systemName: symbol).frame(width: 20).foregroundStyle(.secondary)
+                SymbolBadge(symbol, color: SymbolBadge.color(for: symbol), size: 30)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).lineLimit(3)
-                if let subtitle = item.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                Text(item.title).font(.body.weight(.medium)).lineLimit(2)
+                if let subtitle = item.subtitle {
+                    Text(subtitle).font(.caption).lineLimit(1)
+                        .foregroundStyle(isSelected ? AnyShapeStyle(Color.white.opacity(0.82)) : AnyShapeStyle(.secondary))
+                }
             }
-            Spacer(minLength: 0)
-            if item.isFavorite { Image(systemName: "star.fill").foregroundStyle(.yellow).accessibilityLabel("★") }
-            if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            Spacer(minLength: 8)
+            if item.isFavorite {
+                Image(systemName: "star.fill").font(.caption)
+                    .foregroundStyle(isSelected ? Color.white : Color.yellow).accessibilityLabel("★")
+            }
+            if let detail = item.detail {
+                Text(detail).font(.caption)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(Color.white.opacity(0.82)) : AnyShapeStyle(.secondary))
+            }
         }
-        .padding(.vertical, 2)
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background {
+            if isSelected { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor) }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(item.accessibilityLabel ?? item.title)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
         .contextMenu {
             ForEach(item.actions, id: \.id) { action in
                 Button(role: action.isDestructive ? .destructive : nil) { context.send(.invoke(actionID: action.id, itemID: item.id)) } label: {

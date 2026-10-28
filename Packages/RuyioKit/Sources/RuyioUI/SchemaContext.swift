@@ -14,6 +14,8 @@ public final class SchemaContext: ObservableObject {
     @Published public var isBusy = false
     @Published public var previewVisible = true
     @Published public var localSelection: String?
+    /// Host-owned close for floating presentations (close button); plugins cannot trigger it.
+    public var dismiss: (() -> Void)?
 
     private let sendEvent: (ViewEvent, Int) async -> Void
     private let loadBlob: (String) async -> NSImage?
@@ -69,6 +71,11 @@ public final class SchemaContext: ObservableObject {
         localSelection = items[next].id
         send(.selectionChanged(items[next].id))
         if next >= items.count - 5, let cursor = collection?.list.nextCursor { send(.loadNextPage(cursor: cursor)) }
+    }
+
+    public func select(_ id: String) {
+        localSelection = id
+        send(.selectionChanged(id))
     }
 }
 

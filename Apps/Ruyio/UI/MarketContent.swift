@@ -9,7 +9,7 @@ import SwiftUI
 struct MarketContent: View {
     @ObservedObject var model: AppModel
     @Binding var showAdd: Bool
-    @State private var tab = 0
+    @Binding var tab: Int
     @State private var markets: [MarketRecord] = []
     @State private var entries: [MarketEntryState] = []
     @State private var search = ""
@@ -19,21 +19,18 @@ struct MarketContent: View {
     var l: L10n { model.l }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Picker("", selection: $tab) {
-                Text(l.t("发现插件", "Discover")).tag(0)
-                Text(l.t("市场来源", "Sources")).tag(1)
-            }
-            .pickerStyle(.segmented).labelsHidden().fixedSize().padding(.horizontal, 28)
+        Group {
             if markets.isEmpty {
-                VStack(spacing: 8) {
-                    Text(l.marketEmpty).font(.headline)
-                    Text(l.marketEmptyHint).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button(l.addMarket) { showAdd = true }
+                ContentUnavailableView {
+                    Label(l.marketEmpty, systemImage: "square.grid.2x2")
+                } description: {
+                    Text(l.marketEmptyHint)
+                } actions: {
+                    Button(l.addMarket) { showAdd = true }.buttonStyle(.borderedProminent)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity).padding()
             } else if tab == 0 {
                 discover
+                    .searchable(text: $search, placement: .toolbar, prompt: l.t("搜索所有已启用市场", "Search enabled markets"))
             } else {
                 sources
             }
@@ -51,38 +48,47 @@ struct MarketContent: View {
         entries = all
     }
 
+    @ViewBuilder
     var discover: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                TextField(l.t("搜索所有已启用市场", "Search enabled markets"), text: $search).textFieldStyle(.roundedBorder)
-                if let openMarket {
-                    Button { self.openMarket = nil; Task { await reload() } } label: { Label(openMarket, systemImage: "xmark.circle") }.buttonStyle(.borderless)
-                }
-            }
-            .padding(.horizontal, 28)
-            if markets.contains(where: { $0.state == "stale" }) {
-                Text(l.t("部分市场刷新失败，正在显示上次成功的缓存。", "Some markets failed to refresh; showing the last good cache."))
-                    .font(.caption).foregroundStyle(.orange).padding(.horizontal, 28)
-            }
-            // Same plugin from several markets is grouped, but publisher identity is only known after
-            // the signed package is verified (plan §14.3), so sources are listed, not merged.
-            let grouped = Dictionary(grouping: entries.filter { matches($0) }, by: \.id)
-            List(grouped.keys.sorted(), id: \.self) { id in
-                let variants = grouped[id] ?? []
-                let entry = variants[0]
-                HStack {
-                    PluginIcon(id: id)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(entry.descriptor?.name ?? entry.hintName ?? id.rawValue)
-                        Text(entry.descriptor?.description ?? entry.hintSummary ?? id.rawValue).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        // Same plugin from several markets is grouped, but publisher identity is only known after
+        // the signed package is verified (plan §14.3), so sources are listed, not merged.
+        let grouped = Dictionary(grouping: entries.filter { matches($0) }, by: \.id)
+        if grouped.isEmpty {
+            ContentUnavailableView.search(text: search)
+        } else {
+            Form {
+                if markets.contains(where: { $0.state == "stale" }) || openMarket != nil {
+                    Section {
+                        if markets.contains(where: { $0.state == "stale" }) {
+                            Label(l.t("部分市场刷新失败，正在显示上次成功的缓存。", "Some markets failed to refresh; showing the last good cache."),
+                                  systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                        if let openMarket {
+                            LabeledContent(l.t("只看此市场", "Showing one market"), value: openMarket)
+                            Button(l.t("显示全部市场", "Show All Markets")) { self.openMarket = nil; Task { await reload() } }
+                        }
                     }
-                    Spacer()
-                    Text(variants.map(\.marketID).joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
-                    StatusChip(text: status(entry), tone: entry.hasUpdate ? .accentColor : .secondary)
-                    Button(l.t("查看", "View")) { detail = entry }
+                }
+                Section {
+                    ForEach(grouped.keys.sorted(), id: \.self) { id in
+                        let variants = grouped[id] ?? []
+                        let entry = variants[0]
+                        HStack(spacing: 12) {
+                            PluginIcon(id: id)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.descriptor?.name ?? entry.hintName ?? id.rawValue)
+                                Text(entry.descriptor?.description ?? entry.hintSummary ?? id.rawValue).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(variants.map(\.marketID).joined(separator: ", ")).font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            StatusChip(text: status(entry), tone: entry.hasUpdate ? .accentColor : .secondary)
+                            Button(l.t("查看", "View")) { detail = entry }
+                        }
+                        .padding(.vertical, 2)
+                    }
                 }
             }
-            .listStyle(.inset)
+            .formStyle(.grouped)
         }
     }
 
@@ -101,33 +107,40 @@ struct MarketContent: View {
     }
 
     var sources: some View {
-        List(markets, id: \.marketID) { market in
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(market.name).font(.body.weight(.medium))
-                    Text(URL(string: market.canonicalURL)?.host.map { $0 + (URL(string: market.canonicalURL)?.path ?? "") } ?? market.canonicalURL)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text(sourceStatus(market)).font(.caption).foregroundStyle(market.state == "active" ? Color.secondary : .orange)
+        Form {
+            Section {
+                ForEach(markets, id: \.marketID) { market in
+                    HStack(spacing: 12) {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.gray.gradient).frame(width: 32, height: 32)
+                            .overlay(Image(systemName: "square.grid.2x2.fill").font(.system(size: 15)).foregroundStyle(.white))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(market.name)
+                            Text(URL(string: market.canonicalURL)?.host.map { $0 + (URL(string: market.canonicalURL)?.path ?? "") } ?? market.canonicalURL)
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Text(sourceStatus(market)).font(.caption).foregroundStyle(market.state == "active" ? Color.secondary : .orange)
+                        }
+                        Spacer()
+                        if refreshingID == market.marketID { ProgressView().controlSize(.small) }
+                        Menu {
+                            Button(l.t("刷新", "Refresh")) { refresh(market.marketID) }
+                            Button(market.enabled ? l.t("停用", "Disable") : l.t("启用", "Enable")) {
+                                Task { try? await model.engine.markets.setEnabled(market.marketID, !market.enabled); await reload() }
+                            }
+                            Button(l.t("只看此市场", "Browse This Market")) { openMarket = market.marketID; tab = 0; Task { await reload() } }
+                            Button(l.t("复制来源地址", "Copy Source Address")) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(market.inputURL, forType: .string)
+                            }
+                            Divider()
+                            Button(l.t("移除…", "Remove…"), role: .destructive) { remove(market) }
+                        } label: { Image(systemName: "ellipsis.circle") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    }
+                    .padding(.vertical, 2)
                 }
-                Spacer()
-                if refreshingID == market.marketID { ProgressView().controlSize(.small) }
-                Menu {
-                    Button(l.t("刷新", "Refresh")) { refresh(market.marketID) }
-                    Button(market.enabled ? l.t("停用", "Disable") : l.t("启用", "Enable")) {
-                        Task { try? await model.engine.markets.setEnabled(market.marketID, !market.enabled); await reload() }
-                    }
-                    Button(l.t("只看此市场", "Browse This Market")) { openMarket = market.marketID; tab = 0; Task { await reload() } }
-                    Button(l.t("复制来源地址", "Copy Source Address")) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(market.inputURL, forType: .string)
-                    }
-                    Divider()
-                    Button(l.t("移除…", "Remove…"), role: .destructive) { remove(market) }
-                } label: { Image(systemName: "ellipsis.circle") }
-                .menuStyle(.borderlessButton).fixedSize()
             }
         }
-        .listStyle(.inset)
+        .formStyle(.grouped)
     }
 
     func sourceStatus(_ market: MarketRecord) -> String {

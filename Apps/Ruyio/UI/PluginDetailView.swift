@@ -6,76 +6,37 @@ import RuyioSourceTransport
 import RuyioUI
 import SwiftUI
 
-/// Plugin details (PRD §19.4): overview, actions & entries, permissions, settings, version.
+/// Plugin details (PRD §19.4) as System Settings-style grouped sections; pushed onto the main
+/// window's navigation stack, so the toolbar shows the native back button.
 struct PluginDetailView: View {
     @ObservedObject var model: AppModel
     let summary: PluginSummary
-    @State private var tab = 0
     @State private var showUninstall = false
     @State private var showFinderMenu = false
+    @State private var showSettings = false
     var l: L10n { model.l }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button { model.selectedPlugin = nil } label: { Label(l.plugins, systemImage: "chevron.left") }.buttonStyle(.borderless)
-                Spacer()
-            }
-            .padding(.horizontal, 28).padding(.top, 14)
-            HStack(spacing: 14) {
-                PluginIcon(id: summary.id, size: 48)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(summary.displayName).font(.title2.weight(.semibold))
-                    Text([summary.version.description, summary.isDefault ? l.official : nil, l.activation(summary.status.activation)].compactMap { $0 }.joined(separator: " · "))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("", isOn: Binding(get: { summary.status.isInvocable }, set: { model.setEnabled(summary.id, $0) }))
-                    .toggleStyle(.switch).labelsHidden()
-            }
-            .padding(.horizontal, 28).padding(.vertical, 12)
-            Picker("", selection: $tab) {
-                Text(l.overview).tag(0)
-                Text(l.actionsAndEntries).tag(1)
-                Text(l.permissions).tag(2)
-                Text(l.settings).tag(3)
-                Text(l.version).tag(4)
-            }
-            .pickerStyle(.segmented).labelsHidden().padding(.horizontal, 28)
-            Divider().padding(.top, 10)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    switch tab {
-                    case 0: overview
-                    case 1: actions
-                    case 2: permissions
-                    case 3: PluginSettingsTab(model: model, summary: summary)
-                    default: UpdateSection(model: model, summary: summary)
+        Form {
+            Section {
+                HStack(spacing: 14) {
+                    PluginIcon(id: summary.id, size: 52)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(summary.displayName).font(.title2.weight(.semibold))
+                        Text([summary.version.description, summary.isDefault ? l.official : nil, l.activation(summary.status.activation)].compactMap { $0 }.joined(separator: " · "))
+                            .foregroundStyle(.secondary)
                     }
-                    Divider().padding(.top, 20)
-                    HStack {
-                        Button(summary.status.isInvocable ? l.disablePlugin : l.enablePlugin) { model.setEnabled(summary.id, !summary.status.isInvocable) }
-                        Spacer()
-                        Button(l.uninstall, role: .destructive) { showUninstall = true }
-                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(get: { summary.status.isInvocable }, set: { model.setEnabled(summary.id, $0) }))
+                        .toggleStyle(.switch).labelsHidden()
+                        .accessibilityLabel(summary.status.isInvocable ? l.disablePlugin : l.enablePlugin)
                 }
-                .padding(28)
-                .frame(maxWidth: 760, alignment: .leading)
+                .padding(.vertical, 4)
+                if let description = summary.displayDescription { Text(description).foregroundStyle(.secondary) }
             }
-        }
-        .sheet(isPresented: $showUninstall) { UninstallSheet(model: model, summary: summary, isPresented: $showUninstall) }
-        .sheet(isPresented: $showFinderMenu) { FinderMenuSheet(model: model, isPresented: $showFinderMenu) }
-    }
-
-    var overview: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let description = summary.displayDescription { Text(description) }
             if summary.status.pendingOutcomeCount > 0 {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Image(systemName: "questionmark.circle").foregroundStyle(.orange)
-                        Text(l.pendingOutcomes)
-                    }
+                Section {
+                    Label(l.pendingOutcomes, systemImage: "questionmark.circle.fill").foregroundStyle(.orange)
                     HStack {
                         Button(l.t("在 Finder 中查看", "Show in Finder")) {
                             let urls = model.engine.pendingOutcomeLocations(summary.id)
@@ -85,59 +46,66 @@ struct PluginDetailView: View {
                     }
                 }
             }
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                GridRow { Text(l.status).foregroundStyle(.secondary); Text(l.activation(summary.status.activation)) }
-                if let author = summary.manifest.author { GridRow { Text(l.author).foregroundStyle(.secondary); Text(author) } }
-                if let source = summary.manifest.source { GridRow { Text(l.source).foregroundStyle(.secondary); Text(source + " " + l.sourceUnverified).textSelection(.enabled) } }
-                GridRow { Text(l.signature).foregroundStyle(.secondary); Text(summary.teamID.map { "Team \($0)" } ?? l.t("ad-hoc（开发构建）", "ad-hoc (development build)")) }
-                if let error = summary.lastError { GridRow { Text(l.lastError).foregroundStyle(.secondary); Text(l.errorText(error)).foregroundStyle(.orange) } }
+            Section(l.overview) {
+                LabeledContent(l.status, value: l.activation(summary.status.activation))
+                if let author = summary.manifest.author { LabeledContent(l.author, value: author) }
+                if let source = summary.manifest.source {
+                    LabeledContent(l.source) {
+                        Text(source + " " + l.sourceUnverified).textSelection(.enabled).multilineTextAlignment(.trailing)
+                    }
+                }
+                LabeledContent(l.signature, value: summary.teamID.map { "Team \($0)" } ?? l.t("ad-hoc（开发构建）", "ad-hoc (development build)"))
+                if let error = summary.lastError {
+                    LabeledContent(l.lastError) { Text(l.errorText(error)).foregroundStyle(.orange).multilineTextAlignment(.trailing) }
+                }
             }
-        }
-    }
-
-    var actions: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ForEach(summary.manifest.actions, id: \.id) { action in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(summary.manifest.actionTitle(action, locale: model.language).text).font(.body.weight(.medium))
-                    HStack(spacing: 8) {
-                        ForEach(action.presentations, id: \.type) { presentation in
-                            EntryToggle(model: model, ref: ActionRef(pluginID: summary.id, actionID: action.id), kind: presentation.kind)
+            Section(l.actionsAndEntries) {
+                ForEach(summary.manifest.actions, id: \.id) { action in
+                    LabeledContent {
+                        HStack(spacing: 6) {
+                            ForEach(action.presentations, id: \.type) { presentation in
+                                EntryToggle(model: model, ref: ActionRef(pluginID: summary.id, actionID: action.id), kind: presentation.kind)
+                            }
+                        }
+                    } label: {
+                        Text(summary.manifest.actionTitle(action, locale: model.language).text)
+                    }
+                }
+                if summary.manifest.actions.contains(where: { $0.presentation(.finderContextMenu) != nil }) {
+                    Button(l.manageFinderMenu) { showFinderMenu = true }
+                }
+            }
+            if !summary.manifest.permissions.isEmpty {
+                Section(l.permissions) {
+                    ForEach(summary.manifest.permissions, id: \.self) { permission in
+                        LabeledContent {
+                            StatusChip(text: l.enforcement(permission.enforcement))
+                        } label: {
+                            Text(l.permissionName(permission))
+                            if permission.enforcement == .declaredAudited { Text(l.auditedNote) }
                         }
                     }
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             }
-            if summary.manifest.actions.contains(where: { $0.presentation(.finderContextMenu) != nil }) {
-                Button(l.manageFinderMenu) { showFinderMenu = true }
+            Section(l.settings) {
+                PluginSettingsRows(model: model, summary: summary, showSettings: $showSettings)
             }
-        }
-    }
-
-    var permissions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(summary.manifest.permissions, id: \.self) { permission in
+            Section(l.version) {
+                UpdateSection(model: model, summary: summary)
+            }
+            Section {
                 HStack {
-                    Text(l.permissionName(permission))
+                    Button(summary.status.isInvocable ? l.disablePlugin : l.enablePlugin) { model.setEnabled(summary.id, !summary.status.isInvocable) }
                     Spacer()
-                    StatusChip(text: l.enforcement(permission.enforcement))
+                    Button(l.uninstall, role: .destructive) { showUninstall = true }
                 }
-                if permission.enforcement == .declaredAudited { Text(l.auditedNote).font(.caption).foregroundStyle(.secondary) }
             }
         }
-    }
-
-    var versionTab: some View {
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-            GridRow { Text(l.version).foregroundStyle(.secondary); Text(summary.version.description).font(.system(.body, design: .monospaced)) }
-            GridRow {
-                Text(l.updateChannel).foregroundStyle(.secondary)
-                Text(summary.status.updateChannel == .bundledWithHost ? l.updatesWithHost : (summary.status.updateChannel == .none ? l.noUpdateSource : summary.status.updateChannel.rawValue))
-            }
-            GridRow { Text("ID").foregroundStyle(.secondary); Text(summary.id.rawValue).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
-        }
+        .formStyle(.grouped)
+        .navigationTitle(summary.displayName)
+        .sheet(isPresented: $showUninstall) { UninstallSheet(model: model, summary: summary, isPresented: $showUninstall) }
+        .sheet(isPresented: $showFinderMenu) { FinderMenuSheet(model: model, isPresented: $showFinderMenu) }
+        .sheet(isPresented: $showSettings) { PluginSettingsSheet(model: model, summary: summary, isPresented: $showSettings) }
     }
 }
 
@@ -155,38 +123,35 @@ struct UpdateSection: View {
     var l: L10n { model.l }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                GridRow { Text(l.version).foregroundStyle(.secondary); Text(summary.version.description).font(.system(.body, design: .monospaced)) }
-                GridRow {
-                    Text(l.updateChannel).foregroundStyle(.secondary)
-                    Text(summary.status.updateChannel == .bundledWithHost ? l.updatesWithHost : (summary.status.updateChannel == .none ? l.noUpdateSource : summary.status.updateChannel.rawValue))
-                }
-                GridRow { Text("ID").foregroundStyle(.secondary); Text(summary.id.rawValue).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
-            }
-            HStack {
+        Group {
+            LabeledContent(l.version) { Text(summary.version.description).monospacedDigit() }
+            LabeledContent(l.updateChannel, value: summary.status.updateChannel == .bundledWithHost ? l.updatesWithHost
+                           : (summary.status.updateChannel == .none ? l.noUpdateSource : summary.status.updateChannel.rawValue))
+            LabeledContent("ID") { Text(summary.id.rawValue).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
+            HStack(spacing: 8) {
                 Button(l.t("检查更新", "Check for Update")) { check() }.disabled(checking || working || summary.status.updateChannel == .none)
                 if checking || working { ProgressView().controlSize(.small) }
                 if let available {
                     Text(l.t("发现新版本 \(available.version)", "Version \(available.version) is available"))
-                    Button(l.t("更新…", "Update…")) { update(available) }.disabled(working)
+                    Button(l.t("更新…", "Update…")) { update(available) }.buttonStyle(.borderedProminent).disabled(working)
                 } else if checked {
                     Text(l.t("已是最新版本", "Up to date")).foregroundStyle(.secondary)
                 }
+                Spacer()
+                if summary.status.updateChannel == .descriptor || summary.status.updateChannel == .market {
+                    Button(l.t("更换来源…", "Change Source…")) { changeSource() }.disabled(working)
+                }
+                if !olderReleases.isEmpty {
+                    Menu(l.t("安装其他版本…", "Install Another Version…")) {
+                        ForEach(olderReleases, id: \.version) { release in
+                            Button(release.version.description) { downgrade(release) }
+                        }
+                    }
+                    .fixedSize()
+                    .disabled(working)
+                }
             }
             if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
-            if summary.status.updateChannel == .descriptor || summary.status.updateChannel == .market {
-                Button(l.t("更换来源…", "Change Source…")) { changeSource() }.disabled(working)
-            }
-            if !olderReleases.isEmpty {
-                Menu(l.t("安装其他版本…", "Install Another Version…")) {
-                    ForEach(olderReleases, id: \.version) { release in
-                        Button(release.version.description) { downgrade(release) }
-                    }
-                }
-                .fixedSize()
-                .disabled(working)
-            }
         }
         .task(id: summary.version) {
             if let (descriptor, url) = await model.engine.sourceDescriptor(summary.id) {
@@ -370,17 +335,20 @@ struct EntryToggle: View {
         case .menuBar: l.menuBar
         }
         Button {
-            if kind == .globalHotkey { model.page = .shortcuts; return }
+            if kind == .globalHotkey { model.selectedPlugin = nil; model.page = .shortcuts; return }
             visible.toggle()
             Task { try? await model.engine.registry.setEntryVisible(ref, kind: kind, visible: visible) }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: visible ? "checkmark.circle.fill" : "circle")
+            HStack(spacing: 3) {
+                Image(systemName: visible ? "checkmark" : "plus").font(.caption2.weight(.bold))
                 Text(label)
             }
             .font(.caption)
         }
         .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .tint(visible ? .accentColor : nil)
         .accessibilityLabel("\(label), \(visible ? l.enabledState : l.notEnabled)")
         .task { visible = await model.engine.registry.isEntryVisible(ref, kind: kind) }
     }
@@ -482,22 +450,21 @@ struct FinderMenuSheet: View {
     }
 }
 
-/// Settings tab: host-rendered plugin settings view; disabled plugins are read-only and never started (R13).
-struct PluginSettingsTab: View {
+/// Settings rows inside the detail page. Plugin-rendered settings open in a sheet so their form is
+/// never nested inside the host form; disabled plugins are read-only and never started (R13).
+struct PluginSettingsRows: View {
     @ObservedObject var model: AppModel
     let summary: PluginSummary
-    @StateObject private var holder = SettingsHolder()
+    @Binding var showSettings: Bool
     var l: L10n { model.l }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if summary.id.rawValue == "app.ruyio.finder-essentials" {
-                let editor = model.engine.pluginSettings(summary.id)["app.editor"]?.stringValue
+        if summary.id.rawValue == "app.ruyio.finder-essentials" {
+            let editor = model.engine.pluginSettings(summary.id)["app.editor"]?.stringValue
+            LabeledContent(l.t("编辑器", "Editor")) {
                 HStack {
-                    Text(l.t("编辑器", "Editor"))
-                    Spacer()
                     Text(editor ?? l.notSet).foregroundStyle(.secondary)
-                    Button("…") {
+                    Button(l.t("选择…", "Choose…")) {
                         Task {
                             if let id = await SystemBridgeImpl().chooseApplication(role: "editor") {
                                 try? await model.engine.setPluginSetting(summary.id, key: "app.editor", value: .string(id))
@@ -506,21 +473,52 @@ struct PluginSettingsTab: View {
                         }
                     }
                 }
-                HStack { Text(l.t("终端", "Terminal")); Spacer(); Text("Terminal").foregroundStyle(.secondary) }
             }
-            if summary.manifest.views.contains(where: { $0.placement == .settings }) {
-                if !summary.status.isInvocable {
-                    Text(l.settingsNeedEnable).foregroundStyle(.secondary)
-                } else if let context = holder.context {
-                    SchemaNodeView(node: context.document.root, context: context).frame(minHeight: 360)
-                } else {
-                    ProgressView()
-                }
-            } else if summary.id.rawValue != "app.ruyio.finder-essentials" {
-                Text(l.noSettings).foregroundStyle(.secondary)
-            }
+            LabeledContent(l.t("终端", "Terminal"), value: "Terminal")
         }
-        .task(id: summary.status.isInvocable) {
+        if summary.manifest.views.contains(where: { $0.placement == .settings }) {
+            if summary.status.isInvocable {
+                Button(l.t("插件设置…", "Plugin Settings…")) { showSettings = true }
+            } else {
+                Text(l.settingsNeedEnable).foregroundStyle(.secondary)
+            }
+        } else if summary.id.rawValue != "app.ruyio.finder-essentials" {
+            Text(l.noSettings).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct PluginSettingsSheet: View {
+    @ObservedObject var model: AppModel
+    let summary: PluginSummary
+    @Binding var isPresented: Bool
+    @StateObject private var holder = SettingsHolder()
+    var l: L10n { model.l }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                PluginIcon(id: summary.id, size: 24)
+                Text(summary.displayName).font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 20).padding(.top, 18)
+            Group {
+                if let context = holder.context {
+                    SchemaNodeView(node: context.document.root, context: context)
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(minHeight: 360)
+            HStack {
+                Spacer()
+                Button(l.done) { isPresented = false }.keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+        }
+        .frame(width: 520, height: 480)
+        .task {
             guard summary.status.isInvocable, let view = summary.manifest.views.first(where: { $0.placement == .settings }) else { return }
             await holder.open(model: model, pluginID: summary.id, viewID: view.id)
         }

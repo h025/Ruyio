@@ -14,47 +14,45 @@ struct ShortcutsPage: View {
     var l: L10n { model.l }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(title: l.shortcuts) { EmptyView() }
-            TextField(l.searchActions, text: $search).textFieldStyle(.roundedBorder).padding(.horizontal, 28).padding(.bottom, 8)
-            if let message { Text(message).foregroundStyle(.orange).font(.callout).padding(.horizontal, 28) }
-            List {
-                Section("Ruyio") {
-                    HStack {
-                        Text(l.openCommandPalette)
-                        Spacer()
-                        recorderButton(key: "host.palette", current: model.settings.commandPaletteShortcut.flatMap(KeyShortcut.init(manifestString:)), state: nil) { shortcut in
-                            model.update { $0.commandPaletteShortcut = shortcut?.manifestString }
-                        }
+        Form {
+            if let message {
+                Section { Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+            }
+            Section("Ruyio") {
+                LabeledContent(l.openCommandPalette) {
+                    recorderButton(key: "host.palette", current: model.settings.commandPaletteShortcut.flatMap(KeyShortcut.init(manifestString:)), state: nil) { shortcut in
+                        model.update { $0.commandPaletteShortcut = shortcut?.manifestString }
                     }
                 }
-                let grouped = Dictionary(grouping: model.snapshot.entries.hotkeys.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.pluginName.localizedCaseInsensitiveContains(search) }, by: \.pluginName)
-                ForEach(grouped.keys.sorted(), id: \.self) { plugin in
-                    Section(plugin) {
-                        ForEach(grouped[plugin] ?? []) { entry in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(entry.title)
-                                    if !entry.isPluginEnabled { Text(l.pluginDisabledNote).font(.caption).foregroundStyle(.secondary) }
-                                    else if entry.state == .unavailable { Text(l.unavailable).font(.caption).foregroundStyle(.orange) }
+            }
+            let grouped = Dictionary(grouping: model.snapshot.entries.hotkeys.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.pluginName.localizedCaseInsensitiveContains(search) }, by: \.pluginName)
+            ForEach(grouped.keys.sorted(), id: \.self) { plugin in
+                Section(plugin) {
+                    ForEach(grouped[plugin] ?? []) { entry in
+                        LabeledContent {
+                            HStack(spacing: 8) {
+                                if entry.isCustom {
+                                    Button(l.restoreDefault) { Task { try? await model.engine.registry.setHotkey(entry.ref, shortcut: nil, resetToDefault: true) } }
+                                        .buttonStyle(.link)
                                 }
-                                Spacer()
                                 recorderButton(key: entry.id, current: entry.shortcut, state: entry.state) { shortcut in
                                     Task { try? await model.engine.registry.setHotkey(entry.ref, shortcut: shortcut) }
                                 }
                                 .disabled(!entry.isPluginEnabled)
-                                if entry.isCustom {
-                                    Button(l.restoreDefault) { Task { try? await model.engine.registry.setHotkey(entry.ref, shortcut: nil, resetToDefault: true) } }
-                                        .buttonStyle(.borderless)
-                                }
                             }
-                            .opacity(entry.isPluginEnabled ? 1 : 0.55)
+                        } label: {
+                            Text(entry.title)
+                            if !entry.isPluginEnabled { Text(l.pluginDisabledNote) }
+                            else if entry.state == .unavailable { Text(l.unavailable).foregroundStyle(.orange) }
                         }
+                        .opacity(entry.isPluginEnabled ? 1 : 0.55)
                     }
                 }
             }
-            .listStyle(.inset)
         }
+        .formStyle(.grouped)
+        .navigationTitle(l.shortcuts)
+        .searchable(text: $search, placement: .toolbar, prompt: l.searchActions)
     }
 
     func recorderButton(key: String, current: KeyShortcut?, state: HotkeyRegistrationState?, apply: @escaping (KeyShortcut?) -> Void) -> some View {
@@ -83,9 +81,13 @@ struct ShortcutsPage: View {
             }
         } label: {
             Text(recording == key ? l.recordShortcut : (current?.displayString ?? l.notSet))
-                .font(.system(.body, design: .monospaced))
-                .frame(minWidth: 90)
+                .font(.system(.body, design: .rounded).weight(.medium))
+                .foregroundStyle(current == nil && recording != key ? .secondary : .primary)
+                .frame(minWidth: 96)
         }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.roundedRectangle(radius: 7))
+        .tint(recording == key ? .accentColor : nil)
         .accessibilityLabel(current?.displayString ?? l.notSet)
     }
 }
@@ -120,35 +122,42 @@ struct PrivacyPage: View {
     var l: L10n { model.l }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(title: l.privacy) { Button(l.recheck) { model.refreshSystemState() } }
-            List {
-                Section(l.systemPermissions) {
-                    permissionRow(l.accessibility, l.accessibilityUse, model.accessibilityTrusted ? l.authorized : l.notAuthorized,
-                                  ok: model.accessibilityTrusted) { SystemSettings.openAccessibility() }
-                    permissionRow(l.finderExtension, l.finderExtensionUse, model.finderExtensionEnabled ? l.enabledState : l.notEnabled,
-                                  ok: model.finderExtensionEnabled) { FinderExtensionStatus.showManagementInterface() }
-                    permissionRow(l.filesAndFolders, l.filesAndFoldersUse, l.asNeeded, ok: true) { SystemSettings.openFilesAndFolders() }
-                    permissionRow(l.clipboardAccess, l.clipboardAccessUse, clipboardState.0, ok: clipboardState.1) { SystemSettings.openPasteboardPrivacy() }
-                }
-                ForEach(model.snapshot.plugins) { plugin in
-                    Section {
-                        ForEach(plugin.manifest.permissions, id: \.self) { permission in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text(l.permissionName(permission))
-                                    Spacer()
-                                    StatusChip(text: l.enforcement(permission.enforcement))
-                                }
-                                if permission.enforcement == .declaredAudited { Text(l.auditedNote).font(.caption).foregroundStyle(.secondary) }
-                            }
+        Form {
+            Section(l.systemPermissions) {
+                permissionRow("accessibility", .blue, l.accessibility, l.accessibilityUse, model.accessibilityTrusted ? l.authorized : l.notAuthorized,
+                              ok: model.accessibilityTrusted) { SystemSettings.openAccessibility() }
+                permissionRow("puzzlepiece.extension.fill", .gray, l.finderExtension, l.finderExtensionUse, model.finderExtensionEnabled ? l.enabledState : l.notEnabled,
+                              ok: model.finderExtensionEnabled) { FinderExtensionStatus.showManagementInterface() }
+                permissionRow("folder.fill", .cyan, l.filesAndFolders, l.filesAndFoldersUse, l.asNeeded, ok: true) { SystemSettings.openFilesAndFolders() }
+                permissionRow("list.clipboard.fill", .orange, l.clipboardAccess, l.clipboardAccessUse, clipboardState.0, ok: clipboardState.1) { SystemSettings.openPasteboardPrivacy() }
+            }
+            ForEach(model.snapshot.plugins) { plugin in
+                Section {
+                    ForEach(plugin.manifest.permissions, id: \.self) { permission in
+                        LabeledContent {
+                            StatusChip(text: l.enforcement(permission.enforcement))
+                        } label: {
+                            Text(l.permissionName(permission))
+                            if permission.enforcement == .declaredAudited { Text(l.auditedNote) }
                         }
-                    } header: {
-                        Button(plugin.displayName) { model.selectedPlugin = plugin.id; model.page = .plugins }.buttonStyle(.plain)
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        PluginIcon(id: plugin.id, size: 18)
+                        Text(plugin.displayName)
+                        Spacer()
+                        Button(l.openPluginDetail) { model.page = .plugins; model.selectedPlugin = plugin.id }
+                            .buttonStyle(.link).font(.caption)
                     }
                 }
             }
-            .listStyle(.inset)
+        }
+        .formStyle(.grouped)
+        .navigationTitle(l.privacy)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { model.refreshSystemState() } label: { Label(l.recheck, systemImage: "arrow.clockwise") }.help(l.recheck)
+            }
         }
         .onAppear { model.refreshSystemState() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshSystemState() }
@@ -166,16 +175,21 @@ struct PrivacyPage: View {
         return (l.unknownState, true)
     }
 
-    func permissionRow(_ title: String, _ use: String, _ state: String, ok: Bool, open: @escaping () -> Void) -> some View {
-        HStack {
-            VStack(alignment: .leading) {
+    func permissionRow(_ symbol: String, _ color: Color, _ title: String, _ use: String, _ state: String, ok: Bool, open: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 7, style: .continuous).fill(color.gradient).frame(width: 30, height: 30)
+                .overlay(Image(systemName: symbol).font(.system(size: 15, weight: .medium)).foregroundStyle(.white))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                 Text(use).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            StatusChip(text: state, tone: ok ? .green : .orange)
-            Button(l.openSystemSettings, action: open).controlSize(.small)
+            Label(state, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.callout).foregroundStyle(ok ? Color.green : Color.orange)
+            Button(l.t("打开", "Open"), action: open).help(l.openSystemSettings)
         }
+        .padding(.vertical, 2)
     }
 }
 
@@ -186,61 +200,74 @@ struct GeneralPage: View {
     var l: L10n { model.l }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(title: l.general) { EmptyView() }
-            if let error = model.settingsError { Text(error).foregroundStyle(.red).padding(.horizontal, 28) }
-            Form {
-                Section(l.startup) {
-                    Toggle(l.launchAtLogin, isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                    Toggle(l.showInMenuBar, isOn: Binding(get: { model.settings.showInMenuBar }, set: { v in model.update { $0.showInMenuBar = v } }))
+        Form {
+            if let error = model.settingsError {
+                Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
+            }
+            Section(l.startup) {
+                Toggle(l.launchAtLogin, isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                Toggle(l.showInMenuBar, isOn: Binding(get: { model.settings.showInMenuBar }, set: { v in model.update { $0.showInMenuBar = v } }))
+            }
+            Section(l.appearance) {
+                Picker(l.theme, selection: Binding(get: { model.settings.theme }, set: { v in model.update { $0.theme = v } })) {
+                    Text(l.followSystem).tag("system")
+                    Text(l.light).tag("light")
+                    Text(l.dark).tag("dark")
                 }
-                Section(l.appearance) {
-                    Picker(l.theme, selection: Binding(get: { model.settings.theme }, set: { v in model.update { $0.theme = v } })) {
-                        Text(l.followSystem).tag("system")
-                        Text(l.light).tag("light")
-                        Text(l.dark).tag("dark")
+                Picker(l.language, selection: Binding(get: { model.settings.language }, set: { v in model.update { $0.language = v } })) {
+                    ForEach(AppLanguage.allCases) { Text($0.title(l)).tag($0) }
+                }
+            }
+            Section(l.updates) {
+                Toggle(l.autoRefreshMarkets, isOn: Binding(get: { model.settings.autoRefreshMarkets }, set: { v in model.update { $0.autoRefreshMarkets = v } }))
+                Toggle(l.autoCheckPlugins, isOn: Binding(get: { model.settings.autoCheckPluginUpdates }, set: { v in model.update { $0.autoCheckPluginUpdates = v } }))
+                Toggle(l.autoCheckApp, isOn: Binding(get: { model.settings.autoCheckAppUpdates }, set: { v in model.update { $0.autoCheckAppUpdates = v } }))
+            }
+            Section(l.dataSection) {
+                Toggle(l.includeInBackup, isOn: Binding(get: { model.settings.includeInBackup }, set: { v in model.update { $0.includeInBackup = v } }))
+            }
+            Section(l.advanced) {
+                Toggle(l.developerMode, isOn: Binding(get: { model.settings.developerMode }, set: { enable in
+                    if enable {
+                        let alert = NSAlert()
+                        alert.messageText = l.developerMode
+                        alert.informativeText = l.developerModeWarning
+                        alert.addButton(withTitle: l.cancel)
+                        alert.addButton(withTitle: l.continueAction)
+                        guard alert.runModal() == .alertSecondButtonReturn else { return }
                     }
-                    Picker(l.language, selection: Binding(get: { model.settings.language }, set: { v in model.update { $0.language = v } })) {
-                        ForEach(AppLanguage.allCases) { Text($0.title(l)).tag($0) }
-                    }
-                }
-                Section(l.updates) {
-                    Toggle(l.autoRefreshMarkets, isOn: Binding(get: { model.settings.autoRefreshMarkets }, set: { v in model.update { $0.autoRefreshMarkets = v } }))
-                    Toggle(l.autoCheckPlugins, isOn: Binding(get: { model.settings.autoCheckPluginUpdates }, set: { v in model.update { $0.autoCheckPluginUpdates = v } }))
-                    Toggle(l.autoCheckApp, isOn: Binding(get: { model.settings.autoCheckAppUpdates }, set: { v in model.update { $0.autoCheckAppUpdates = v } }))
-                }
-                Section(l.dataSection) {
-                    Toggle(l.includeInBackup, isOn: Binding(get: { model.settings.includeInBackup }, set: { v in model.update { $0.includeInBackup = v } }))
-                }
-                Section(l.advanced) {
-                    Toggle(l.developerMode, isOn: Binding(get: { model.settings.developerMode }, set: { enable in
-                        if enable {
-                            let alert = NSAlert()
-                            alert.messageText = l.developerMode
-                            alert.informativeText = l.developerModeWarning
-                            alert.addButton(withTitle: l.cancel)
-                            alert.addButton(withTitle: l.continueAction)
-                            guard alert.runModal() == .alertSecondButtonReturn else { return }
-                        }
-                        model.update { $0.developerMode = enable }
-                    }))
-                    if model.settings.developerMode {
+                    model.update { $0.developerMode = enable }
+                }))
+                if model.settings.developerMode {
+                    LabeledContent(l.t("开发插件", "Development Plugin")) {
                         Button(l.loadDevelopmentPlugin) { loadDevelopmentPlugin() }
                     }
                 }
-                Section(l.help) {
+            }
+            Section(l.help) {
+                LabeledContent(l.t("首次引导", "Onboarding")) {
+                    Button(l.rerunOnboarding) { NSApp.sendAction(#selector(AppDelegate.showOnboarding), to: nil, from: nil) }
+                }
+                LabeledContent(l.t("诊断日志", "Diagnostic Logs")) {
                     HStack {
-                        Button(l.rerunOnboarding) { NSApp.sendAction(#selector(AppDelegate.showOnboarding), to: nil, from: nil) }
                         Button(l.openLogs) { NSWorkspace.shared.open(model.engine.paths.logs) }
+                        Button(l.t("导出…", "Export…")) { exportLogs() }
                         Button(l.clearLogs) { model.engine.log.clear() }
-                        Button(l.t("导出日志…", "Export Logs…")) { exportLogs() }
-                        Button(l.licenses) { if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") { NSWorkspace.shared.open(url) } }
                     }
-                    Text(verbatim: "Ruyio \(HostInfo.version) · macOS \(OSVersion.current) · arm64").font(.caption).foregroundStyle(.secondary)
+                }
+                LabeledContent(l.licenses) {
+                    Button(l.t("查看", "View")) { if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") { NSWorkspace.shared.open(url) } }
                 }
             }
-            .formStyle(.grouped)
+            Section {
+                LabeledContent(l.version) { Text(verbatim: "\(HostInfo.version)").monospacedDigit() }
+                LabeledContent(l.t("系统", "System")) { Text(verbatim: "macOS \(OSVersion.current) · arm64") }
+            } footer: {
+                Text(l.tagline).frame(maxWidth: .infinity, alignment: .center).foregroundStyle(.tertiary)
+            }
         }
+        .formStyle(.grouped)
+        .navigationTitle(l.general)
     }
 
     /// Shows the included fields first, then lets the user choose where to save (PRD §21).

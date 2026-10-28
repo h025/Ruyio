@@ -12,21 +12,20 @@ final class FloatingPanel: NSPanel {
     var onResignKey: (() -> Void)?
 
     init(size: NSSize, minSize: NSSize, resizable: Bool) {
-        var style: NSWindow.StyleMask = [.nonactivatingPanel, .titled, .fullSizeContentView]
+        // Borderless and transparent: the SwiftUI root draws the glass shape, as Spotlight and Maps panels do.
+        var style: NSWindow.StyleMask = [.nonactivatingPanel, .borderless]
         if resizable { style.insert(.resizable) }
         super.init(contentRect: NSRect(origin: .zero, size: size), styleMask: style, backing: .buffered, defer: true)
         isFloatingPanel = true
         level = .floating
         collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace, .transient]
-        titleVisibility = .hidden
-        titlebarAppearsTransparent = true
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
         isMovableByWindowBackground = true
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         self.minSize = minSize
-        standardWindowButton(.closeButton)?.isHidden = true
-        standardWindowButton(.miniaturizeButton)?.isHidden = true
-        standardWindowButton(.zoomButton)?.isHidden = true
         animationBehavior = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .none : .utilityWindow
     }
 
@@ -79,13 +78,16 @@ enum KeyCommand: Equatable {
 @MainActor
 final class HUD {
     static let shared = HUD()
-    private var panel: NSPanel?
+    fileprivate var panel: NSPanel?
     private var hideTask: Task<Void, Never>?
 
     func show(_ text: String, duration: Double = 2.5) {
         hideTask?.cancel()
-        let label = NSHostingView(rootView: Text(text).font(.callout).multilineTextAlignment(.center).padding(.horizontal, 18).padding(.vertical, 10)
-            .frame(maxWidth: 420).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)))
+        let label = NSHostingView(rootView: Text(text).font(.callout.weight(.medium)).multilineTextAlignment(.center)
+            .padding(.horizontal, 20).padding(.vertical, 11)
+            .frame(maxWidth: 440)
+            .ruyioGlass(in: Capsule())
+            .padding(10))
         let size = label.fittingSize
         let panel = self.panel ?? {
             let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -117,7 +119,7 @@ final class HUD {
 @MainActor
 final class OverlayController {
     private let model: AppModel
-    private var panel: FloatingPanel?
+    fileprivate var panel: FloatingPanel?
     private var context: SchemaContext?
     private var current: (PluginID, String)?
     weak var palette: CommandPaletteController?
@@ -155,7 +157,7 @@ final class OverlayController {
         }
     }
 
-    private func present(document: ViewDocument, pluginID: PluginID) {
+    fileprivate func present(document: ViewDocument, pluginID: PluginID) {
         let l = model.l
         let engine = model.engine
         let context = SchemaContext(
@@ -163,6 +165,7 @@ final class OverlayController {
             strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: l.t("撤销", "Undo"), loading: l.t("正在加载…", "Loading…"), choose: "…"),
             sendEvent: { [weak self] event, revision in await self?.send(event, revision: revision) },
             loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) })
+        context.dismiss = { [weak self] in self?.close() }
         self.context = context
         current = (pluginID, document.viewID)
         let panel = FloatingPanel(size: NSSize(width: 780, height: 520), minSize: NSSize(width: 640, height: 420), resizable: true)
@@ -279,6 +282,17 @@ final class OverlayController {
     }
 }
 
+#if DEBUG
+extension OverlayController {
+    func presentForGallery(document: ViewDocument, pluginID: PluginID) { present(document: document, pluginID: pluginID) }
+    var galleryWindow: NSWindow? { panel }
+}
+
+extension HUD {
+    var galleryWindow: NSWindow? { panel }
+}
+#endif
+
 extension Notification.Name {
     static let ruyioClearSearch = Notification.Name("app.ruyio.clearSearch")
 }
@@ -288,20 +302,9 @@ struct OverlayRoot: View {
     var body: some View {
         SchemaNodeView(node: context.document.root, context: context)
             .frame(minWidth: 640, minHeight: 420)
-            .background(VisualEffect().ignoresSafeArea())
+            .ruyioGlass(in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .ignoresSafeArea()
     }
-}
-
-/// Material behind floating panels; solid when Reduce Transparency is on (interaction §2.4, plan §17).
-struct VisualEffect: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .popover
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 // MARK: - File conflict sheet (PRD §19.19)
