@@ -6,9 +6,6 @@ tools come from plugins. V1 ships two removable default plugins: **Clipboard His
 
 Platform: Apple Silicon (arm64), macOS 15 / 26 / 27. Languages: Simplified Chinese and English.
 
-Product and engineering documents are in [`docs/`](docs/); current progress, autonomous decisions and
-open items are in [`docs/implementation-status.md`](docs/implementation-status.md).
-
 ## Layout
 
 | Path | Contents |
