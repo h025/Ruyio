@@ -29,6 +29,23 @@ struct NetworkPolicyTests {
                       [100, 64, 0, 1], [198, 18, 0, 1], [224, 0, 0, 1], [255, 255, 255, 255]] as [[UInt8]])
     func blocksPrivateIPv4(_ bytes: [UInt8]) { #expect(!NetworkPolicy.isPublic(ipv4: bytes)) }
 
+    @Test func fakeIPAnswersAreAcceptedOnlyForGitHubHosts() {
+        let fake4: [UInt8] = [198, 18, 2, 61]
+        let fake6: [UInt8] = [0xFD, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        for host in ["api.github.com", "RAW.githubusercontent.com", "github.com"] {
+            #expect(NetworkPolicy.accepts(fake4, for: host))
+            #expect(NetworkPolicy.accepts(fake6, for: host))
+            // Real intranet answers stay blocked even for GitHub names.
+            #expect(!NetworkPolicy.accepts([192, 168, 1, 1], for: host))
+            #expect(!NetworkPolicy.accepts([127, 0, 0, 1], for: host))
+        }
+        for host in ["example.com", "github.com.evil.example", "gist.github.com"] {
+            #expect(!NetworkPolicy.accepts(fake4, for: host))
+            #expect(!NetworkPolicy.accepts(fake6, for: host))
+        }
+        #expect(NetworkPolicy.accepts([140, 82, 112, 3], for: "example.com"))
+    }
+
     @Test func allowsPublicIPv4() {
         #expect(NetworkPolicy.isPublic(ipv4: [1, 1, 1, 1]))
         #expect(NetworkPolicy.isPublic(ipv4: [140, 82, 112, 3]))

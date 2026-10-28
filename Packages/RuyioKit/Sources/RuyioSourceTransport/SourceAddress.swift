@@ -83,6 +83,28 @@ public enum NetworkPolicy {
         return true
     }
 
+    /// GitHub hosts Ruyio itself contacts for GitHub sources. A transparent proxy in fake-IP mode (Clash,
+    /// Surge and the like, common where GitHub needs a proxy) answers them from 198.18.0.0/15 or a unique-local
+    /// IPv6 range and connects to the real host, which never resolves to an intranet address; TLS still
+    /// authenticates it. Only these names get that allowance; every other host stays public-only (A37).
+    public static let fakeIPTolerantHosts: Set<String> = [
+        "github.com", "api.github.com", "raw.githubusercontent.com", "codeload.github.com", "objects.githubusercontent.com",
+    ]
+
+    /// Whether a resolved address is acceptable for this host name.
+    public static func accepts(_ bytes: [UInt8], for host: String) -> Bool {
+        switch bytes.count {
+        case 4:
+            if isPublic(ipv4: bytes) { return true }
+            return fakeIPTolerantHosts.contains(host.lowercased()) && bytes[0] == 198 && (bytes[1] == 18 || bytes[1] == 19)
+        case 16:
+            if isPublic(ipv6: bytes) { return true }
+            return fakeIPTolerantHosts.contains(host.lowercased()) && (bytes[0] & 0xFE) == 0xFC
+        default:
+            return false
+        }
+    }
+
     /// Resolves the host and requires every address to be public; IP literals are checked directly.
     public static func checkHost(_ host: String) throws {
         let lower = host.lowercased()
@@ -105,12 +127,12 @@ public enum NetworkPolicy {
                 if current.pointee.ai_family == AF_INET {
                     let ip = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
                     let bytes = withUnsafeBytes(of: ip) { Array($0) }
-                    guard isPublic(ipv4: bytes) else { throw RuyioError(.networkPolicy, objectID: host, diagnostic: "resolves to a non-public address") }
+                    guard accepts(bytes, for: lower) else { throw RuyioError(.networkPolicy, objectID: host, diagnostic: "resolves to a non-public address") }
                 } else if current.pointee.ai_family == AF_INET6 {
                     let bytes = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { pointer in
                         withUnsafeBytes(of: pointer.pointee.sin6_addr) { Array($0) }
                     }
-                    guard isPublic(ipv6: bytes) else { throw RuyioError(.networkPolicy, objectID: host, diagnostic: "resolves to a non-public address") }
+                    guard accepts(bytes, for: lower) else { throw RuyioError(.networkPolicy, objectID: host, diagnostic: "resolves to a non-public address") }
                 }
             }
             node = current.pointee.ai_next
