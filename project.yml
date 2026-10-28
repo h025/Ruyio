@@ -87,6 +87,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ruyio.mac
         PRODUCT_NAME: Ruyio
+      configs:
+        # Xcode adds get-task-allow (debugger attach) to ad-hoc builds; installed builds must not have it.
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     postBuildScripts:
       - name: Package default plugins
         script: '"${SRCROOT}/Scripts/package-default-plugins.sh"'
@@ -120,6 +124,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ruyio.mac.FinderSync
         PRODUCT_NAME: RuyioFinderSync
+      configs:
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
   RuyioMediaDecoder:
     type: xpc-service
     platform: macOS
