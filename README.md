@@ -32,6 +32,12 @@ open build/DerivedData/Build/Products/Debug/Ruyio.app
 Builds are ad-hoc signed ("Sign to Run Locally"). Plugins run as separate sandboxed processes and talk to
 the host over anonymous pipes; their UI is rendered by the host from a versioned schema.
 
+For daily use, install with `Scripts/install-local.sh` (builds Release, or pass an existing `Ruyio.app`).
+It re-signs the app with a local self-signed identity so Accessibility and other privacy grants survive
+rebuilds, replaces `/Applications/Ruyio.app`, and leaves only that copy's Finder extension registered.
+Copying an ad-hoc build over `/Applications/Ruyio.app` instead voids the grants: System Settings keeps
+showing them on, but macOS no longer matches the app.
+
 ## Test
 
 ```sh
