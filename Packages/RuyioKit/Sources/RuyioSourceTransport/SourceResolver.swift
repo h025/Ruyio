@@ -26,6 +26,40 @@ public struct ResolvedSource: Sendable {
     public var github: GitHubLocation?
 }
 
+/// The user's update location is durable; a resolved commit is only one verified snapshot.
+public struct PluginSourceBinding: Codable, Sendable, Hashable {
+    public var inputURL: String
+    public var canonicalURL: String
+    public var github: GitHubLocation?
+    private static let prefix = "descriptor:v1:"
+
+    public init(_ resolved: ResolvedSource) {
+        inputURL = resolved.inputURL
+        canonicalURL = resolved.canonicalURL
+        github = resolved.github
+    }
+
+    public func encoded() throws -> String {
+        Self.prefix + (try JSONCoding.encoder().encode(self)).base64EncodedString()
+    }
+
+    public static func decode(_ value: String) throws -> Self {
+        if value.hasPrefix(prefix) {
+            guard let data = Data(base64Encoded: String(value.dropFirst(prefix.count))) else { throw RuyioError(.sourceInvalid) }
+            return try JSONCoding.decoder().decode(Self.self, from: data)
+        }
+        // Legacy URLs retain their exact meaning, including intentionally pinned raw commit URLs.
+        _ = try SourceAddress.parse(value)
+        return Self(inputURL: value, canonicalURL: value, github: nil)
+    }
+
+    private init(inputURL: String, canonicalURL: String, github: GitHubLocation?) {
+        self.inputURL = inputURL
+        self.canonicalURL = canonicalURL
+        self.github = github
+    }
+}
+
 /// Turns an address into a single plugin, a market or a direct package, using only explicit
 /// descriptor file names — never repository names or recursive scans (PRD §7.6.2).
 public struct SourceResolver: Sendable {
@@ -52,6 +86,15 @@ public struct SourceResolver: Sendable {
         case .github(let owner, let repo, let treeRest):
             return try await resolveGitHub(owner: owner, repo: repo, treeRest: treeRest, input: trimmed)
         }
+    }
+
+    public func resolve(_ binding: PluginSourceBinding) async throws -> ResolvedSource {
+        guard let github = binding.github else { return try await resolve(binding.inputURL) }
+        let info = try await repoInfo(owner: github.owner, repo: github.repo)
+        guard info.id == github.repoID else { throw RuyioError(.sourceInvalid, diagnostic: "repository identity changed") }
+        let sha = github.isFixedRef ? github.commitSHA : try await commitSHA(owner: github.owner, repo: github.repo, ref: github.ref)
+        return try await readGitHub(owner: github.owner, repo: github.repo, repoID: info.id, ref: github.ref,
+                                    path: github.path, sha: sha, input: binding.inputURL, canonical: binding.canonicalURL)
     }
 
     func classify(_ data: Data, at url: URL, input: String, canonical: String, github: GitHubLocation?) throws -> ResolvedSource {
@@ -93,14 +136,19 @@ public struct SourceResolver: Sendable {
             (ref, path, sha) = matches[0]
         }
         guard path.split(separator: "/").allSatisfy({ $0 != ".." && $0 != "." }) else { throw RuyioError(.sourceInvalid) }
+        let canonical = "https://github.com/\(owner)/\(repo)" + (treeRest.isEmpty ? "" : "/tree/\(ref)" + (path.isEmpty ? "" : "/\(path)"))
+        return try await readGitHub(owner: owner, repo: repo, repoID: info.id, ref: ref, path: path, sha: sha, input: input, canonical: canonical)
+    }
+
+    private func readGitHub(owner: String, repo: String, repoID: Int64, ref: String, path: String, sha: String,
+                            input: String, canonical: String) async throws -> ResolvedSource {
         let base = "https://raw.githubusercontent.com/\(owner)/\(repo)/\(sha)/" + (path.isEmpty ? "" : path + "/")
         guard let pluginURL = URL(string: base + Self.pluginFile), let marketURL = URL(string: base + Self.marketFile) else { throw RuyioError(.sourceInvalid) }
         async let plugin = optionalFetch(pluginURL, maxBytes: PluginDescriptor.maxBytes)
         async let market = optionalFetch(marketURL, maxBytes: MarketDescriptor.maxBytes)
         let (pluginData, marketData) = try await (plugin, market)
-        let location = GitHubLocation(owner: owner, repo: repo, repoID: info.id, ref: ref, path: path, commitSHA: sha,
+        let location = GitHubLocation(owner: owner, repo: repo, repoID: repoID, ref: ref, path: path, commitSHA: sha,
                                       isFixedRef: ref.count == 40 && ref.allSatisfy(\.isHexDigit))
-        let canonical = "https://github.com/\(owner)/\(repo)" + (treeRest.isEmpty ? "" : "/tree/\(ref)" + (path.isEmpty ? "" : "/\(path)"))
         switch (pluginData, marketData) {
         case (.some, .some):
             throw RuyioError(.sourceInvalid, diagnostic: "both ruyio-plugin.json and ruyio-market.json exist")

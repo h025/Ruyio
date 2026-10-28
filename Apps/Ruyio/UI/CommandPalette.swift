@@ -13,6 +13,7 @@ final class CommandPaletteController: ObservableObject {
         case form(ActionRef, FormSpec, [String: JSONValue])
         case running(ActionRef)
         case failed(ActionRef, String)
+        case outcomePending(ActionRef, String)
     }
 
     private let model: AppModel
@@ -113,6 +114,11 @@ final class CommandPaletteController: ObservableObject {
     }
 
     func run(_ entry: CommandEntry, parameters: [String: JSONValue] = [:]) {
+        if (model.summary(entry.ref.pluginID)?.status.pendingOutcomeCount ?? 0) > 0,
+           model.summary(entry.ref.pluginID)?.manifest.action(entry.ref.actionID)?.hasSideEffects == true {
+            phase = .outcomePending(entry.ref, model.l.errorText(RuyioError(.outcomeUnknown)))
+            return
+        }
         if let view = entry.opensView {
             try? model.engine.database.recordUsage(entry.ref)
             close()
@@ -145,6 +151,8 @@ final class CommandPaletteController: ObservableObject {
             }
         case .cancelled:
             phase = .browsing
+        case .outcomeUnknown:
+            phase = .outcomePending(entry.ref, model.l.errorText(report.error ?? RuyioError(.outcomeUnknown)))
         default:
             // Failures keep the panel and the query, offering retry and plugin details (PRD §19.2).
             phase = .failed(entry.ref, report.error.map(model.l.errorText) ?? model.l.t("执行失败", "Failed"))
@@ -193,7 +201,11 @@ struct CommandPaletteView: View {
     @ViewBuilder
     var resultsCard: some View {
         let results = controller.results
-        let failure: (ActionRef, String)? = if case .failed(let ref, let message) = controller.phase { (ref, message) } else { nil }
+        let failure: (ActionRef, String, Bool)? = switch controller.phase {
+        case .failed(let ref, let message): (ref, message, true)
+        case .outcomePending(let ref, let message): (ref, message, false)
+        default: nil
+        }
         if !results.isEmpty || failure != nil || !controller.query.isEmpty {
             VStack(spacing: 0) {
                 if results.isEmpty {
@@ -229,8 +241,10 @@ struct CommandPaletteView: View {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                         Text(failure.1).font(.callout).lineLimit(2)
                         Spacer()
-                        Button(l.retry) { if let entry = controller.results.first(where: { $0.ref == failure.0 }) { controller.run(entry) } }
-                            .ruyioGlassButton().controlSize(.small)
+                        if failure.2 {
+                            Button(l.retry) { if let entry = controller.results.first(where: { $0.ref == failure.0 }) { controller.run(entry) } }
+                                .ruyioGlassButton().controlSize(.small)
+                        }
                         Button(l.openPluginDetail) { controller.close(); controller.openPluginDetail?(failure.0.pluginID) }
                             .ruyioGlassButton().controlSize(.small)
                     }
@@ -284,7 +298,12 @@ struct CommandPaletteView: View {
             }
             .padding(.horizontal, 14).padding(.top, 12)
             SchemaFormView(spec: form, context: context) { values in
-                if let entry = model.snapshot.entries.commands.first(where: { $0.ref == ref }) { controller.run(entry, parameters: values) }
+                if let entry = model.snapshot.entries.commands.first(where: { $0.ref == ref }) {
+                    var parameters: [String: JSONValue] = [:]
+                    if case .form(_, _, let previous) = controller.phase { parameters = previous }
+                    parameters.merge(values) { $1 }
+                    controller.run(entry, parameters: parameters)
+                }
             }
             .scrollContentBackground(.hidden)
             .frame(maxHeight: 340)

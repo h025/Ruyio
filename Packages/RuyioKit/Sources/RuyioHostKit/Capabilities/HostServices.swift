@@ -41,7 +41,7 @@ public final class StoreProvider: @unchecked Sendable {
             if let store = stores[key] { return store }
             let store = try PluginStore(directory: directory, readOnly: readOnly)
             let root = directory.deletingLastPathComponent()
-            try? BackupPolicy.setExcludedFromBackup(excludeFromBackup(pluginID), at: root)
+            if !readOnly { try BackupPolicy.setExcludedFromBackup(excludeFromBackup(pluginID), at: root) }
             stores[key] = store
             // Leftovers from earlier runs (deletes just before quit, abandoned uploads) are reclaimed on open.
             if !readOnly { scheduleMaintenanceLocked(store, delay: 30) }
@@ -188,9 +188,12 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
         switch envelope.method {
         case CapabilityMethod.clipboardWrite:
             let request = try JSONCoding.decode(ClipboardWriteRequest.self, from: envelope.payload)
+            guard !request.items.isEmpty, request.items.count <= ClipboardWriteRequest.maxItems else {
+                throw RuyioError(.invalidRequest, diagnostic: "invalid pasteboard item count")
+            }
             let store = try stores.store(for: session)
             var items: [[String: Data]] = []
-            for item in request.items.prefix(256) {
+            for item in request.items {
                 var representations: [String: Data] = [:]
                 for rep in item.representations {
                     guard Self.isAllowedPasteboardType(rep.type) else { continue }
@@ -200,6 +203,7 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
                 if !representations.isEmpty { items.append(representations) }
             }
             guard !items.isEmpty else { throw RuyioError(.invalidRequest, diagnostic: "nothing to write") }
+            try ClipboardWriteValidator.validateFileReferences(items)
             let count = try await bridge.writePasteboard(items, originToken: request.originToken)
             return try JSONCoding.value(ClipboardWriteReply(changeCount: count))
 

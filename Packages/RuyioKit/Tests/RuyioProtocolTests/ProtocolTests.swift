@@ -1,9 +1,29 @@
 import Foundation
+import Darwin
 import Testing
 @testable import RuyioProtocol
 import RuyioCore
 
 struct FramingTests {
+    @Test func oversizedHandlerResponseFailsImmediatelyAndConnectionRemainsUsable() async throws {
+        var incoming: [Int32] = [0, 0], outgoing: [Int32] = [0, 0]
+        #expect(pipe(&incoming) == 0)
+        #expect(pipe(&outgoing) == 0)
+        let server = RPCPeer(readFD: incoming[0], writeFD: outgoing[1], label: "oversized-server")
+        let client = RPCPeer(readFD: outgoing[0], writeFD: incoming[1], label: "oversized-client")
+        defer { client.close(); server.close() }
+        server.start(onRequest: { request in
+            request.method == "large" ? .string(String(repeating: "x", count: Framing.maxFrameBytes)) : .string("ok")
+        }, onEvent: { _ in }, onClose: { _ in })
+        client.start(onRequest: { _ in .null }, onEvent: { _ in }, onClose: { _ in })
+        do {
+            _ = try await client.request("large", timeout: .seconds(2))
+            Issue.record("Oversized reply should fail")
+        } catch let error as RuyioError {
+            #expect(error.code == .frameTooLarge)
+        }
+        #expect(try await client.request("small", timeout: .seconds(2)) == .string("ok"))
+    }
     @Test func roundTripsAcrossArbitraryChunks() throws {
         let envelopes = (0..<5).map { Envelope(kind: .request, method: "m\($0)", payload: ["n": .number(Double($0)), "s": "中文"]) }
         var bytes = Data()

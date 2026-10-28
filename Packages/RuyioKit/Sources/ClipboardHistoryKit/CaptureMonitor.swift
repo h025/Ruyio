@@ -120,7 +120,10 @@ public final class CaptureMonitor {
         var items: [[String: Data]] = []
         var skipped = false
         var total = 0
-        for item in pasteboard.pasteboardItems ?? [] {
+        let pasteboardItems = pasteboard.pasteboardItems ?? []
+        // A record must be pasteable in full later; the host never writes a partial selection.
+        guard pasteboardItems.count <= ClipboardWriteRequest.maxItems else { return }
+        for item in pasteboardItems {
             var representations: [String: Data] = [:]
             for type in item.types.map(\.rawValue) where PasteboardRules.isPersistable(type) {
                 guard let data = item.data(forType: NSPasteboard.PasteboardType(type)) else { continue }

@@ -42,6 +42,8 @@ public struct PasteboardItemPayload: Codable, Sendable, Hashable {
 }
 
 public struct ClipboardWriteRequest: Codable, Sendable, Hashable {
+    /// Largest pasteboard a plugin may write; capture skips larger copies so every record stays pasteable.
+    public static let maxItems = 1_000
     public var items: [PasteboardItemPayload]
     /// Marker the plugin uses to ignore its own write when capturing.
     public var originToken: String

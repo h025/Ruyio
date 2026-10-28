@@ -46,6 +46,7 @@ public struct CollectionPanelView: View {
         }
         .keyWindowControls()
         .onAppear { query = spec.searchText }
+        .onDisappear { debounce?.cancel(); debounce = nil }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("app.ruyio.clearSearch"))) { _ in query = "" }
     }
 
@@ -136,7 +137,7 @@ public struct CollectionPanelView: View {
                     .alternatingRowBackgrounds(.disabled)
                     // Native double-click / Return-on-row handling; item menus come from the row.
                     .contextMenu(forSelectionType: String.self) { _ in } primaryAction: { ids in
-                        if let id = ids.first { context.send(.invoke(actionID: "paste", itemID: id)) }
+                        if let id = ids.first, let event = context.invocation(itemID: id) { context.send(event) }
                     }
                     .onChange(of: context.localSelection) { _, id in if let id { proxy.scrollTo(id) } }
                 }
@@ -161,29 +162,29 @@ public struct CollectionPanelView: View {
     /// Native glass buttons; the default action is prominent, shortcuts appear in tooltips and in the
     /// overflow menu, which lists every action with its key equivalent.
     var actionBar: some View {
-        let selection = context.localSelection
         let keyed = spec.footerActions.filter { $0.shortcut != nil }
         return GlassGroup(spacing: 8) {
             HStack(spacing: 8) {
                 ForEach(keyed, id: \.id) { action in
                     let button = Button(role: action.isDestructive ? .destructive : nil) {
-                        context.send(.invoke(actionID: action.id, itemID: selection))
+                        if let event = context.footerInvocation(action) { context.send(event) }
                     } label: {
                         Text(action.title)
                     }
+                    .disabled(context.footerInvocation(action) == nil)
                     .help("\(action.title)  \(Self.symbol(for: action.shortcut ?? ""))")
-                    .disabled(selection == nil)
                     if action.isDefault { button.ruyioGlassButton(prominent: true) } else { button.ruyioGlassButton() }
                 }
                 Spacer(minLength: 0)
                 Menu {
                     ForEach(spec.footerActions, id: \.id) { action in
                         Button(role: action.isDestructive ? .destructive : nil) {
-                            context.send(.invoke(actionID: action.id, itemID: action.shortcut == nil ? nil : selection))
+                            if let event = context.footerInvocation(action) { context.send(event) }
                         } label: {
                             Text(action.title)
                             if let shortcut = action.shortcut { Text(Self.symbol(for: shortcut)) }
                         }
+                        .disabled(context.footerInvocation(action) == nil)
                     }
                 } label: {
                     Image(systemName: "ellipsis")

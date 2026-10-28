@@ -229,7 +229,9 @@ struct GeneralPage: View {
             Section(l.updates) {
                 Toggle(l.autoRefreshMarkets, isOn: Binding(get: { model.settings.autoRefreshMarkets }, set: { v in model.update { $0.autoRefreshMarkets = v } }))
                 Toggle(l.autoCheckPlugins, isOn: Binding(get: { model.settings.autoCheckPluginUpdates }, set: { v in model.update { $0.autoCheckPluginUpdates = v } }))
-                Toggle(l.autoCheckApp, isOn: Binding(get: { model.settings.autoCheckAppUpdates }, set: { v in model.update { $0.autoCheckAppUpdates = v } }))
+                Toggle(l.autoCheckApp, isOn: .constant(false)).disabled(true)
+                Text(l.t("应用自动更新将在正式发布渠道配置完成后启用。", "Automatic app updates will be available when the release channel is configured."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section(l.dataSection) {
                 Toggle(l.includeInBackup, isOn: Binding(get: { model.settings.includeInBackup }, set: { v in model.update { $0.includeInBackup = v } }))
@@ -302,8 +304,14 @@ struct GeneralPage: View {
         Task {
             do {
                 let preview = try await model.engine.installDevelopmentPackage(at: url)
+                defer { model.engine.installer.discard(preview) }
                 guard preview.isInstallable else { model.show(model.l.errorText(RuyioError(.sourceInvalid, diagnostic: preview.failureSummary))); return }
-                _ = try await model.engine.commitInstall(preview, updateChannel: .development, source: url.path)
+                var dataChoice = HostEngine.RestoreDataChoice.keepCompatible
+                if try model.engine.requiresFreshData(for: preview) {
+                    guard confirmFreshDataInstallation(using: l) else { return }
+                    dataChoice = .fresh
+                }
+                _ = try await model.engine.commitInstall(preview, updateChannel: .development, source: url.path, dataChoice: dataChoice)
             } catch let error as RuyioError {
                 model.show(model.l.errorText(error))
             } catch {

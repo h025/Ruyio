@@ -109,9 +109,9 @@ public actor UpdateCoordinator {
         return try? JSONCoding.decoder().decode(GenerationInfo.self, from: data)
     }
 
-    static func writeGenerationInfo(_ info: GenerationInfo, to directory: URL) {
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? JSONCoding.encoder().encode(info).write(to: directory.appendingPathComponent("generation.json"), options: .atomic)
+    static func writeGenerationInfo(_ info: GenerationInfo, to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try JSONCoding.encoder().encode(info).write(to: directory.appendingPathComponent("generation.json"), options: .atomic)
     }
 
     public func update(with preview: InstallPreview) async -> Outcome {
@@ -133,9 +133,16 @@ public actor UpdateCoordinator {
             return .rolledBack(stillUsing: oldVersion, error: RuyioError(.sourceInvalid, objectID: id.rawValue,
                                                                        diagnostic: allowOlder ? "not an older version" : "not a newer version"))
         }
+        // A source that is no longer allowed is refused before anything stops or a journal exists.
+        do { try await engine.validateUpdateSource(id) } catch {
+            engine.installer.discard(preview)
+            return .rolledBack(stillUsing: oldVersion, error: (error as? RuyioError) ?? RuyioError(.sourceInvalid, objectID: id.rawValue))
+        }
+        var committed = false
+        let root = engine.services.stores.dataRoot(pluginID: id, development: record.isDevelopment)
         var journal = Journal(id: UUID().uuidString.lowercased(), pluginID: id, phase: .prepared, oldVersion: record.version,
                               newVersion: preview.manifest.version.description, oldGeneration: record.dataGeneration,
-                              newGeneration: record.dataGeneration + 1, oldInstallPath: record.installPath,
+                              newGeneration: max(record.dataGeneration, Self.highestGeneration(in: root)) + 1, oldInstallPath: record.installPath,
                               oldExecutablePath: record.executablePath, newInstallPath: nil,
                               wasEnabled: record.enabledPreference, updatedAt: Date(), oldRecord: record)
         do {
@@ -147,24 +154,30 @@ public actor UpdateCoordinator {
             await engine.supervisor.unregister(id)
 
             // backedUp: the candidate generation starts from current data, a matching snapshot, or nothing.
-            let root = engine.services.stores.dataRoot(pluginID: id, development: record.isDevelopment)
-            journal.newGeneration = max(record.dataGeneration, Self.highestGeneration(in: root)) + 1
             try write(journal)
+            let sourceSchema: Int
             switch choice {
             case .keepCurrent:
+                sourceSchema = try record.decodedManifest().storageSchemaVersion
                 try copyGeneration(pluginID: id, development: record.isDevelopment, from: journal.oldGeneration, to: journal.newGeneration)
             case .snapshot(let generation, _):
+                guard let info = Self.readGenerationInfo(root.appendingPathComponent(String(generation))),
+                      info.storageSchemaVersion == preview.manifest.storageSchemaVersion else {
+                    throw RuyioError(.retainedDataIncompatible, objectID: id.rawValue)
+                }
+                sourceSchema = info.storageSchemaVersion
                 try copyGeneration(pluginID: id, development: record.isDevelopment, from: generation, to: journal.newGeneration)
             case .fresh:
+                sourceSchema = 0
                 try FileManager.default.createDirectory(at: root.appendingPathComponent(String(journal.newGeneration)), withIntermediateDirectories: true)
             }
             // The old generation is kept and labelled so it can serve as a compatible snapshot later.
             if let current = try? record.decodedManifest(), Self.readGenerationInfo(root.appendingPathComponent(String(journal.oldGeneration))) == nil {
-                Self.writeGenerationInfo(GenerationInfo(storageSchemaVersion: current.storageSchemaVersion, pluginVersion: record.version, createdAt: Date()),
+                try Self.writeGenerationInfo(GenerationInfo(storageSchemaVersion: current.storageSchemaVersion, pluginVersion: record.version, createdAt: Date()),
                                          to: root.appendingPathComponent(String(journal.oldGeneration)))
             }
-            Self.writeGenerationInfo(GenerationInfo(storageSchemaVersion: preview.manifest.storageSchemaVersion, pluginVersion: preview.manifest.version.description,
-                                                    createdAt: Date()), to: root.appendingPathComponent(String(journal.newGeneration)))
+            // Even plugins without persisted records get a valid empty database for the read-only health check.
+            try engine.services.stores.store(pluginID: id, generation: journal.newGeneration, development: record.isDevelopment).quickCheck()
             journal.phase = .backedUp
             try write(journal)
 
@@ -174,32 +187,48 @@ public actor UpdateCoordinator {
             try write(journal)
 
             // migrated + ready: migration and health sessions on the candidate partition only (R02).
+            let preparation = DataPreparationRequest(sourceSchemaVersion: sourceSchema, targetSchemaVersion: preview.manifest.storageSchemaVersion)
             for mode in [RuntimeMode.migration, .health] {
                 let info = SessionInfo(pluginID: id, manifest: preview.manifest, runtimeMode: mode, dataGeneration: journal.newGeneration,
                                        isDevelopment: record.isDevelopment)
                 let session = PluginSession(info: info, executable: URL(fileURLWithPath: newRecord.executablePath), services: engine.services)
-                try await session.start(locale: engine.locale, firstLaunch: true)
-                guard await session.ping() else {
+                do {
+                    try await session.start(locale: engine.locale, firstLaunch: true)
+                    try await session.prepareData(preparation)
+                } catch {
                     // Never leave a hung migration process writing into the candidate being discarded.
                     await session.kill()
-                    throw RuyioError(.handshakeFailed, objectID: id.rawValue, diagnostic: "\(mode.rawValue) check failed")
+                    throw error
                 }
                 await session.stop()
                 journal.phase = mode == .migration ? .migrated : .ready
                 try write(journal)
             }
 
+            try Self.writeGenerationInfo(GenerationInfo(storageSchemaVersion: preview.manifest.storageSchemaVersion,
+                                                        pluginVersion: preview.manifest.version.description, createdAt: Date()),
+                                         to: root.appendingPathComponent(String(journal.newGeneration)))
+
             // committed: the single persisted switch (gate still closed until it succeeds).
+            try await engine.validateUpdateSource(id)
             newRecord.dataGeneration = journal.newGeneration
             newRecord.installedAt = record.installedAt
             newRecord.enabledPreference = record.enabledPreference
             newRecord.activationState = .disabled
             newRecord.isDefault = record.isDefault
             try await engine.registry.insert(newRecord)
+            committed = true
             journal.phase = .committed
             try write(journal)
         } catch {
             let failure = (error as? RuyioError) ?? RuyioError(.internalError, objectID: id.rawValue, diagnostic: String(describing: error))
+            if committed {
+                // The database switch is final even if writing the final journal fails.
+                if journal.wasEnabled { _ = await engine.enable(id, userInitiated: false) }
+                await cleanup(journal)
+                return .committedWithRuntimeError(version: preview.manifest.version, error: failure)
+            }
+            engine.installer.discard(preview)
             await rollback(journal, record: record)
             return .rolledBack(stillUsing: oldVersion, error: failure)
         }

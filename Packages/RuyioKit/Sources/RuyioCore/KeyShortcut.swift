@@ -76,7 +76,8 @@ public struct KeyShortcut: Hashable, Codable, Sendable, CustomStringConvertible 
 
     public func rejection(on os: OSVersion = .current) -> Rejection? {
         if modifiers.isEmpty || modifiers == .shift { return .noModifier }
-        if KeyShortcut.systemReserved.contains(self) { return .systemReserved }
+        // ⌘⌫, ⌥⌫, ⌃⌫ and ⇧⌘⌫ delete words, lines and files in every app; a global hotkey would take them over.
+        if KeyShortcut.systemReserved.contains(self) || key == "delete" { return .systemReserved }
         let optionOnly = modifiers == .option || modifiers == [.option, .shift]
         if optionOnly && os.major == 15 && os.minor < 2 { return .optionOnlyOnEarlySequoia }
         return nil

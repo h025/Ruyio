@@ -10,6 +10,12 @@ public protocol RuyioPlugin: AnyObject, Sendable {
     /// Called once after the handshake. Start background work only if declared and enabled.
     func start() async
 
+    /// Complete all candidate-data changes before returning. Never starts background work.
+    func migrateData(_ request: DataPreparationRequest) async throws
+
+    /// Validate the candidate data using read-only storage. Throw to prevent update commit.
+    func checkHealth(_ request: DataPreparationRequest) async throws
+
     func perform(_ invocation: ActionInvocation, execution: ExecutionID, operation: OperationID?) async throws -> ActionResult
 
     func openView(_ request: ViewOpenRequest) async throws -> ViewDocument
@@ -31,6 +37,20 @@ public protocol RuyioPlugin: AnyObject, Sendable {
 
 public extension RuyioPlugin {
     func start() async {}
+
+    func migrateData(_ request: DataPreparationRequest) async throws {
+        guard request.sourceSchemaVersion == 0 || request.sourceSchemaVersion == request.targetSchemaVersion else {
+            throw RuyioError(.incompatibleProtocol, diagnostic: "plugin does not provide this data migration")
+        }
+    }
+
+    /// The host has already opened and integrity-checked the candidate store. A plugin whose data was
+    /// migrated must confirm it can read the result; otherwise there is nothing more to verify.
+    func checkHealth(_ request: DataPreparationRequest) async throws {
+        guard request.sourceSchemaVersion == 0 || request.sourceSchemaVersion == request.targetSchemaVersion else {
+            throw RuyioError(.incompatibleProtocol, diagnostic: "a plugin that migrates data must implement checkHealth")
+        }
+    }
 
     func openView(_ request: ViewOpenRequest) async throws -> ViewDocument {
         throw RuyioError(.invalidRequest, diagnostic: "view \(request.viewID) not provided")

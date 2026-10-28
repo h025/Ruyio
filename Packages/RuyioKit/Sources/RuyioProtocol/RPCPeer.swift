@@ -295,6 +295,17 @@ public final class RPCPeer: @unchecked Sendable {
         let response = Envelope(kind: .response, method: request.method, replyTo: request.messageID,
                                 executionID: request.executionID, operationID: request.operationID,
                                 payload: payload, error: error)
-        try? write(response)
+        do {
+            try write(response)
+        } catch let failure as RuyioError where failure.code == .frameTooLarge {
+            // An oversized handler result must fail this request explicitly, not leave it waiting
+            // for its timeout while the transport itself remains healthy.
+            let fallback = Envelope(kind: .response, method: request.method, replyTo: request.messageID,
+                                    executionID: request.executionID, operationID: request.operationID,
+                                    payload: .null, error: RuyioError(.frameTooLarge, diagnostic: "response exceeds frame limit"))
+            try? write(fallback)
+        } catch {
+            // write() closes the peer on transport failures and resolves its pending requests.
+        }
     }
 }

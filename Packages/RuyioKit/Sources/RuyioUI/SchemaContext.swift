@@ -14,6 +14,7 @@ public final class SchemaContext: ObservableObject {
     @Published public var isBusy = false
     @Published public var previewVisible = true
     @Published public var localSelection: String?
+    @Published public private(set) var formSubmissionAcknowledgement: FormSubmissionAcknowledgement?
     /// Host-owned close for floating presentations (close button); plugins cannot trigger it.
     public var dismiss: (() -> Void)?
     /// Host-drawn provenance line for third-party plugins ("From the plugin …, Team …").
@@ -51,6 +52,21 @@ public final class SchemaContext: ObservableObject {
         Task { await sendEvent(event, revision) }
     }
 
+    /// Call only after a successful save (including a confirmed save), never on a failed submission.
+    /// A reply without a form accepts the submitted values as-is; it must not reuse the old form.
+    public func acknowledgeSubmission(_ values: [String: JSONValue], document: ViewDocument?) {
+        if let document {
+            guard document.viewID == viewID, document.revision >= self.document.revision else { return }
+        }
+        let normalized: [String: JSONValue]?
+        if let document, case .form(let form) = document.root {
+            normalized = Dictionary(form.fields.map { ($0.id, $0.value) }, uniquingKeysWith: { _, last in last })
+        } else {
+            normalized = nil
+        }
+        formSubmissionAcknowledgement = FormSubmissionAcknowledgement(submitted: values, normalized: normalized)
+    }
+
     public func image(_ blobID: String) async -> NSImage? {
         if let cached = imageCache[blobID] { return cached }
         let image = await loadBlob(blobID)
@@ -64,6 +80,35 @@ public final class SchemaContext: ObservableObject {
     public var collection: CollectionSpec? {
         if case .collection(let spec) = document.root { return spec }
         return nil
+    }
+
+    /// Resolve actions from the current schema, without assuming a clipboard-specific action ID.
+    public func invocation(shortcut: KeyShortcut? = nil, itemID: String? = nil) -> ViewEvent? {
+        guard let collection else { return nil }
+        let selected = itemID ?? localSelection
+        let item = collection.list.items.first { $0.id == selected }
+        if itemID != nil && item == nil { return nil }
+        let matches: (ItemAction) -> Bool = { action in
+            if let shortcut { return action.shortcut.flatMap(KeyShortcut.init(manifestString:)) == shortcut }
+            return action.isDefault
+        }
+        if let item, let action = item.actions.first(where: matches) {
+            guard !item.isDisabled else { return nil }
+            return .invoke(actionID: action.id, itemID: item.id)
+        }
+        guard let action = collection.footerActions.first(where: matches) else { return nil }
+        return footerInvocation(action, itemID: selected)
+    }
+
+    public func footerInvocation(_ action: ItemAction, itemID: String? = nil) -> ViewEvent? {
+        guard let collection else { return nil }
+        let selected = itemID ?? localSelection
+        let item = collection.list.items.first { $0.id == selected }
+        if itemID != nil && item == nil { return nil }
+        let isItemAction = item?.actions.contains { $0.id == action.id } == true
+        if isItemAction && item?.isDisabled == true { return nil }
+        if item == nil && collection.list.items.contains(where: { $0.actions.contains { $0.id == action.id } }) { return nil }
+        return .invoke(actionID: action.id, itemID: isItemAction ? item?.id : nil)
     }
 
     public func moveSelection(_ delta: Int) {

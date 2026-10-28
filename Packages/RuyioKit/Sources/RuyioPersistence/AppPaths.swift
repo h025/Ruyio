@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import RuyioCore
 
 /// Resolved storage roots (plan §11.1). Never hard-codes a user name.
@@ -51,9 +52,43 @@ public struct AppPaths: Sendable {
         let safeTeam = team.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
         return "\(pluginID.rawValue)~\(safeTeam)"
     }
+
+    /// Persistent data belongs to the complete signing identity, including its designated identifier.
+    public static func dataIdentityDirectoryName(pluginID: PluginID, teamID: String?, signingIdentifier: String?) -> String {
+        let components = [teamID ?? "", signingIdentifier ?? ""]
+        let identity = components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "\(pluginID.rawValue)~\(digest)"
+    }
 }
 
 public enum BackupPolicy {
+    /// Update every explicitly marked identity root as well as both parent roots. Kept data is included.
+    public static func setIncludedInBackup(_ included: Bool, paths: AppPaths) throws {
+        var targets: [URL] = []
+        for root in [paths.dataRoot, paths.developmentDataRoot] {
+            targets.append(root)
+            let children = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            for child in children {
+                let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                if values.isDirectory == true && values.isSymbolicLink != true { targets.append(child) }
+            }
+        }
+        var previous: [(URL, Bool)] = []
+        do {
+            for target in targets {
+                var current = target
+                current.removeCachedResourceValue(forKey: .isExcludedFromBackupKey)
+                let value = try current.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup ?? false
+                previous.append((target, value))
+                try setExcludedFromBackup(!included, at: target)
+            }
+        } catch {
+            for (target, excluded) in previous.reversed() { try? setExcludedFromBackup(excluded, at: target) }
+            throw error
+        }
+    }
+
     /// Applies Time Machine exclusion to a directory tree root (plan §11.4).
     public static func setExcludedFromBackup(_ excluded: Bool, at url: URL) throws {
         var values = URLResourceValues()
@@ -63,6 +98,9 @@ public enum BackupPolicy {
     }
 
     public static func isExcludedFromBackup(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup) ?? false
+        // URL resource values are cached per instance; another URL may have changed the same directory.
+        var target = url
+        target.removeCachedResourceValue(forKey: .isExcludedFromBackupKey)
+        return (try? target.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup) ?? false
     }
 }

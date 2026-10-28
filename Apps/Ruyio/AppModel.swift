@@ -50,6 +50,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
 @MainActor
 final class AppModel: ObservableObject {
     let engine: HostEngine
+    let viewUpdates = ViewUpdateRouter()
     @Published private(set) var snapshot = RegistrySnapshot(generation: 0, plugins: [], restorableDefaults: [], entries: .empty)
     @Published var settings: HostSettings
     @Published var page: Page = .plugins
@@ -67,11 +68,16 @@ final class AppModel: ObservableObject {
         self.engine = engine
         settings = ((try? engine.database.setting("host.settings", as: HostSettings.self)) ?? nil) ?? HostSettings()
         engine.developerMode = settings.developerMode
+        let updates = viewUpdates
+        engine.onViewUpdate { pluginID, document in updates.publish(pluginID: pluginID, document: document) }
+        do { try BackupPolicy.setIncludedInBackup(settings.includeInBackup, paths: engine.paths) }
+        catch { settingsError = l.saveFailed + error.localizedDescription }
     }
 
     func startObserving() {
-        Task {
-            await engine.registry.observe { [weak self] snapshot in
+        let registry = engine.registry
+        Task { [weak self] in
+            await registry.observe { [weak self] snapshot in
                 Task { @MainActor in self?.snapshot = snapshot }
             }
         }
@@ -85,12 +91,10 @@ final class AppModel: ObservableObject {
         let previous = settings
         var next = settings
         change(&next)
+        let backupChanged = next.includeInBackup != previous.includeInBackup
         do {
-            try engine.database.setSetting("host.settings", next)
-            if next.includeInBackup != previous.includeInBackup {
-                try engine.database.setSetting("data.includeInBackup", next.includeInBackup)
-                try? BackupPolicy.setExcludedFromBackup(!next.includeInBackup, at: engine.paths.dataRoot)
-            }
+            if backupChanged { try BackupPolicy.setIncludedInBackup(next.includeInBackup, paths: engine.paths) }
+            try engine.database.setSettings(["host.settings": try JSONCoding.value(next), "data.includeInBackup": .bool(next.includeInBackup)])
             settings = next
             settingsError = nil
             if next.language != previous.language { Task { await engine.setLocale(next.language.resolved) } }
@@ -99,6 +103,10 @@ final class AppModel: ObservableObject {
         } catch {
             settings = previous
             settingsError = l.saveFailed + error.localizedDescription
+            if backupChanged {
+                do { try BackupPolicy.setIncludedInBackup(previous.includeInBackup, paths: engine.paths) }
+                catch { settingsError = l.saveFailed + error.localizedDescription }
+            }
         }
     }
 
@@ -144,7 +152,20 @@ final class AppModel: ObservableObject {
 
     func restoreDefault(_ id: PluginID) {
         Task {
-            do { try await engine.restoreDefault(id) } catch let error as RuyioError { show(l.errorText(error)) } catch { show(error.localizedDescription) }
+            do {
+                try await engine.restoreDefault(id)
+            } catch let error as RuyioError where error.code == .retainedDataIncompatible {
+                let alert = NSAlert()
+                alert.messageText = l.t("保留的数据与内置版本不兼容", "Retained data is incompatible with the bundled version")
+                alert.informativeText = l.t("可以保留现有数据，用新的空数据恢复插件。旧数据不会被覆盖。", "You can restore the plugin with new, empty data. The existing data will be kept without being overwritten.")
+                alert.addButton(withTitle: l.cancel)
+                alert.addButton(withTitle: l.t("使用新数据恢复", "Restore with New Data"))
+                guard alert.runModal() == .alertSecondButtonReturn else { return }
+                do { try await engine.restoreDefault(id, dataChoice: .fresh) }
+                catch let error as RuyioError { show(l.errorText(error)) }
+                catch { show(error.localizedDescription) }
+            } catch let error as RuyioError { show(l.errorText(error)) }
+            catch { show(error.localizedDescription) }
         }
     }
 

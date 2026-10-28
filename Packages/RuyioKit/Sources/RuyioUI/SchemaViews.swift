@@ -128,7 +128,7 @@ struct EmptyStateView: View {
 public struct SchemaFormView: View {
     let spec: FormSpec
     @ObservedObject var context: SchemaContext
-    @State private var values: [String: JSONValue] = [:]
+    @State private var draft = FormDraft()
     var onSubmit: (([String: JSONValue]) -> Void)?
 
     public init(spec: FormSpec, context: SchemaContext, onSubmit: (([String: JSONValue]) -> Void)? = nil) {
@@ -147,22 +147,29 @@ public struct SchemaFormView: View {
                 Spacer()
                 Button(spec.submitTitle ?? context.strings.submit) { submit() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(spec.fields.contains { $0.isRequired && (values[$0.id]?.stringValue ?? $0.value.stringValue ?? "").trimmingCharacters(in: .whitespaces).isEmpty && $0.kind == .textField })
+                    .disabled(context.isBusy || spec.fields.contains { $0.isRequired && (draft.values[$0.id]?.stringValue ?? $0.value.stringValue ?? "").trimmingCharacters(in: .whitespaces).isEmpty && $0.kind == .textField })
             }
         }
         .formStyle(.grouped)
-        .onAppear { for field in spec.fields where values[field.id] == nil { values[field.id] = field.value } }
-        .onChange(of: spec) { _, newSpec in for field in newSpec.fields { values[field.id] = field.value } }
+        .disabled(context.isBusy)
+        .onAppear { draft.update(fields: spec.fields) }
+        .onChange(of: FormInput(spec: spec, acknowledgement: context.formSubmissionAcknowledgement)) { _, input in
+            draft.update(fields: input.spec.fields, acknowledgement: input.acknowledgement)
+        }
     }
 
     func binding(_ field: FieldSpec) -> Binding<JSONValue> {
-        Binding(get: { values[field.id] ?? field.value }, set: { values[field.id] = $0 })
+        Binding(get: { draft.values[field.id] ?? field.value }, set: { draft.set($0, for: field.id) })
     }
 
     func submit() {
-        var result: [String: JSONValue] = [:]
-        for field in spec.fields { result[field.id] = values[field.id] ?? field.value }
+        let result = draft.prepareSubmission(fields: spec.fields)
         if let onSubmit { onSubmit(result) } else { context.send(.submit(result)) }
+    }
+
+    private struct FormInput: Equatable {
+        var spec: FormSpec
+        var acknowledgement: FormSubmissionAcknowledgement?
     }
 }
 

@@ -96,7 +96,7 @@ final class HotkeyManager {
 
     /// Named keys by key code (punctuation, arrows, function keys), so ⇧⌘1 or ⌘, record as written.
     static let namedKeys: [Int: String] = [
-        kVK_Space: "space", kVK_Return: "return", kVK_Tab: "tab", kVK_UpArrow: "up", kVK_DownArrow: "down",
+        kVK_Space: "space", kVK_Return: "return", kVK_ANSI_KeypadEnter: "return", kVK_Delete: "delete", kVK_Tab: "tab", kVK_UpArrow: "up", kVK_DownArrow: "down",
         kVK_LeftArrow: "left", kVK_RightArrow: "right", kVK_ANSI_Comma: "comma", kVK_ANSI_Period: "period", kVK_ANSI_Slash: "slash",
         kVK_ANSI_Semicolon: "semicolon", kVK_ANSI_Quote: "quote", kVK_ANSI_LeftBracket: "leftbracket", kVK_ANSI_RightBracket: "rightbracket",
         kVK_ANSI_Backslash: "backslash", kVK_ANSI_Minus: "minus", kVK_ANSI_Equal: "equal", kVK_ANSI_Grave: "grave",

@@ -9,18 +9,30 @@ final class SystemBridgeImpl: SystemBridge, @unchecked Sendable {
     weak var model: AppModel?
 
     func writePasteboard(_ items: [[String: Data]], originToken: String) async throws -> Int {
-        await MainActor.run {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
+        try await MainActor.run {
+            guard !items.isEmpty, items.allSatisfy({ !$0.isEmpty }) else {
+                throw RuyioError(.invalidRequest, diagnostic: "empty pasteboard item")
+            }
             var objects: [NSPasteboardItem] = []
             for representations in items {
                 let item = NSPasteboardItem()
-                for (type, data) in representations { item.setData(data, forType: NSPasteboard.PasteboardType(type)) }
+                for (type, data) in representations {
+                    guard item.setData(data, forType: NSPasteboard.PasteboardType(type)) else {
+                        throw RuyioError(.actionFailed, diagnostic: "cannot prepare pasteboard representation")
+                    }
+                }
                 // Origin marker lets Clipboard History ignore its own write-back (Maccy pattern).
-                item.setString(originToken, forType: NSPasteboard.PasteboardType("app.ruyio.origin"))
+                guard item.setString(originToken, forType: NSPasteboard.PasteboardType("app.ruyio.origin")) else {
+                    throw RuyioError(.actionFailed, diagnostic: "cannot prepare pasteboard marker")
+                }
                 objects.append(item)
             }
-            pasteboard.writeObjects(objects)
+            try ClipboardWriteValidator.validateFileReferences(items)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            guard pasteboard.writeObjects(objects) else {
+                throw RuyioError(.actionFailed, retryable: true, dataEffect: .partial, diagnostic: "pasteboard write failed")
+            }
             return pasteboard.changeCount
         }
     }

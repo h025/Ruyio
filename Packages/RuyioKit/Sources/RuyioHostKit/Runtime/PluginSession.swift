@@ -129,6 +129,14 @@ public final class PluginSession: @unchecked Sendable {
 
     // MARK: Requests to the plugin
 
+    public func prepareData(_ request: DataPreparationRequest) async throws {
+        guard info.runtimeMode != .normal else { throw RuyioError(.permissionDenied) }
+        let peer = try activePeer()
+        let method = info.runtimeMode == .migration ? Method.lifecycleMigrate : Method.lifecycleHealth
+        let result = try await peer.request(method, payload: JSONCoding.value(request), timeout: .seconds(60))
+        guard result == .bool(true) else { throw RuyioError(.storageFailure, diagnostic: "data preparation did not succeed") }
+    }
+
     public func invoke(_ invocation: ActionInvocation, execution: ExecutionID, operation: OperationID?, registryGeneration: Int,
                        timeout: Duration = .seconds(10)) async throws -> ActionResult {
         let peer = try activePeer()

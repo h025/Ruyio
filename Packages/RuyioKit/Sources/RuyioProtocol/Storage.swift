@@ -170,6 +170,12 @@ public struct StorageUsage: Codable, Sendable, Hashable {
 
 public enum StorageLimits {
     public static let maxFieldsPerDocument = 32
+    public static let maxFieldNameBytes = 128
+    public static let maxFieldValueBytes = 4096
+    /// Leave room for the RPC envelope and cursor. Large bodies belong in blobs.
+    public static let maxQueryResponseBytes = 768 * 1024
+    /// Write-time ceiling for one encoded document, well inside a query page.
+    public static let maxDocumentBytes = 512 * 1024
     public static let maxDocumentsPerPlugin = 100_000
     public static let blobChunkBytes = 64 * 1024
     public static let maxQueryLimit = 200

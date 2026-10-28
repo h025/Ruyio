@@ -64,7 +64,7 @@ final class PluginHost<P: RuyioPlugin>: @unchecked Sendable {
                 switch kind {
                 case .request:
                     return [Method.hello, Method.actionInvoke, Method.viewOpen, Method.viewEvent, Method.dynamicItems,
-                            Method.lifecycleShutdown, Method.lifecyclePing].contains(method)
+                            Method.lifecycleShutdown, Method.lifecyclePing, Method.lifecycleMigrate, Method.lifecycleHealth].contains(method)
                 case .event:
                     return [Method.actionCancel, Method.viewClose, Method.localeChanged, Method.settingsChanged].contains(method)
                 case .response:
@@ -93,6 +93,20 @@ final class PluginHost<P: RuyioPlugin>: @unchecked Sendable {
         case Method.hello:
             return try await hello(envelope)
         case Method.lifecyclePing:
+            return .bool(true)
+        case Method.lifecycleMigrate, Method.lifecycleHealth:
+            let (plugin, context) = try requireReady()
+            let request = try JSONCoding.decode(DataPreparationRequest.self, from: envelope.payload)
+            guard request.sourceSchemaVersion >= 0, request.targetSchemaVersion == manifest.storageSchemaVersion else {
+                throw RuyioError(.invalidRequest, diagnostic: "data preparation schema mismatch")
+            }
+            if envelope.method == Method.lifecycleMigrate {
+                guard context.runtimeMode == .migration else { throw RuyioError(.permissionDenied) }
+                try await plugin.migrateData(request)
+            } else {
+                guard context.runtimeMode == .health else { throw RuyioError(.permissionDenied) }
+                try await plugin.checkHealth(request)
+            }
             return .bool(true)
         case Method.lifecycleShutdown:
             if let plugin = lock.withLock({ self.plugin }) { await plugin.shutdown() }

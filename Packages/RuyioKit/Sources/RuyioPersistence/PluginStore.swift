@@ -25,8 +25,10 @@ public final class PluginStore: Sendable {
         self.blobsDirectory = directory.appendingPathComponent("Blobs.noindex", isDirectory: true)
         self.uploadsDirectory = directory.appendingPathComponent("Uploads.noindex", isDirectory: true)
         let fm = FileManager.default
-        for url in [directory, blobsDirectory, uploadsDirectory] {
-            try fm.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        if !readOnly {
+            for url in [directory, blobsDirectory, uploadsDirectory] {
+                try fm.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            }
         }
         var config = Configuration()
         config.readonly = readOnly
@@ -39,7 +41,7 @@ public final class PluginStore: Sendable {
         dbQueue = try DatabaseQueue(path: directory.appendingPathComponent("Store.sqlite").path, configuration: config)
         if !readOnly { try Self.migrator.migrate(dbQueue) }
         // Abandoned uploads from a previous run are reclaimed (plan §11.5).
-        if let leftovers = try? fm.contentsOfDirectory(at: uploadsDirectory, includingPropertiesForKeys: nil) {
+        if !readOnly, let leftovers = try? fm.contentsOfDirectory(at: uploadsDirectory, includingPropertiesForKeys: nil) {
             for url in leftovers { try? fm.removeItem(at: url) }
         }
     }
@@ -84,10 +86,27 @@ public final class PluginStore: Sendable {
                 CREATE INDEX blob_ref_blob ON blob_ref(blob_id);
                 """)
         }
+        migrator.registerMigration("v2-index-accounting") { db in
+            let keys = try Row.fetchAll(db, sql: "SELECT collection, id FROM document")
+            for key in keys {
+                let collection: String = key[0]
+                let id: String = key[1]
+                if let document = try Self.load(db, collection: collection, id: id) {
+                    let size = try Self.accountedSize(document, body: Self.encodeBody(document.body))
+                    try db.execute(sql: "UPDATE document SET size = ? WHERE collection = ? AND id = ?", arguments: [size, collection, id])
+                }
+            }
+        }
         return migrator
     }
 
     // MARK: Documents
+
+    /// SQLite's structural check; an update never commits onto a damaged candidate database.
+    public func quickCheck() throws {
+        let result = try dbQueue.read { db in try String.fetchOne(db, sql: "PRAGMA quick_check") }
+        guard result == "ok" else { throw RuyioError(.storageFailure, diagnostic: "candidate store failed integrity check") }
+    }
 
     public func put(_ document: StoredDocument) throws {
         try batch([.put(document)])
@@ -111,7 +130,7 @@ public final class PluginStore: Sendable {
                 switch operation {
                 case .put(let document):
                     let body = try Self.encodeBody(document.body)
-                    let size = Int64(body.utf8.count + (document.searchText?.utf8.count ?? 0))
+                    let size = Self.accountedSize(document, body: body)
                     let previous = try Int64.fetchOne(db, sql: "SELECT size FROM document WHERE collection = ? AND id = ?",
                                                       arguments: [document.collection, document.id]) ?? 0
                     growth += size - previous
@@ -162,11 +181,25 @@ public final class PluginStore: Sendable {
             arguments += [limit + 1]
             let keys = try Row.fetchAll(db, sql: sql, arguments: arguments).map { row -> (String, String) in (row[0], row[1]) }
             var documents: [StoredDocument] = []
+            var encodedBytes = 4096 // Page/cursor metadata, including the longest permitted document ID.
             for (collection, id) in keys.prefix(limit) {
-                if let doc = try Self.load(db, collection: collection, id: id) { documents.append(doc) }
+                if let doc = try Self.load(db, collection: collection, id: id) {
+                    let size = try JSONCoding.encoder().encode(doc).count + 1
+                    if documents.isEmpty {
+                        // Documents written before the write-time ceiling may exceed the page budget; one per
+                        // page still fits a frame, so they stay readable and deletable instead of failing every query.
+                        guard size + 4096 <= Framing.maxFrameBytes - 64 * 1024 else {
+                            throw RuyioError(.frameTooLarge, objectID: id, diagnostic: "document exceeds query response budget; move large values to blobs")
+                        }
+                    } else if encodedBytes + size > StorageLimits.maxQueryResponseBytes {
+                        break
+                    }
+                    documents.append(doc)
+                    encodedBytes += size
+                }
             }
             var next: String?
-            if keys.count > limit, let last = documents.last {
+            if keys.count > documents.count, let last = documents.last {
                 next = Cursor(sortKey: last.sortKey, id: last.id).encoded
             }
             return StoragePage(documents: documents, nextCursor: next)
@@ -306,13 +339,34 @@ public final class PluginStore: Sendable {
     }
 
     static func validate(_ document: StoredDocument) throws {
-        guard !document.collection.isEmpty, document.collection.count <= 64, !document.id.isEmpty, document.id.count <= 256 else {
+        guard !document.collection.isEmpty, document.collection.count <= 64, document.collection.utf8.count <= 256,
+              !document.id.isEmpty, document.id.count <= 256, document.id.utf8.count <= 1024 else {
             throw RuyioError(.invalidRequest, diagnostic: "invalid collection or id")
         }
         guard document.fields.count <= StorageLimits.maxFieldsPerDocument else {
             throw RuyioError(.invalidRequest, diagnostic: "too many indexed fields")
         }
+        for (name, value) in document.fields {
+            guard !name.isEmpty, name.utf8.count <= StorageLimits.maxFieldNameBytes else {
+                throw RuyioError(.invalidRequest, diagnostic: "invalid indexed field name")
+            }
+            switch value {
+            case .string(let text):
+                guard text.utf8.count <= StorageLimits.maxFieldValueBytes else {
+                    throw RuyioError(.invalidRequest, diagnostic: "indexed field value too large")
+                }
+            case .number(let number):
+                guard number.isFinite else { throw RuyioError(.invalidRequest, diagnostic: "non-finite indexed number") }
+            case .bool, .null: break
+            default: throw RuyioError(.invalidRequest, diagnostic: "indexed fields must be scalar")
+            }
+        }
+        guard document.sortKey.isFinite else { throw RuyioError(.invalidRequest, diagnostic: "non-finite sort key") }
         guard document.body.depth <= Framing.maxJSONDepth else { throw RuyioError(.invalidRequest, diagnostic: "body too deep") }
+        // Every stored document must fit a query page with room to spare; large values belong in blobs.
+        guard try JSONCoding.encoder().encode(document).count <= StorageLimits.maxDocumentBytes else {
+            throw RuyioError(.invalidRequest, diagnostic: "document too large; move large values to blobs")
+        }
         for blobID in document.blobIDs where !isValidBlobID(blobID) {
             throw RuyioError(.invalidRequest, diagnostic: "invalid blob reference")
         }
@@ -320,6 +374,22 @@ public final class PluginStore: Sendable {
 
     static func encodeBody(_ body: JSONValue) throws -> String {
         String(decoding: try JSONCoding.encoder().encode(body), as: UTF8.self)
+    }
+
+    /// Charge data plus space reserved for its SQLite tables, keys and indexes. Trigram text reserves
+    /// postings/term space per scalar so adding searchable/indexed data can never be free in quota.
+    static func accountedSize(_ document: StoredDocument, body: String) -> Int64 {
+        let keyBytes = document.collection.utf8.count + document.id.utf8.count
+        var size = body.utf8.count + 128 + keyBytes * 3
+        if let text = document.searchText, !text.isEmpty {
+            size += text.utf8.count * 2 + text.unicodeScalars.count * 24 + keyBytes + 64
+        }
+        for (name, value) in document.fields {
+            let valueBytes = value.stringValue?.utf8.count ?? 8
+            size += 128 + keyBytes * 4 + name.utf8.count * 4 + valueBytes * 2
+        }
+        size += Set(document.blobIDs).count * (128 + keyBytes * 2 + 64 * 3)
+        return Int64(size)
     }
 
     static func write(_ db: Database, document: StoredDocument, body: String, size: Int64) throws {

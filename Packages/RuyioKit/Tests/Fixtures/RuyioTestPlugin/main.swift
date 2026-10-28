@@ -7,8 +7,32 @@ final class TestPlugin: RuyioPlugin, @unchecked Sendable {
     let context: PluginContext
     init(context: PluginContext) {
         self.context = context
-        // Test hook: a marker resource makes the migration session fail, exercising update rollback.
-        if context.runtimeMode == .migration, Bundle.main.url(forResource: "fail-migration", withExtension: nil) != nil { exit(3) }
+    }
+
+    func migrateData(_ request: DataPreparationRequest) async throws {
+        if Bundle.main.url(forResource: "fail-migration", withExtension: nil) != nil {
+            throw RuyioError(.storageFailure, diagnostic: "fixture migration rejected")
+        }
+        if request.sourceSchemaVersion == 0 || request.sourceSchemaVersion == request.targetSchemaVersion { return }
+        guard request.sourceSchemaVersion == 1, request.targetSchemaVersion == 2 else {
+            throw RuyioError(.incompatibleProtocol, diagnostic: "fixture has no migration for this schema")
+        }
+        if var document = try await context.storage.get(collection: "notes", id: "n1") {
+            document.body = ["v": document.body["v"] ?? .null, "schemaVersion": 2, "migrated": true]
+            try await context.storage.put(document)
+        }
+    }
+
+    func checkHealth(_ request: DataPreparationRequest) async throws {
+        if Bundle.main.url(forResource: "fail-health", withExtension: nil) != nil {
+            throw RuyioError(.storageFailure, diagnostic: "fixture health rejected")
+        }
+        if let document = try await context.storage.get(collection: "notes", id: "n1") {
+            guard document.body["v"]?.stringValue != nil,
+                  document.body["schemaVersion"] == .number(Double(request.targetSchemaVersion)) else {
+                throw RuyioError(.storageFailure, diagnostic: "fixture document does not match target schema")
+            }
+        }
     }
 
     func perform(_ invocation: ActionInvocation, execution: ExecutionID, operation: OperationID?) async throws -> ActionResult {
@@ -26,7 +50,7 @@ final class TestPlugin: RuyioPlugin, @unchecked Sendable {
             DispatchQueue.main.async { while true { usleep(100_000) } }
             return .succeeded()
         case "storage":
-            let doc = StoredDocument(collection: "notes", id: "n1", body: ["v": "中文内容"], fields: ["kind": "text"],
+            let doc = StoredDocument(collection: "notes", id: "n1", body: ["v": "中文内容", "schemaVersion": .number(Double(context.manifest.storageSchemaVersion))], fields: ["kind": "text"],
                                      searchText: "剪贴板历史记录", sortKey: 1)
             try await context.storage.put(doc)
             let loaded = try await context.storage.get(collection: "notes", id: "n1")

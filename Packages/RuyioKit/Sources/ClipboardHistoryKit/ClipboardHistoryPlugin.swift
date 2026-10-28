@@ -18,7 +18,14 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         var query = ""
         var filter = "all"
         var selection: String?
+        /// Cursor after the last loaded record; the host asks for the next page when the list reaches it.
         var cursor: String?
+        /// Start cursor and record count of each page in the window (newest first).
+        var pageStarts: [String?] = []
+        var pageCounts: [Int] = []
+        /// Start cursors of newer pages that slid out of the window, most recent last.
+        var droppedPages: [String?] = []
+        var loadingPage = false
         var items: [ClipRecord] = []
         var pendingUndo: (token: String, recordID: String, expires: Date)?
     }
@@ -29,12 +36,24 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     private var captureState: CaptureState = .userPaused
     private var captureDetail: String?
     private var view = ViewState()
+    private var viewGeneration = 0
+    /// Open/close pairs, not a flag: a late `viewClose` from the previous session must not mark a newly
+    /// opened history as closed (events and requests are delivered concurrently).
+    private var historyOpenCount = 0
+    private var historyIsOpen: Bool { historyOpenCount > 0 }
+    private var dynamicGeneration = 0
+    private var unavailableFiles: Set<String> = []
+    private let mutations = ClipboardMutationQueue()
+    private let settingsMutations = ClipboardMutationQueue()
     private var pendingSettings: Settings?
     private var capturesSinceCleanup = 0
     private var monitor: CaptureMonitor?
     private var maintenanceTask: Task<Void, Never>?
     /// Textual representations above this size are stored as blobs: an inline body must fit one IPC frame.
     static let inlineTextLimit = 256 * 1024
+    /// Infinite scroll keeps at most this many pages loaded; older scrolling slides the window so the
+    /// rows plus preview stay under the 500-node schema limit.
+    static let windowPages = 8
 
     static let historyView = "history"
     static let settingsView = "settings"
@@ -74,6 +93,19 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     public func shutdown() async {
         lock.withLock { maintenanceTask }?.cancel()
         await MainActor.run { monitor?.stop() }
+    }
+
+    /// Update verification must inspect the prepared generation without enabling capture.
+    public func checkHealth(_ request: DataPreparationRequest) async throws {
+        if let stored = try await context.storage.get(collection: Self.settingsKey.collection, id: Self.settingsKey.id) {
+            _ = try JSONCoding.decode(Settings.self, from: stored.body)
+        }
+        // The history skips a record it cannot decode, so one bad record must not block every update; a
+        // newest page with nothing readable means the new code cannot read this data at all.
+        let page = try await context.storage.query(StorageQuery(collection: ClipRecord.collection, limit: 200))
+        if !page.documents.isEmpty, !page.documents.contains(where: { (try? ClipRecord(from: $0)) != nil }) {
+            throw RuyioError(.storageFailure, diagnostic: "history records are unreadable")
+        }
     }
 
     /// Status text, Finder item titles and an open view are all re-rendered in the new language.
@@ -123,20 +155,19 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         guard let kind = PasteboardRules.kind(of: clip.items) else { return }
         let now = Date()
         do {
-            let existing = try await context.storage.query(StorageQuery(collection: ClipRecord.collection, filters: [
-                StorageFilter(field: "fingerprint", value: .string(fingerprint)),
-            ], limit: 1)).documents.first
-            if let existing, var record = try? ClipRecord(from: existing) {
-                // Same content again: move to top and count it (Maccy semantics; PRD §8.2 de-dup).
-                record.lastCopiedAt = now
-                record.copyCount += 1
-                record.deletedAt = nil
-                record.sourceApp = clip.sourceApp ?? record.sourceApp
-                record.sourceBundleID = clip.sourceBundleID ?? record.sourceBundleID
-                try await context.storage.put(try record.document())
-            } else {
+            let handled = try await mutations.run { () -> Bool in
+                guard !self.isIgnored(clip.sourceBundleID) else { return true }
+                return try await self.recopyExisting(fingerprint: fingerprint, clip: clip, date: now)
+            }
+            if !handled {
+                // Blob uploads and thumbnails happen outside the queue so paste, delete and undo never wait
+                // behind a large capture. Orphaned blobs of a record that lost the race are collected later.
                 let record = try await makeRecord(clip, kind: kind, fingerprint: fingerprint, date: now)
-                try await context.storage.put(try record.document())
+                try await mutations.run {
+                    guard !self.isIgnored(clip.sourceBundleID) else { return }
+                    if try await self.recopyExisting(fingerprint: fingerprint, clip: clip, date: now) { return }
+                    try await self.context.storage.put(try record.document())
+                }
             }
         } catch {
             // A full store stops every later capture, so it becomes the capture state (and "Recheck" re-probes);
@@ -146,13 +177,35 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             }
             return
         }
-        capturesSinceCleanup += 1
-        if capturesSinceCleanup >= 25 {
+        let needsCleanup = lock.withLock { () -> Bool in
+            capturesSinceCleanup += 1
+            if capturesSinceCleanup < 25 { return false }
             capturesSinceCleanup = 0
+            return true
+        }
+        if needsCleanup {
             await applyRetention()
         }
         await publishDynamicItems()
         refreshOpenView()
+    }
+
+    /// Same content again: move to top and count it (Maccy semantics; PRD §8.2 de-dup). Call inside `mutations`.
+    private func recopyExisting(fingerprint: String, clip: CapturedClip, date: Date) async throws -> Bool {
+        let existing = try await context.storage.query(StorageQuery(collection: ClipRecord.collection, filters: [
+            StorageFilter(field: "fingerprint", value: .string(fingerprint)),
+        ], limit: 1)).documents.first
+        guard let existing, var record = try? ClipRecord(from: existing) else { return false }
+        record.lastCopiedAt = date
+        record.copyCount += 1
+        record.deletedAt = nil
+        record.sourceApp = clip.sourceApp ?? record.sourceApp
+        record.sourceBundleID = clip.sourceBundleID ?? record.sourceBundleID
+        try await context.storage.put(try record.document())
+        lock.withLock {
+            if view.pendingUndo?.recordID == record.id { view.pendingUndo = nil }
+        }
+        return true
     }
 
     func makeRecord(_ clip: CapturedClip, kind: PasteboardRules.Kind, fingerprint: String, date: Date) async throws -> ClipRecord {
@@ -213,7 +266,27 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         record.imageSize = imageSize
         record.fileNames = fileNames.isEmpty ? nil : fileNames
         record.filePaths = filePaths.isEmpty ? nil : filePaths
+        let storage = context.storage
+        try await Self.fitDocument(&record) { try await storage.putBlob($0) }
         return record
+    }
+
+    /// A long rich copy (an article's text plus its HTML) can outgrow one stored document. Its largest
+    /// inline texts move to blobs, as single large texts already do, until the record fits a history page.
+    static func fitDocument(_ record: inout ClipRecord, putBlob: (Data) async throws -> String) async throws {
+        var inline = record.items.indices.flatMap { i in record.items[i].representations.indices.map { (i, $0) } }
+            .filter { record.items[$0.0].representations[$0.1].text != nil }
+            .sorted { record.items[$0.0].representations[$0.1].byteCount > record.items[$1.0].representations[$1.1].byteCount }
+        var size = try JSONCoding.encoder().encode(record.document()).count
+        while size > StorageLimits.maxDocumentBytes, !inline.isEmpty {
+            let (i, j) = inline.removeFirst()
+            let text = record.items[i].representations[j].text ?? ""
+            record.items[i].representations[j].blobID = try await putBlob(Data(text.utf8))
+            record.items[i].representations[j].text = nil
+            // Estimate from the moved text alone; measure the whole record again only once it seems to fit.
+            size -= try JSONCoding.encoder().encode(text).count - 96
+            if size <= StorageLimits.maxDocumentBytes { size = try JSONCoding.encoder().encode(record.document()).count }
+        }
     }
 
     // MARK: Retention (PRD §8.4, §19.16)
@@ -252,44 +325,81 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
 
     func applyRetention() async {
         let current = lock.withLock { settings }
-        guard let ids = try? await recordsToPrune(current) else { return }
-        await deleteRecords(ids)
+        try? await prune(current)
     }
 
-    func deleteRecords(_ ids: [String]) async {
+    /// Chooses and deletes in one mutation, so a record favourited or copied again meanwhile is never pruned.
+    func prune(_ settings: Settings) async throws {
+        try await mutations.run { try await self.deleteBatch(try await self.recordsToPrune(settings)) }
+    }
+
+    /// Call inside `mutations`.
+    private func deleteBatch(_ ids: [String]) async throws {
         for chunk in stride(from: 0, to: ids.count, by: 200).map({ Array(ids[$0..<min($0 + 200, ids.count)]) }) {
-            try? await context.storage.batch(chunk.map { .delete(StorageKey(collection: ClipRecord.collection, id: $0)) })
+            try await context.storage.batch(chunk.map { .delete(StorageKey(collection: ClipRecord.collection, id: $0)) })
         }
     }
 
     func purgeExpiredSoftDeletes() async {
-        guard let page = try? await context.storage.query(StorageQuery(collection: ClipRecord.collection,
-                                                                       filters: [StorageFilter(field: "deleted", value: true)], limit: 200)) else { return }
-        let expired = page.documents.compactMap { try? ClipRecord(from: $0) }
-            .filter { ($0.deletedAt ?? .distantFuture).timeIntervalSinceNow < -CaptureLimits.undoWindow }.map(\.id)
-        await deleteRecords(expired)
+        try? await mutations.run {
+            var cursor: String?
+            repeat {
+                let page = try await context.storage.query(StorageQuery(collection: ClipRecord.collection,
+                    filters: [StorageFilter(field: "deleted", value: true)], limit: 200, cursor: cursor))
+                let expired = page.documents.compactMap { try? ClipRecord(from: $0) }
+                    .filter { ($0.deletedAt ?? .distantFuture).timeIntervalSinceNow < -CaptureLimits.undoWindow }.map(\.id)
+                if !expired.isEmpty {
+                    try await context.storage.batch(expired.map { .delete(StorageKey(collection: ClipRecord.collection, id: $0)) })
+                }
+                cursor = page.nextCursor
+            } while cursor != nil
+        }
     }
 
     // MARK: Finder dynamic items (metadata titles only, PRD §19.17)
 
     func publishDynamicItems() async {
-        guard let page = try? await context.storage.query(StorageQuery(collection: ClipRecord.collection,
-                                                                       filters: [StorageFilter(field: "deleted", value: false)], limit: 12)) else { return }
+        let generation = lock.withLock { dynamicGeneration += 1; return dynamicGeneration }
+        guard let report = try? await recentItemsReport(provider: "recentItems") else { return }
+        lock.withLock {
+            guard dynamicGeneration == generation else { return }
+            context.publishDynamicItems(report)
+        }
+    }
+
+    private func isIgnored(_ bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return lock.withLock { settings.ignoredApps.contains(bundleID) }
+    }
+
+    private func recentItemsReport(provider: String) async throws -> DynamicItemsReport {
+        let ignored = lock.withLock { Set(settings.ignoredApps) }
+        var records: [ClipRecord] = []
+        var cursor: String?
+        var pages = 0
+        // File records never become Finder items; a history mostly from ignored apps is scanned only so far.
+        repeat {
+            let page = try await context.storage.query(StorageQuery(collection: ClipRecord.collection,
+                filters: [StorageFilter(field: "deleted", value: false), StorageFilter(field: "kind", op: .notEquals, value: .string(PasteboardRules.Kind.file.filter))],
+                limit: 50, cursor: cursor))
+            records += page.documents.compactMap { try? ClipRecord(from: $0) }
+                .filter { $0.kind != .file && !ignored.contains($0.sourceBundleID ?? "") }
+            cursor = page.nextCursor
+            pages += 1
+        } while records.count < 5 && cursor != nil && pages < 4
         let s = strings
-        let records = page.documents.compactMap { try? ClipRecord(from: $0) }
-        let recent = records.filter { $0.kind != .file }.prefix(5)
+        let recent = records.prefix(5)
         let items = recent.map { record -> DynamicItemsReport.Item in
             var title = s.saveAsFilePrefix + s.kindName(record.kind) + " · " + record.lastCopiedAt.clock(locale: context.locale)
             if let app = record.sourceApp { title += " · " + app }
             return DynamicItemsReport.Item(id: record.id, title: title, kind: record.kind.filter)
         }
         let kinds = records.first.map { [$0.kind.filter] } ?? []
-        context.publishDynamicItems(DynamicItemsReport(provider: "recentItems", items: Array(items), clipboardKinds: kinds))
+        return DynamicItemsReport(provider: provider, items: Array(items), clipboardKinds: kinds)
     }
 
     public func dynamicItems(provider: String) async throws -> DynamicItemsReport {
-        await publishDynamicItems()
-        return DynamicItemsReport(provider: provider, items: [])
+        try await recentItemsReport(provider: provider)
     }
 
     // MARK: Actions
@@ -299,7 +409,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         case "show-history":
             return .succeeded(.openView(Self.historyView))
         case "toggle-recording":
-            await toggleRecording()
+            try await toggleRecording()
             return .succeeded()
         case "paste-recent":
             return try await saveToFinder(invocation, operation: operation)
@@ -308,23 +418,20 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         }
     }
 
-    func toggleRecording() async {
+    func toggleRecording() async throws {
         let (state, recording) = lock.withLock { (captureState, settings.recording) }
         if state == .blockedBySystem || state == .failed || state == .unknown {
             await MainActor.run { monitor?.recheck() }
             return
         }
-        var updated = lock.withLock { settings }
-        updated.recording = !recording
-        await saveSettings(updated)
-        await MainActor.run { updated.recording ? monitor?.start() : monitor?.pause() }
+        try await saveSettings { $0.recording = !recording }
     }
 
     /// Writes a frozen history record into the Finder target directory through the host file broker.
     func saveToFinder(_ invocation: ActionInvocation, operation: OperationID?) async throws -> ActionResult {
         guard let directory = invocation.finder?.targetDirectory, let id = invocation.finder?.dynamicItemID,
               let doc = try await context.storage.get(collection: ClipRecord.collection, id: id),
-              let record = try? ClipRecord(from: doc), record.deletedAt == nil else {
+              let record = try? ClipRecord(from: doc), record.deletedAt == nil, !isIgnored(record.sourceBundleID) else {
             throw RuyioError(.contextExpired, recovery: .retry)
         }
         let item = try fileItem(for: record)
@@ -387,12 +494,30 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
 
     // MARK: Settings
 
-    func saveSettings(_ updated: Settings) async {
-        lock.withLock { settings = updated }
-        if let body = try? JSONCoding.value(updated) {
-            try? await context.storage.put(StoredDocument(collection: Self.settingsKey.collection, id: Self.settingsKey.id, body: body))
+    func saveSettings(_ updated: Settings) async throws {
+        try await saveSettings { $0 = updated }
+    }
+
+    /// Reads the current settings inside the queue, so concurrent changes (menu toggle, settings form) never
+    /// write back each other's stale values.
+    func saveSettings(_ change: @escaping @Sendable (inout Settings) -> Void) async throws {
+        try await settingsMutations.run {
+            var updated = lock.withLock { settings }
+            change(&updated)
+            let body = try JSONCoding.value(updated)
+            try await context.storage.put(StoredDocument(collection: Self.settingsKey.collection, id: Self.settingsKey.id, body: body))
+            let previous = lock.withLock { () -> Settings in
+                let previous = settings
+                settings = updated
+                dynamicGeneration += 1
+                return previous
+            }
+            await MainActor.run {
+                monitor?.ignoredBundleIDs = Set(updated.ignoredApps)
+                if previous.recording != updated.recording { updated.recording ? monitor?.start() : monitor?.pause() }
+            }
+            await publishDynamicItems()
         }
-        await MainActor.run { monitor?.ignoredBundleIDs = Set(updated.ignoredApps) }
     }
 
     // MARK: Views
@@ -401,9 +526,15 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         switch request.viewID {
         case Self.historyView:
             // The previous search is not kept across sessions (PRD §19.15).
-            lock.withLock { view = ViewState(revision: view.revision + 1) }
-            try await reloadItems()
-            return try await historyDocument(selectFirst: true)
+            lock.withLock { view = ViewState(revision: view.revision + 1); viewGeneration += 1; historyOpenCount += 1 }
+            do {
+                try await reloadItems()
+                return try await historyDocument(selectFirst: true)
+            } catch {
+                // The host only closes views that opened successfully.
+                lock.withLock { historyOpenCount = max(0, historyOpenCount - 1) }
+                throw error
+            }
         case Self.settingsView:
             return settingsDocument()
         default:
@@ -412,7 +543,10 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     }
 
     public func closeView(_ viewID: String) async {
-        if viewID == Self.historyView { await commitPendingDelete(force: true) }
+        if viewID == Self.historyView {
+            lock.withLock { historyOpenCount = max(0, historyOpenCount - 1); viewGeneration += 1 }
+            await commitPendingDelete(force: true)
+        }
     }
 
     public func handleViewEvent(_ request: ViewEventRequest) async throws -> ViewEventReply {
@@ -446,37 +580,62 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         let s = strings
         switch actionID {
         case "paste", "paste-plain", "copy-only":
-            guard let itemID, let record = try await record(itemID) else { return ViewEventReply(document: nil) }
+            guard let itemID, let record = try await record(itemID), record.deletedAt == nil else { return ViewEventReply(document: nil) }
             let current = lock.withLock { settings }
-            let plain = actionID == "paste-plain" || (actionID == "paste" && current.pastePlain)
-            let reply = try await context.capabilities.writeClipboard(clipboardRequest(for: record, plainText: plain))
+            let plain = supportsPlainText(record) && (actionID == "paste-plain" || (actionID == "paste" && current.pastePlain))
+            let reply: ClipboardWriteReply
+            do {
+                reply = try await context.capabilities.writeClipboard(clipboardRequest(for: record, plainText: plain))
+            } catch let error as RuyioError where record.kind == .file && error.code == .fileAccessDenied {
+                lock.withLock { unavailableFiles.insert(itemID); view.selection = itemID }
+                return ViewEventReply(document: try await historyDocument(selectFirst: false),
+                                      effect: .notice(s.t("文件已移动、删除或无法访问，可以复制路径。", "The files were moved, deleted, or are inaccessible. You can copy their paths.")))
+            }
+            _ = lock.withLock { unavailableFiles.remove(itemID) }
             await MainActor.run { monitor?.noteOwnWrite(changeCount: reply.changeCount) }
-            var updated = record
-            updated.lastCopiedAt = Date()
-            try? await context.storage.put(try updated.document())
+            try? await mutations.run {
+                guard var updated = try await self.record(itemID), updated.deletedAt == nil else { return }
+                updated.lastCopiedAt = Date()
+                try await context.storage.put(try updated.document())
+            }
             Task { await publishDynamicItems() }
             let autoPaste = actionID != "copy-only" && current.autoPaste
             return ViewEventReply(document: nil, effect: .closeAndPaste(plainText: plain, autoPaste: autoPaste))
+        case "copy-paths":
+            guard let itemID, let record = try await record(itemID), record.kind == .file,
+                  let paths = record.filePaths, !paths.isEmpty else { return ViewEventReply(document: nil) }
+            let request = ClipboardWriteRequest(items: [PasteboardItemPayload(representations: [
+                PasteboardRepresentation(type: PasteboardRules.text, text: paths.joined(separator: "\n"))
+            ])], originToken: UUID().uuidString)
+            let reply = try await context.capabilities.writeClipboard(request)
+            await MainActor.run { monitor?.noteOwnWrite(changeCount: reply.changeCount) }
+            return ViewEventReply(document: nil, effect: .notice(s.t("已复制文件路径", "File paths copied")))
         case "favorite":
-            guard let itemID, var record = try await record(itemID) else { return ViewEventReply(document: nil) }
-            record.favorite.toggle()
-            try await context.storage.put(try record.document())
-            try await reloadItems(keepSelection: true)
+            guard let itemID else { return ViewEventReply(document: nil) }
+            try await mutations.run {
+                guard var record = try await record(itemID), record.deletedAt == nil else { return }
+                record.favorite.toggle()
+                try await context.storage.put(try record.document())
+            }
+            try await reloadItems(keepSelection: true, resetPage: false)
             return ViewEventReply(document: try await historyDocument(selectFirst: false))
         case "delete":
-            guard let itemID, var record = try await record(itemID) else { return ViewEventReply(document: nil) }
+            guard let itemID else { return ViewEventReply(document: nil) }
             await commitPendingDelete(force: true)
-            record.deletedAt = Date()
-            try await context.storage.put(try record.document())
             let token = UUID().uuidString
-            let next = lock.withLock { () -> String? in
-                let index = view.items.firstIndex { $0.id == itemID }
-                view.items.removeAll { $0.id == itemID }
-                view.pendingUndo = (token, itemID, Date().addingTimeInterval(CaptureLimits.undoWindow))
-                guard let index, !view.items.isEmpty else { return nil }
-                return view.items[min(index, view.items.count - 1)].id
+            try await mutations.run {
+                guard var record = try await record(itemID) else { return }
+                record.deletedAt = Date()
+                try await context.storage.put(try record.document())
+                lock.withLock {
+                    viewGeneration += 1
+                    view.loadingPage = false
+                    let index = view.items.firstIndex { $0.id == itemID }
+                    view.items.removeAll { $0.id == itemID }
+                    view.pendingUndo = (token, itemID, Date().addingTimeInterval(CaptureLimits.undoWindow))
+                    view.selection = index.flatMap { view.items.isEmpty ? nil : view.items[min($0, view.items.count - 1)].id }
+                }
             }
-            lock.withLock { view.selection = next }
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(CaptureLimits.undoWindow))
                 await self?.commitPendingDelete(force: false, token: token)
@@ -490,21 +649,30 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             return ViewEventReply(document: nil, effect: .confirm(ConfirmSpec(title: s.clearConfirmTitle, message: s.clearConfirmMessage(total, favorites),
                                                                                confirmTitle: s.clear, confirmActionID: "confirm-clear-unfavorited", isDestructive: true)))
         case "confirm-clear-unfavorited":
-            var ids: [String] = []
-            var cursor: String?
-            repeat {
-                let page = try await context.storage.query(StorageQuery(collection: ClipRecord.collection, filters: [StorageFilter(field: "favorite", value: false)],
-                                                                        limit: 200, cursor: cursor))
-                ids += page.documents.map(\.id)
-                cursor = page.nextCursor
-            } while cursor != nil
-            await deleteRecords(ids)
+            let ids = try await mutations.run { () -> [String] in
+                var ids: [String] = []
+                var cursor: String?
+                repeat {
+                    let page = try await self.context.storage.query(StorageQuery(collection: ClipRecord.collection,
+                        filters: [StorageFilter(field: "favorite", value: false)], limit: 200, cursor: cursor))
+                    ids += page.documents.map(\.id)
+                    cursor = page.nextCursor
+                } while cursor != nil
+                try await self.deleteBatch(ids)
+                return ids
+            }
             try await reloadItems()
             await publishDynamicItems()
             return ViewEventReply(document: try await historyDocument(selectFirst: true), effect: .notice(s.t("已清空 \(ids.count) 条记录", "Cleared \(ids.count) items")))
         case "resume", "pause", "recheck":
-            await toggleRecording()
+            try await toggleRecording()
             return ViewEventReply(document: try await historyDocument(selectFirst: false))
+        case "previous-page":
+            try await loadPreviousPage()
+            return ViewEventReply(document: try await historyDocument(selectFirst: false))
+        case "newest":
+            try await reloadItems()
+            return ViewEventReply(document: try await historyDocument(selectFirst: true))
         case "clear-filters":
             lock.withLock { view.query = ""; view.filter = "all" }
             try await reloadItems()
@@ -518,7 +686,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         var items: [PasteboardItemPayload] = []
         for item in record.items {
             var reps = item.representations.map { PasteboardRepresentation(type: $0.type, text: $0.text, blobID: $0.blobID) }
-            if plainText {
+            if plainText && supportsPlainText(record) {
                 // Plain paste writes only plain text; file URLs are kept so file pastes still work (Maccy #962).
                 reps = reps.filter { $0.type == PasteboardRules.text || $0.type == PasteboardRules.fileURL }
             }
@@ -527,77 +695,170 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         return ClipboardWriteRequest(items: items, originToken: UUID().uuidString)
     }
 
+    private func supportsPlainText(_ record: ClipRecord) -> Bool {
+        record.kind != .image && record.kind != .file && record.items.contains {
+            $0.representations.contains { $0.type == PasteboardRules.text }
+        }
+    }
+
     func record(_ id: String) async throws -> ClipRecord? {
         guard let doc = try await context.storage.get(collection: ClipRecord.collection, id: id) else { return nil }
         return try ClipRecord(from: doc)
     }
 
     func commitPendingDelete(force: Bool, token: String? = nil) async {
-        let target = lock.withLock { () -> String? in
-            guard let pending = view.pendingUndo else { return nil }
-            if let token, token != pending.token { return nil }
-            guard force || pending.expires <= Date() else { return nil }
-            view.pendingUndo = nil
-            return pending.recordID
+        try? await mutations.run {
+            let pending = lock.withLock { () -> (token: String, recordID: String, expires: Date)? in
+                guard let pending = view.pendingUndo else { return nil }
+                if let token, token != pending.token { return nil }
+                guard force || pending.expires <= Date() else { return nil }
+                return pending
+            }
+            guard let pending else { return }
+            if let record = try await record(pending.recordID), record.deletedAt != nil {
+                try await context.storage.delete(collection: ClipRecord.collection, id: pending.recordID)
+            }
+            lock.withLock { if view.pendingUndo?.token == pending.token { view.pendingUndo = nil } }
         }
-        guard let target else { return }
-        try? await context.storage.delete(collection: ClipRecord.collection, id: target)
         refreshOpenView()
     }
 
     func undoDelete(_ token: String) async throws {
-        let target = lock.withLock { () -> String? in
-            guard let pending = view.pendingUndo, pending.token == token else { return nil }
-            view.pendingUndo = nil
-            return pending.recordID
+        let target = try await mutations.run { () -> String? in
+            guard let target = lock.withLock({ view.pendingUndo?.token == token ? view.pendingUndo?.recordID : nil }),
+                  var record = try await record(target) else { return nil }
+            record.deletedAt = nil
+            try await context.storage.put(try record.document())
+            lock.withLock { if view.pendingUndo?.token == token { view.pendingUndo = nil } }
+            return target
         }
-        guard let target, var record = try await record(target) else { return }
-        record.deletedAt = nil
-        try await context.storage.put(try record.document())
-        try await reloadItems()
-        lock.withLock { view.selection = target }
+        guard let target else { return }
+        try await reloadItems(keepSelection: true, resetPage: false)
+        lock.withLock { if view.items.contains(where: { $0.id == target }) { view.selection = target } }
         await publishDynamicItems()
     }
 
     func currentQuery() -> StorageQuery {
-        lock.withLock {
-            var filters = [StorageFilter(field: "deleted", value: false)]
-            switch view.filter {
-            case "text", "image", "url", "file": filters.append(StorageFilter(field: "kind", value: .string(view.filter)))
-            case "favorite": filters.append(StorageFilter(field: "favorite", value: true))
-            default: break
-            }
-            return StorageQuery(collection: ClipRecord.collection, filters: filters, search: view.query.isEmpty ? nil : view.query,
-                                limit: UISchemaLimits.firstPageSize)
-        }
+        lock.withLock { query(for: view) }
     }
 
-    func reloadItems(keepSelection: Bool = false) async throws {
-        let page = try await context.storage.query(currentQuery())
-        let records = page.documents.compactMap { try? ClipRecord(from: $0) }
+    private func query(for state: ViewState) -> StorageQuery {
+        var filters = [StorageFilter(field: "deleted", value: false)]
+        switch state.filter {
+        case "text", "image", "url", "file": filters.append(StorageFilter(field: "kind", value: .string(state.filter)))
+        case "favorite": filters.append(StorageFilter(field: "favorite", value: true))
+        default: break
+        }
+        return StorageQuery(collection: ClipRecord.collection, filters: filters, search: state.query.isEmpty ? nil : state.query,
+                            limit: UISchemaLimits.firstPageSize)
+    }
+
+    /// Reloads the current window in place (or from the newest record with `resetPage`), covering at least
+    /// as many records as are loaded now so the list never shrinks under the user.
+    func reloadItems(keepSelection: Bool = false, resetPage: Bool = true) async throws {
+        let (base, start, minimum, generation) = lock.withLock { () -> (StorageQuery, String?, Int, Int) in
+            viewGeneration += 1
+            view.loadingPage = false
+            if resetPage { view.pageStarts = []; view.pageCounts = []; view.droppedPages = [] }
+            return (query(for: view), view.pageStarts.first ?? nil, resetPage ? 0 : view.items.count, viewGeneration)
+        }
+        var records: [ClipRecord] = []
+        var starts: [String?] = []
+        var counts: [Int] = []
+        var cursor = start
+        repeat {
+            var query = base
+            query.cursor = cursor
+            let page = try await context.storage.query(query)
+            let decoded = page.documents.compactMap { try? ClipRecord(from: $0) }
+            starts.append(cursor)
+            counts.append(decoded.count)
+            records += decoded
+            cursor = page.nextCursor
+        } while cursor != nil && records.count < minimum && starts.count < Self.windowPages
         lock.withLock {
+            guard viewGeneration == generation else { return }
             view.items = records
-            view.cursor = page.nextCursor
+            view.pageStarts = starts
+            view.pageCounts = counts
+            view.cursor = cursor
             if !keepSelection || !records.contains(where: { $0.id == view.selection }) { view.selection = records.first?.id }
         }
     }
 
+    /// Appends the next page (scrolling or ↓ past the last row); beyond the window the newest page slides out.
     func loadNextPage() async throws {
-        guard let cursor = lock.withLock({ view.cursor }) else { return }
-        var query = currentQuery()
-        query.cursor = cursor
-        let page = try await context.storage.query(query)
-        let records = page.documents.compactMap { try? ClipRecord(from: $0) }
-        lock.withLock {
-            view.items += records
-            view.cursor = page.nextCursor
+        let request = lock.withLock { () -> (generation: Int, query: StorageQuery)? in
+            guard !view.loadingPage, let cursor = view.cursor else { return nil }
+            view.loadingPage = true
+            viewGeneration += 1
+            var query = query(for: view)
+            query.cursor = cursor
+            return (viewGeneration, query)
+        }
+        guard let request else { return }
+        do {
+            let page = try await context.storage.query(request.query)
+            let records = page.documents.compactMap { try? ClipRecord(from: $0) }
+            lock.withLock {
+                guard viewGeneration == request.generation else { return }
+                view.items += records
+                view.pageStarts.append(request.query.cursor)
+                view.pageCounts.append(records.count)
+                view.cursor = page.nextCursor
+                if view.pageStarts.count > Self.windowPages {
+                    let dropped = view.pageCounts.removeFirst()
+                    view.droppedPages.append(view.pageStarts.removeFirst())
+                    view.items.removeFirst(min(dropped, view.items.count))
+                }
+                if !view.items.contains(where: { $0.id == view.selection }) { view.selection = view.items.first?.id }
+                view.loadingPage = false
+            }
+        } catch {
+            lock.withLock { if viewGeneration == request.generation { view.loadingPage = false } }
+            throw error
+        }
+    }
+
+    /// Brings back the newer page that last slid out of the window; the oldest page drops off the end.
+    func loadPreviousPage() async throws {
+        let request = lock.withLock { () -> (generation: Int, query: StorageQuery)? in
+            guard !view.loadingPage, let start = view.droppedPages.last else { return nil }
+            view.loadingPage = true
+            viewGeneration += 1
+            var query = query(for: view)
+            query.cursor = start
+            return (viewGeneration, query)
+        }
+        guard let request else { return }
+        do {
+            let page = try await context.storage.query(request.query)
+            let records = page.documents.compactMap { try? ClipRecord(from: $0) }
+            lock.withLock {
+                guard viewGeneration == request.generation else { return }
+                view.droppedPages.removeLast()
+                view.items.insert(contentsOf: records, at: 0)
+                view.pageStarts.insert(request.query.cursor, at: 0)
+                view.pageCounts.insert(records.count, at: 0)
+                if view.pageStarts.count > Self.windowPages {
+                    let dropped = view.pageCounts.removeLast()
+                    view.cursor = view.pageStarts.removeLast()
+                    view.items.removeLast(min(dropped, view.items.count))
+                }
+                view.selection = records.last?.id ?? view.selection
+                view.loadingPage = false
+            }
+        } catch {
+            lock.withLock { if viewGeneration == request.generation { view.loadingPage = false } }
+            throw error
         }
     }
 
     private func refreshOpenView() {
         Task { [weak self] in
-            guard let self else { return }
-            try? await self.reloadItems(keepSelection: true)
+            guard let self, self.lock.withLock({ self.historyIsOpen && !self.view.loadingPage }) else { return }
+            try? await self.reloadItems(keepSelection: true, resetPage: false)
+            guard self.lock.withLock({ self.historyIsOpen }) else { return }
             if let document = try? await self.historyDocument(selectFirst: false) { self.context.updateView(document) }
         }
     }
@@ -624,16 +885,19 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             return ListItem(id: record.id, title: record.title.isEmpty ? s.kindName(record.kind) : record.title, subtitle: subtitle,
                             symbol: symbol, thumbnailBlobID: record.thumbnailBlobID, isFavorite: record.favorite,
                             accessibilityLabel: "\(s.kindName(record.kind)), \(record.title), \(subtitle)",
-                            actions: [
-                                ItemAction(id: "paste", title: s.paste, shortcut: "return", isDefault: true),
-                                ItemAction(id: "paste-plain", title: s.pastePlain, shortcut: "option+return"),
-                                ItemAction(id: "copy-only", title: s.copyOnly, shortcut: "command+return"),
-                                ItemAction(id: "favorite", title: record.favorite ? s.unfavorite : s.favorite, shortcut: "command+d", symbol: "star"),
-                                ItemAction(id: "delete", title: s.delete, shortcut: "command+delete", symbol: "trash", isDestructive: true),
-                            ])
+                            actions: itemActions(for: record))
         }
-        let selected = items.first { $0.id == selection } ?? (selectFirst ? items.first : nil)
+        // Plugin and host always agree on the selected row, so the preview and actions never go blank.
+        let selected = items.first { $0.id == selection } ?? items.first
+        lock.withLock { if !view.items.contains(where: { $0.id == view.selection }) { view.selection = view.items.first?.id } }
         let preview: UINode? = selected.map { previewNode($0, strings: s) }
+        var footerActions = selected.map { itemActions(for: $0) } ?? []
+        if lock.withLock({ !view.droppedPages.isEmpty }) {
+            // Only after scrolling far enough for newer rows to slide out of the window.
+            footerActions.append(ItemAction(id: "previous-page", title: s.t("显示更新的记录", "Show Newer Items"), symbol: "chevron.up"))
+            footerActions.append(ItemAction(id: "newest", title: s.t("回到最新", "Back to Newest"), symbol: "arrow.up.to.line"))
+        }
+        footerActions.append(ItemAction(id: "clear-unfavorited", title: s.clearUnfavorited, isDestructive: true))
         var banner: BannerSpec?
         switch state {
         case .recording: banner = nil
@@ -653,19 +917,26 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             filters: [FilterOption(id: "all", title: s.all), FilterOption(id: "text", title: s.text), FilterOption(id: "image", title: s.image),
                       FilterOption(id: "url", title: s.link), FilterOption(id: "file", title: s.file), FilterOption(id: "favorite", title: s.favorites)],
             selectedFilter: filter,
+            // Infinite scroll over a bounded window keeps every entry reachable within the schema limits.
             list: ListSpec(items: rows, selection: selected?.id, nextCursor: cursor, empty: empty),
             preview: preview,
-            footerActions: [
-                ItemAction(id: "paste", title: s.paste, shortcut: "return", isDefault: true),
-                ItemAction(id: "paste-plain", title: s.pastePlain, shortcut: "option+return"),
-                ItemAction(id: "copy-only", title: s.copyOnly, shortcut: "command+return"),
-                ItemAction(id: "favorite", title: s.favorite, shortcut: "command+d"),
-                ItemAction(id: "delete", title: s.delete, shortcut: "command+delete", isDestructive: true),
-                ItemAction(id: "clear-unfavorited", title: s.clearUnfavorited, isDestructive: true),
-            ],
+            footerActions: footerActions,
             banner: banner,
             undo: undo.map { UndoSpec(text: s.deleted, token: $0.0, expiresAt: $0.2) })
         return ViewDocument(viewID: Self.historyView, revision: revision, title: context.localized("name", "Clipboard History"), root: .collection(spec))
+    }
+
+    private func itemActions(for record: ClipRecord) -> [ItemAction] {
+        let s = strings
+        var actions = [ItemAction(id: "paste", title: s.paste, shortcut: "return", isDefault: true)]
+        if supportsPlainText(record) { actions.append(ItemAction(id: "paste-plain", title: s.pastePlain, shortcut: "option+return")) }
+        actions.append(ItemAction(id: "copy-only", title: s.copyOnly, shortcut: "command+return"))
+        if record.kind == .file {
+            actions.append(ItemAction(id: "copy-paths", title: s.t("复制路径", "Copy paths"), symbol: "doc.on.doc"))
+        }
+        actions.append(ItemAction(id: "favorite", title: record.favorite ? s.unfavorite : s.favorite, shortcut: "command+d", symbol: "star"))
+        actions.append(ItemAction(id: "delete", title: s.delete, shortcut: "command+delete", symbol: "trash", isDestructive: true))
+        return actions
     }
 
     func previewNode(_ record: ClipRecord, strings s: Strings) -> UINode {
@@ -682,6 +953,9 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             if let size = record.imageSize { rows.append(KeyValueRow(key: s.dimensions, value: "\(size[0]) × \(size[1])")) }
         case .file:
             rows.append(KeyValueRow(key: s.count, value: String(record.fileNames?.count ?? 0)))
+            if lock.withLock({ unavailableFiles.contains(record.id) }) {
+                children.append(.text(TextSpec(s.t("文件已移动、删除或无法访问，请使用“复制路径”。", "The files were moved, deleted, or are inaccessible. Use Copy paths."), style: .body)))
+            }
             children.append(.text(TextSpec((record.filePaths ?? []).joined(separator: "\n"), style: .monospaced)))
         case .url:
             children.append(.text(TextSpec(record.plainText() ?? record.title, style: .body)))
@@ -744,12 +1018,9 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     }
 
     func apply(_ updated: Settings) async throws {
-        let previous = lock.withLock { settings }
-        await saveSettings(updated)
-        if updated.recording != previous.recording {
-            await MainActor.run { updated.recording ? monitor?.start() : monitor?.pause() }
-        }
-        await applyRetention()
+        try await saveSettings(updated)
+        // The settings are saved; a failed cleanup is retried by the hourly maintenance, not reported as a failed save.
+        try? await prune(updated)
         await publishDynamicItems()
     }
 }

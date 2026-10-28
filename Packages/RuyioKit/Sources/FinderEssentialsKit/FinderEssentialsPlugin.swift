@@ -11,6 +11,11 @@ public final class FinderEssentialsPlugin: RuyioPlugin, @unchecked Sendable {
 
     func t(_ zh: String, _ en: String) -> String { context.isChinese ? zh : en }
 
+    public func checkHealth(_ request: DataPreparationRequest) async throws {
+        // This plugin has no persistent business records; verify the candidate store is readable.
+        _ = try await context.storage.count(StorageQuery(collection: "settings"))
+    }
+
     public func perform(_ invocation: ActionInvocation, execution: ExecutionID, operation: OperationID?) async throws -> ActionResult {
         let finder = invocation.finder
         let selection = finder?.selection ?? []

@@ -42,7 +42,7 @@ struct MarketContent: View {
     func reload() async {
         markets = await model.engine.markets.markets()
         var all: [MarketEntryState] = []
-        for market in markets where market.enabled && (openMarket == nil || openMarket == market.marketID) {
+        for market in markets where (openMarket == market.marketID || (openMarket == nil && market.enabled)) {
             all += await model.engine.markets.entries(market.marketID, load: 30)
         }
         entries = all
@@ -147,6 +147,7 @@ struct MarketContent: View {
         let count = (market.index.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["market"] as? [String: Any])?["plugins"] as? [Any]
         let time = market.lastRefreshAt.map { RelativeDateTimeFormatter().localizedString(for: $0, relativeTo: Date()) } ?? "—"
         var parts = [l.t("\(count?.count ?? 0) 个插件", "\(count?.count ?? 0) plugins"), time]
+        if !market.enabled { parts.append(l.t("已停用", "Disabled")) }
         switch market.state {
         case "stale": parts.append(l.t("刷新失败，显示缓存", "Refresh failed; showing cache"))
         case "conflicted": parts.append(l.t("身份冲突，已冻结", "Identity conflict; frozen"))
@@ -262,7 +263,8 @@ struct AddSourceSheet: View {
                 }
             }
         case .plugin(let descriptor, let url):
-            PluginInstallPreviewView(model: model, descriptor: descriptor, descriptorURL: url, packageURL: nil, source: resolved.canonicalURL) { isPresented = false }
+            PluginInstallPreviewView(model: model, descriptor: descriptor, descriptorURL: url, packageURL: nil, source: resolved.canonicalURL,
+                                     sourceBinding: PluginSourceBinding(resolved)) { isPresented = false }
         case .package(let url):
             PluginInstallPreviewView(model: model, descriptor: nil, descriptorURL: nil, packageURL: url, source: url.absoluteString) { isPresented = false }
         }
@@ -291,9 +293,11 @@ struct PluginInstallPreviewView: View {
     let descriptorURL: URL?
     let packageURL: URL?
     let source: String
+    var sourceBinding: PluginSourceBinding? = nil
     let done: () -> Void
     @State private var preview: InstallPreview?
     @State private var checking = false
+    @State private var installing = false
     @State private var progress: Double?
     @State private var error: String?
     @State private var task: Task<Void, Never>?
@@ -317,9 +321,10 @@ struct PluginInstallPreviewView: View {
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
             HStack {
                 Spacer()
+                if installing { ProgressView().controlSize(.small) }
                 if checking { Button(l.cancel) { task?.cancel(); checking = false } }
                 if let preview {
-                    Button(l.t("安装", "Install")) { install(preview) }.keyboardShortcut(.defaultAction).disabled(!preview.isInstallable)
+                    Button(l.t("安装", "Install")) { install(preview) }.keyboardShortcut(.defaultAction).disabled(!preview.isInstallable || installing)
                 } else {
                     Button(l.t("下载并验证", "Download and Verify")) { verify() }.disabled(checking || (descriptor != nil && descriptor?.bestRelease() == nil))
                 }
@@ -364,7 +369,8 @@ struct PluginInstallPreviewView: View {
                     Task { @MainActor in progress = total.map { Double(done) / Double(max($0, 1)) } }
                 }
                 if let descriptor, let descriptorURL, let release = descriptor.bestRelease() {
-                    preview = try await model.engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: descriptorURL, release: release, progress: report)
+                    let marketID = source.hasPrefix("market:") ? String(source.dropFirst(7)) : nil
+                    preview = try await model.engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: descriptorURL, release: release, marketID: marketID, progress: report)
                 } else if let packageURL {
                     preview = try await model.engine.markets.prepareInstall(packageURL: packageURL, progress: report)
                 }
@@ -379,39 +385,85 @@ struct PluginInstallPreviewView: View {
     }
 
     func install(_ preview: InstallPreview) {
+        guard !installing else { return }
+        installing = true
+        error = nil
         Task {
+            defer { installing = false }
+            var commitStarted = false
             do {
                 // Installs from a market follow that market (removal marks them orphaned, updates come from it).
                 let fromMarket = source.hasPrefix("market:")
                 let channel: UpdateChannel = fromMarket ? .market : (descriptor != nil ? .descriptor : .none)
-                let id = try await model.engine.commitInstall(preview, updateChannel: channel, source: fromMarket ? source : (descriptorURL?.absoluteString ?? source))
+                let persistedSource = try sourceBinding?.encoded() ?? source
+                var dataChoice = HostEngine.RestoreDataChoice.keepCompatible
+                if try model.engine.requiresFreshData(for: preview) {
+                    guard confirmFreshDataInstallation(using: l) else { return }
+                    dataChoice = .fresh
+                }
+                commitStarted = true
+                let id = try await model.engine.commitInstall(preview, updateChannel: channel, source: persistedSource, dataChoice: dataChoice)
                 model.selectedPlugin = id
                 model.page = .plugins
                 done()
             } catch let failure as RuyioError {
+                if commitStarted { model.engine.installer.discard(preview); self.preview = nil }
                 error = model.l.errorText(failure)
             } catch {
+                if commitStarted { model.engine.installer.discard(preview); self.preview = nil }
                 self.error = error.localizedDescription
             }
         }
     }
 }
 
+@MainActor
+func confirmFreshDataInstallation(using l: L10n) -> Bool {
+    let alert = NSAlert()
+    alert.messageText = l.t("保留的数据与此版本不兼容", "Retained data is incompatible with this version")
+    alert.informativeText = l.t("可以保留旧数据，使用新的空数据安装插件。旧数据不会被覆盖或删除。取消后不会安装插件，也不会更改旧数据。",
+                               "You can install the plugin with new, empty data. Existing data will be kept without being overwritten or deleted. Cancelling leaves the plugin uninstalled and the old data unchanged.")
+    alert.addButton(withTitle: l.cancel)
+    alert.addButton(withTitle: l.t("保留旧数据，使用新数据安装", "Keep Old Data and Install with New Data"))
+    return alert.runModal() == .alertSecondButtonReturn
+}
+
 struct MarketPluginSheet: View {
     @ObservedObject var model: AppModel
     let entry: MarketEntryState
     let close: () -> Void
+    @State private var loaded: (PluginDescriptor, URL)?
+    @State private var loading = false
+    @State private var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let descriptor = entry.descriptor, let url = entry.descriptorURL {
+            if let (descriptor, url) = loaded {
                 PluginInstallPreviewView(model: model, descriptor: descriptor, descriptorURL: url, packageURL: nil, source: "market:\(entry.marketID)", done: close)
             } else {
                 Text(entry.hintName ?? entry.id.rawValue).font(.headline)
-                Text(model.l.t("插件信息尚未加载或加载失败。", "Plugin details are not loaded or failed to load.")).foregroundStyle(.secondary)
+                if loading { ProgressView().controlSize(.small) }
+                if let error {
+                    Text(error).foregroundStyle(.orange)
+                    Button(model.l.t("重试", "Retry")) { Task { await load() } }.disabled(loading)
+                }
             }
             HStack { Spacer(); Button(model.l.done) { close() }.keyboardShortcut(.cancelAction) }
         }
         .padding(24).frame(width: 560)
+        .task { await load() }
+    }
+
+    func load() async {
+        loading = true
+        error = nil
+        defer { loading = false }
+        do {
+            loaded = try await model.engine.markets.descriptor(marketID: entry.marketID, pluginID: entry.id, refresh: false)
+        } catch let failure as RuyioError {
+            error = model.l.errorText(failure) + (failure.diagnostic.map { " (\($0))" } ?? "")
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }

@@ -154,10 +154,14 @@ struct UpdateSection: View {
             if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
         }
         .task(id: summary.version) {
+            available = model.engine.availableUpdate(summary.id)
             if let (descriptor, url) = await model.engine.sourceDescriptor(summary.id) {
                 olderReleases = descriptor.releases.filter { $0.version < summary.version }.sorted { $0.version > $1.version }
                 source = (descriptor, url)
             }
+        }
+        .onChange(of: summary.status.update) { _, state in
+            if state == .available { available = model.engine.availableUpdate(summary.id) }
         }
     }
 
@@ -179,6 +183,10 @@ struct UpdateSection: View {
             do {
                 let resolved = try await model.engine.markets.resolve(field.stringValue)
                 try await model.engine.switchSource(summary.id, to: resolved)
+                available = nil
+                checked = false
+                olderReleases = []
+                source = nil
                 result = l.t("来源已更换。", "Source changed.")
             } catch let error as RuyioError {
                 result = l.errorText(error) + (error.diagnostic.map { " (\($0))" } ?? "")
@@ -198,10 +206,21 @@ struct UpdateSection: View {
         first.addButton(withTitle: l.t("第 1 步：卸载旧身份", "Step 1: Uninstall Current"))
         guard first.runModal() == .alertSecondButtonReturn else { model.engine.installer.discard(preview); return }
         Task {
+            // Freeze the verified source before uninstall removes its registry record.
+            guard let previous = await model.engine.registry.record(summary.id) else {
+                model.engine.installer.discard(preview)
+                result = l.errorText(RuyioError(.pluginNotFound))
+                return
+            }
             do {
+                try await model.engine.validateInstallSource(updateChannel: previous.updateChannel, source: previous.source)
                 try await model.engine.uninstall(summary.id, deleteData: false)
             } catch let error as RuyioError {
                 result = l.errorText(error)
+                model.engine.installer.discard(preview)
+                return
+            } catch {
+                result = error.localizedDescription
                 model.engine.installer.discard(preview)
                 return
             }
@@ -217,11 +236,15 @@ struct UpdateSection: View {
                 return
             }
             do {
-                let id = try await model.engine.commitInstall(preview, updateChannel: summary.status.updateChannel, source: nil)
+                let id = try await model.engine.commitInstall(preview, updateChannel: previous.updateChannel, source: previous.source, dataChoice: .fresh)
                 model.selectedPlugin = id
             } catch let error as RuyioError {
                 // A failed second step leaves the plugin uninstalled; it never claims to be restored.
+                model.engine.installer.discard(preview)
                 model.show(l.t("新身份安装失败，旧版本保持已卸载、数据保留：", "Installing the new identity failed; the old version stays uninstalled with its data kept: ") + l.errorText(error))
+            } catch {
+                model.engine.installer.discard(preview)
+                model.show(l.t("新身份安装失败，旧版本保持已卸载、数据保留：", "Installing the new identity failed; the old version stays uninstalled with its data kept: ") + error.localizedDescription)
             }
         }
     }
@@ -233,7 +256,10 @@ struct UpdateSection: View {
         Task {
             defer { working = false }
             do {
-                let preview = try await model.engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release)
+                try await model.engine.validateUpdateSource(summary.id)
+                let binding = await model.engine.registry.record(summary.id)?.source
+                let marketID = binding?.hasPrefix("market:") == true ? binding.map { String($0.dropFirst(7)) } : nil
+                let preview = try await model.engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release, marketID: marketID)
                 guard preview.isInstallable else {
                     result = l.errorText(RuyioError(.sourceInvalid, diagnostic: preview.failureSummary))
                     model.engine.installer.discard(preview)
@@ -269,8 +295,19 @@ struct UpdateSection: View {
     func check() {
         checking = true
         Task {
-            available = await model.engine.checkForUpdate(summary.id)
-            checked = true
+            switch await model.engine.checkForUpdateResult(summary.id) {
+            case .available(let update):
+                available = update
+                checked = true
+                result = nil
+            case .upToDate:
+                available = nil
+                checked = true
+                result = nil
+            case .unavailable(let error):
+                checked = false
+                result = l.t("检查更新失败：", "Could not check for updates: ") + l.errorText(error)
+            }
             checking = false
         }
     }
@@ -467,7 +504,9 @@ struct PluginSettingsRows: View {
                     Button(l.t("选择…", "Choose…")) {
                         Task {
                             if let id = await SystemBridgeImpl().chooseApplication(role: "editor") {
-                                try? await model.engine.setPluginSetting(summary.id, key: "app.editor", value: .string(id))
+                                do { try await model.engine.setPluginSetting(summary.id, key: "app.editor", value: .string(id)) }
+                                catch let error as RuyioError { model.show(l.errorText(error)) }
+                                catch { model.show(error.localizedDescription) }
                                 model.objectWillChange.send()
                             }
                         }
@@ -503,11 +542,23 @@ struct PluginSettingsSheet: View {
                 Spacer()
             }
             .padding(.horizontal, 20).padding(.top, 18)
+            if let error = holder.error {
+                HStack {
+                    Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                    if holder.canRetry {
+                        Button(l.retry) { Task { await holder.retry(model: model, pluginID: summary.id, viewID: settingsViewID) } }
+                    }
+                }
+                .font(.callout).padding()
+            }
             Group {
                 if let context = holder.context {
                     SchemaNodeView(node: context.document.root, context: context)
-                } else {
+                        .disabled(context.isBusy)
+                } else if holder.isLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Color.clear
                 }
             }
             .frame(minHeight: 360)
@@ -519,55 +570,145 @@ struct PluginSettingsSheet: View {
         }
         .frame(width: 520, height: 480)
         .task {
-            guard summary.status.isInvocable, let view = summary.manifest.views.first(where: { $0.placement == .settings }) else { return }
-            await holder.open(model: model, pluginID: summary.id, viewID: view.id)
+            guard summary.status.isInvocable, let viewID = settingsViewID else { return }
+            await holder.open(model: model, pluginID: summary.id, viewID: viewID)
         }
+        .onChange(of: holder.wantsClose) { _, close in if close { isPresented = false } }
         .onDisappear { holder.close(model: model) }
     }
+
+    private var settingsViewID: String? { summary.manifest.views.first { $0.placement == .settings }?.id }
 }
 
 @MainActor
 final class SettingsHolder: ObservableObject {
     @Published var context: SchemaContext?
+    @Published var error: String?
+    @Published var isLoading = false
+    @Published var wantsClose = false
     private var opened: (PluginID, String)?
+    private var subscription: UUID?
+    private var pendingDocument: ViewDocument?
+    private var generation = UUID()
+    private var lifecycleTask: Task<Void, Never>?
+    private var pendingSubmission: [String: JSONValue]?
+
+    var canRetry: Bool { !isLoading && context == nil }
 
     func open(model: AppModel, pluginID: PluginID, viewID: String) async {
-        guard opened == nil else { return }
+        close(model: model)
+        let ticket = generation
+        let previous = lifecycleTask
+        error = nil
+        wantsClose = false
+        isLoading = true
+        let task = Task {
+            await previous?.value
+            guard generation == ticket else { return }
+            await load(model: model, pluginID: pluginID, viewID: viewID, ticket: ticket)
+        }
+        lifecycleTask = task
+        await task.value
+    }
+
+    private func load(model: AppModel, pluginID: PluginID, viewID: String, ticket: UUID) async {
+        defer { if generation == ticket { isLoading = false } }
+        subscription = model.viewUpdates.observe(pluginID: pluginID, viewID: viewID) { [weak self] document in
+            Task { @MainActor in
+                guard let self, self.generation == ticket else { return }
+                if let context = self.context { context.apply(document) }
+                else if document.revision >= (self.pendingDocument?.revision ?? Int.min) { self.pendingDocument = document }
+            }
+        }
         do {
             let document = try await model.engine.openView(pluginID: pluginID, viewID: viewID)
+            guard generation == ticket else {
+                await model.engine.closeView(pluginID: pluginID, viewID: viewID)
+                return
+            }
             opened = (pluginID, viewID)
             let l = model.l
             let engine = model.engine
             context = SchemaContext(pluginID: pluginID, document: document,
                                     strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: "", loading: "", choose: "…"),
                                     sendEvent: { [weak self] event, revision in
-                                        guard let reply = try? await engine.viewEvent(pluginID: pluginID, viewID: viewID, revision: revision, event: event) else { return }
-                                        await MainActor.run {
-                                            if let document = reply.document { self?.context?.apply(document) }
-                                            switch reply.effect {
-                                            case .notice(let text): model.show(text)
-                                            case .confirm(let spec):
-                                                let alert = NSAlert()
-                                                alert.messageText = spec.title
-                                                alert.informativeText = l.fromPlugin(model.summary(pluginID)?.displayName ?? pluginID.rawValue) + "\n\n" + spec.message
-                                                alert.addButton(withTitle: l.cancel)
-                                                alert.addButton(withTitle: spec.confirmTitle).hasDestructiveAction = spec.isDestructive
-                                                if alert.runModal() == .alertSecondButtonReturn {
-                                                    self?.context?.send(.invoke(actionID: spec.confirmActionID, itemID: nil))
-                                                }
-                                            default: break
-                                            }
-                                        }
+                                        await self?.send(event, revision: revision, model: model, ticket: ticket)
                                     },
-                                    loadBlob: { _ in nil })
+                                    loadBlob: { blob in await OverlayController.loadBlob(engine: engine, pluginID: pluginID, blobID: blob) })
+            if let pendingDocument { context?.apply(pendingDocument); self.pendingDocument = nil }
         } catch {
+            guard generation == ticket else { return }
+            if let subscription { model.viewUpdates.remove(subscription) }
+            subscription = nil
+            pendingDocument = nil
             context = nil
+            self.error = (error as? RuyioError).map(model.l.errorText) ?? error.localizedDescription
+        }
+    }
+
+    private func send(_ event: ViewEvent, revision: Int, model: AppModel, ticket: UUID) async {
+        guard generation == ticket, let (pluginID, viewID) = opened, context?.isBusy != true else { return }
+        context?.isBusy = true
+        error = nil
+        if case .submit(let values) = event { pendingSubmission = values }
+        defer { if generation == ticket { context?.isBusy = false } }
+        do {
+            let reply = try await model.engine.viewEvent(pluginID: pluginID, viewID: viewID, revision: revision, event: event)
+            guard generation == ticket else { return }
+            if let document = reply.document { context?.apply(document) }
+            switch reply.effect {
+            case .none, .notice, .close:
+                if let values = pendingSubmission {
+                    context?.acknowledgeSubmission(values, document: reply.document)
+                    pendingSubmission = nil
+                }
+            default: break
+            }
+            switch reply.effect {
+            case .notice(let text): model.show(text)
+            case .close: wantsClose = true
+            case .confirm(let spec):
+                switch event { case .submit, .invoke: break; default: return }
+                let alert = NSAlert()
+                alert.messageText = spec.title
+                alert.informativeText = model.l.fromPlugin(model.summary(pluginID)?.displayName ?? pluginID.rawValue) + "\n\n" + spec.message
+                alert.addButton(withTitle: model.l.cancel)
+                alert.addButton(withTitle: spec.confirmTitle).hasDestructiveAction = spec.isDestructive
+                if alert.runModal() == .alertSecondButtonReturn {
+                    context?.isBusy = false
+                    await send(.invoke(actionID: spec.confirmActionID, itemID: nil), revision: context?.document.revision ?? revision, model: model, ticket: ticket)
+                } else { pendingSubmission = nil }
+            default: break
+            }
+        } catch {
+            guard generation == ticket else { return }
+            self.error = (error as? RuyioError).map(model.l.errorText) ?? error.localizedDescription
+            pendingSubmission = nil
+        }
+    }
+
+    func retry(model: AppModel, pluginID: PluginID, viewID: String?) async {
+        if context == nil, let viewID {
+            await open(model: model, pluginID: pluginID, viewID: viewID)
         }
     }
 
     func close(model: AppModel) {
-        guard let (pluginID, viewID) = opened else { return }
-        opened = nil
-        Task { await model.engine.closeView(pluginID: pluginID, viewID: viewID) }
+        generation = UUID()
+        if let subscription { model.viewUpdates.remove(subscription) }
+        subscription = nil
+        pendingDocument = nil
+        let opened = opened
+        self.opened = nil
+        context = nil
+        isLoading = false
+        pendingSubmission = nil
+        if let (pluginID, viewID) = opened {
+            let previous = lifecycleTask
+            lifecycleTask = Task {
+                await previous?.value
+                await model.engine.closeView(pluginID: pluginID, viewID: viewID)
+            }
+        }
     }
 }

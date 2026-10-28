@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var finderBridge: FinderBridge?
     private var inputSheet: InputSheetController?
     private var hotkeySignature = ""
+    private var automaticUpdates: AutomaticUpdateCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
@@ -78,12 +79,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(forName: .ruyioSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.settingsChanged() }
         }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            // The network usually returns a little after wake; checking at once would only record failures.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(60))
+                await self?.automaticUpdates?.checkIfDue()
+            }
+        }
         Task { await observeRegistry() }
 
         Task {
             do {
                 await model.engine.setLocale(model.language)
                 try await model.engine.start(bundledPackages: Self.bundledPackages())
+                let updates = AutomaticUpdateCoordinator(engine: model.engine)
+                automaticUpdates = updates
+                await updates.configure(refreshMarkets: model.settings.autoRefreshMarkets, checkPluginUpdates: model.settings.autoCheckPluginUpdates)
             } catch {
                 model.startupError = error.localizedDescription
                 model.show(error.localizedDescription)
@@ -124,8 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         finderBridge?.stopListening()
         let engine = model?.engine
+        let updates = automaticUpdates
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
+            await updates?.stop()
             await engine?.shutdown()
             semaphore.signal()
         }
@@ -175,6 +188,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func settingsChanged() {
+        let refreshMarkets = model.settings.autoRefreshMarkets
+        let checkPlugins = model.settings.autoCheckPluginUpdates
+        Task { await automaticUpdates?.configure(refreshMarkets: refreshMarkets, checkPluginUpdates: checkPlugins) }
         menuBar.setVisible(model.settings.showInMenuBar)
         menuBar.rebuild()
         hotkeySignature = ""
@@ -207,13 +223,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlay.toggle(pluginID: ref.pluginID, viewID: view)
             return
         }
-        Task { handle(await model.engine.invoke(InvocationRequest(ref: ref, entry: .globalHotkey)), request: nil) }
+        let request = InvocationRequest(ref: ref, entry: .globalHotkey)
+        Task { handle(await model.engine.invoke(request), request: request) }
     }
 
     private func run(menuItem: MenuBarItem) {
         guard let manifest = model.summary(menuItem.ref.pluginID)?.manifest, let action = manifest.action(menuItem.ref.actionID) else { return }
         if let view = action.opensView { overlay.open(pluginID: menuItem.ref.pluginID, viewID: view); return }
-        Task { handle(await model.engine.invoke(InvocationRequest(ref: menuItem.ref, entry: .menuBar)), request: nil) }
+        let request = InvocationRequest(ref: menuItem.ref, entry: .menuBar)
+        Task { handle(await model.engine.invoke(request), request: request) }
     }
 
     /// Shared handling for background entries: HUD feedback, overlays and the naming sheet.

@@ -121,6 +121,7 @@ struct L10n {
         case .fileNameInvalid: return t("文件名无效。", "The file name is not valid.")
         case .outcomeUnknown: return t("无法确认操作是否完成，请在 Finder 中查看目标位置。不会自动重试。", "Ruyio cannot confirm whether this finished. Check the target in Finder; it will not be retried automatically.")
         case .storageQuotaExceeded: return t("插件数据已达到容量上限。", "The plugin's storage is full.")
+        case .retainedDataIncompatible: return t("保留的数据与此插件版本不兼容，请选择使用新数据恢复。", "The retained data is incompatible with this plugin version. Restore with new data to continue.")
         case .cancelled: return t("已取消。", "Cancelled.")
         case .sourceInvalid: return t("插件包未通过校验：", "The package failed verification: ") + (error.diagnostic ?? "")
         case .pluginAlreadyInstalled: return t("该插件已安装。请在插件详情中检查更新或更换来源。", "This plugin is already installed. Check for updates or change its source in its details.")

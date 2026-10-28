@@ -48,8 +48,8 @@ public final class HostEngine: @unchecked Sendable {
         contexts = InvocationContexts()
         let db = database
         let identity: @Sendable (PluginID) -> String = { id in
-            let team = (try? db.installedPlugin(id))?.teamID
-            return AppPaths.identityDirectoryName(pluginID: id, teamID: team)
+            let record = try? db.installedPlugin(id)
+            return AppPaths.dataIdentityDirectoryName(pluginID: id, teamID: record?.teamID, signingIdentifier: record?.signingIdentifier)
         }
         let stores = StoreProvider(paths: paths, identity: identity)
         let storeLookup: @Sendable (PluginID, String) throws -> Data = { id, blobID in
@@ -91,6 +91,7 @@ public final class HostEngine: @unchecked Sendable {
         log.record(.hostStarted, ["version": HostInfo.version.description, "os": OSVersion.current.description])
         let recovered = try fileBroker.recoverInterruptedOperations()
         try await registry.load()
+        let unmigrated = await migrateInstalledDataIdentities()
         await updater.recover()
         for (id, ops) in Dictionary(grouping: recovered, by: \.pluginID) {
             if let pid = PluginID(rawValue: id) { await registry.setPendingOutcomes(pid, count: ops.count) }
@@ -133,7 +134,10 @@ public final class HostEngine: @unchecked Sendable {
 
         for id in await registry.installedIDs() {
             guard let record = await registry.record(id) else { continue }
-            if record.enabledPreference && record.installationState == .installed {
+            if unmigrated.contains(id) {
+                // enable() retries the move; until then the plugin must not open an empty partition.
+                try? await registry.setActivation(id, .disabled, error: RuyioError(.storageFailure, objectID: id.rawValue, retryable: true, recovery: .retry))
+            } else if record.enabledPreference && record.installationState == .installed {
                 await enable(id, userInitiated: false)
             } else if record.activationState != .disabled {
                 try? await registry.setActivation(id, .disabled)
@@ -142,11 +146,86 @@ public final class HostEngine: @unchecked Sendable {
     }
 
     static func keptGenerationKey(_ record: InstalledPluginRecord) -> String {
-        "data.keptGeneration." + (record.isDevelopment ? "dev." : "") + AppPaths.identityDirectoryName(pluginID: PluginID(record.pluginID), teamID: record.teamID)
+        "data.keptData." + (record.isDevelopment ? "dev." : "") + dataIdentity(record)
     }
 
-    private func keptGeneration(for record: InstalledPluginRecord) -> Int? {
-        ((try? database.setting(Self.keptGenerationKey(record), as: Int?.self)) ?? nil) ?? nil
+    static func dataIdentity(_ record: InstalledPluginRecord) -> String {
+        AppPaths.dataIdentityDirectoryName(pluginID: PluginID(record.pluginID), teamID: record.teamID, signingIdentifier: record.signingIdentifier)
+    }
+
+    struct RetainedData: Codable, Sendable {
+        var generation: Int
+        var storageSchemaVersion: Int
+        var pluginVersion: String
+        var identity: String
+    }
+
+    public enum RestoreDataChoice: Sendable, Equatable { case keepCompatible, fresh }
+
+    /// Read-only install preflight. Call before asking the user to choose a fresh partition so the
+    /// verified preview stays usable; commitInstall still repeats the check at the actual commit.
+    public func requiresFreshData(for preview: InstallPreview) throws -> Bool {
+        let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
+                                                 executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
+                                                 signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust == .development,
+                                                 isDefault: false, updateChannel: .none)
+        do {
+            _ = try retainedGeneration(for: proposed, choice: .keepCompatible)
+            return false
+        } catch let error as RuyioError where error.code == .retainedDataIncompatible {
+            return true
+        }
+    }
+
+    private func retainedGeneration(for record: InstalledPluginRecord, choice: RestoreDataChoice) throws -> Int? {
+        let root = (record.isDevelopment ? paths.developmentDataRoot : paths.dataRoot).appendingPathComponent(Self.dataIdentity(record))
+        let highest = UpdateCoordinator.highestGeneration(in: root)
+        guard let kept = try database.setting(Self.keptGenerationKey(record), as: RetainedData?.self) ?? nil else {
+            guard highest > 0 else { return nil }
+            if choice == .fresh { return highest + 1 }
+            // A directory alone cannot prove its schema. Never silently attach unlabelled retained data.
+            throw RuyioError(.retainedDataIncompatible, objectID: record.pluginID, recovery: .openPluginDetail)
+        }
+        guard kept.identity == Self.dataIdentity(record), kept.generation > 0 else {
+            throw RuyioError(.retainedDataIncompatible, objectID: record.pluginID, recovery: .openPluginDetail)
+        }
+        if choice == .fresh {
+            return max(highest, kept.generation) + 1
+        }
+        guard kept.storageSchemaVersion == (try record.decodedManifest()).storageSchemaVersion else {
+            throw RuyioError(.retainedDataIncompatible, objectID: record.pluginID, recovery: .openPluginDetail,
+                             diagnostic: "retained data requires a compatible plugin version or a new data partition")
+        }
+        return kept.generation
+    }
+
+    /// Moves each installed plugin's ID/Team data directory to its full-identity name. One plugin that
+    /// cannot be moved stays disabled with an error; it never blocks the host or the other plugins.
+    private func migrateInstalledDataIdentities() async -> Set<PluginID> {
+        var failed: Set<PluginID> = []
+        for id in await registry.installedIDs() {
+            guard let record = await registry.record(id) else { continue }
+            do { try claimLegacyData(record) } catch {
+                failed.insert(id)
+                log.record(.pluginEnabled, ["plugin": id.rawValue, "result": ErrorCode.storageFailure.rawValue, "step": "dataIdentity"])
+            }
+        }
+        return failed
+    }
+
+    /// The installed record is the only identity that ever used its ID/Team directory, so it alone claims
+    /// it. Orphaned legacy data (no installed record) is kept for manual recovery, never reassigned. Runs
+    /// before any store opens so a plugin never starts on an empty partition beside its old data.
+    private func claimLegacyData(_ record: InstalledPluginRecord) throws {
+        guard let identifier = record.signingIdentifier, !identifier.isEmpty else { return }
+        let root = record.isDevelopment ? paths.developmentDataRoot : paths.dataRoot
+        let old = root.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: PluginID(record.pluginID), teamID: record.teamID))
+        let target = root.appendingPathComponent(Self.dataIdentity(record))
+        guard FileManager.default.fileExists(atPath: old.path), !FileManager.default.fileExists(atPath: target.path) else { return }
+        do { try FileManager.default.moveItem(at: old, to: target) } catch {
+            throw RuyioError(.storageFailure, objectID: record.pluginID, retryable: true, recovery: .retry,
+                             diagnostic: "could not move data to its identity directory")
+        }
     }
 
     /// Same digest format as `PluginInstaller.inspect`; unpacked directory packages have none.
@@ -171,21 +250,36 @@ public final class HostEngine: @unchecked Sendable {
     // MARK: Install / restore
 
     @discardableResult
-    public func install(bundled package: BundledPackage, enable: Bool) async throws -> PluginID {
+    public func install(bundled package: BundledPackage, enable: Bool, dataChoice: RestoreDataChoice = .keepCompatible) async throws -> PluginID {
         let preview = try installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256)
         guard preview.isInstallable else {
             installer.discard(preview)
             throw RuyioError(.sourceInvalid, objectID: package.manifest.id.rawValue, diagnostic: preview.failureSummary)
         }
         let id = preview.manifest.id
+        let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
+                                                 executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
+                                                 signingIdentifier: preview.signing.identifier, isDevelopment: false,
+                                                 isDefault: true, updateChannel: .bundledWithHost)
+        let previous = await registry.record(id)
+        if let previous, Self.dataIdentity(previous) != Self.dataIdentity(proposed) {
+            installer.discard(preview)
+            throw RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "signer changed; reinstall required")
+        }
+        let kept: Int?
+        do {
+            if previous == nil { kept = try retainedGeneration(for: proposed, choice: dataChoice) }
+            else { kept = nil }
+        }
+        catch { installer.discard(preview); throw error }
         let wasRunning = await supervisor.isRunning(id)
         if wasRunning { await supervisor.stop(id) }
         var record = try installer.commit(preview, isDefault: true, updateChannel: .bundledWithHost)
-        if let previous = await registry.record(id) {
+        if let previous {
             record.dataGeneration = previous.dataGeneration
             record.enabledPreference = previous.enabledPreference
             record.installedAt = previous.installedAt
-        } else if let kept = keptGeneration(for: record) {
+        } else if let kept {
             record.dataGeneration = kept
         }
         record.enabledPreference = enable
@@ -195,9 +289,9 @@ public final class HostEngine: @unchecked Sendable {
     }
 
     /// Offline restore of an uninstalled default (PRD §19.3). Re-associates kept data.
-    public func restoreDefault(_ id: PluginID) async throws {
+    public func restoreDefault(_ id: PluginID, dataChoice: RestoreDataChoice = .keepCompatible) async throws {
         guard let package = lock.withLock({ bundled[id] }) else { throw RuyioError(.pluginNotFound, objectID: id.rawValue) }
-        try await install(bundled: package, enable: true)
+        try await install(bundled: package, enable: true, dataChoice: dataChoice)
     }
 
     /// Installs a local development package (developer mode only, PRD §13).
@@ -209,13 +303,22 @@ public final class HostEngine: @unchecked Sendable {
 
     /// New installs only. An installed ID changes only through the update transaction or the two-step
     /// cross-identity reinstall, never by overwriting its record (R08, plan §15).
-    public func commitInstall(_ preview: InstallPreview, updateChannel: UpdateChannel, source: String?) async throws -> PluginID {
+    public func commitInstall(_ preview: InstallPreview, updateChannel: UpdateChannel, source: String?, dataChoice: RestoreDataChoice = .keepCompatible) async throws -> PluginID {
+        do { try await validateInstallSource(updateChannel: updateChannel, source: source) }
+        catch { installer.discard(preview); throw error }
         if await registry.record(preview.manifest.id) != nil {
             installer.discard(preview)
             throw RuyioError(.pluginAlreadyInstalled, objectID: preview.manifest.id.rawValue)
         }
+        let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
+                                                 executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
+                                                 signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust == .development,
+                                                 isDefault: false, updateChannel: updateChannel)
+        let kept: Int?
+        do { kept = try retainedGeneration(for: proposed, choice: dataChoice) }
+        catch { installer.discard(preview); throw error }
         var record = try installer.commit(preview, isDefault: false, updateChannel: updateChannel, source: source)
-        if let kept = keptGeneration(for: record) { record.dataGeneration = kept }
+        if let kept { record.dataGeneration = kept }
         try await registry.insert(record)
         log.record(.pluginInstalled, ["plugin": preview.manifest.id.rawValue, "version": preview.manifest.version.description, "trust": preview.trust.rawValue])
         await enable(preview.manifest.id, userInitiated: true)
@@ -260,6 +363,7 @@ public final class HostEngine: @unchecked Sendable {
             guard FileManager.default.isExecutableFile(atPath: executable.path) else {
                 throw RuyioError(.pluginLaunchFailed, objectID: id.rawValue, diagnostic: "executable missing")
             }
+            try claimLegacyData(record)
             let isBackground = manifest.permissions.contains(.background)
             await supervisor.register(PluginLaunchSpec(manifest: manifest, executable: executable, isDevelopment: record.isDevelopment,
                                                        dataGeneration: record.dataGeneration, isBackground: isBackground))
@@ -310,23 +414,34 @@ public final class HostEngine: @unchecked Sendable {
     public func uninstall(_ id: PluginID, deleteData: Bool) async throws {
         guard let record = await registry.record(id) else { throw RuyioError(.pluginNotFound, objectID: id.rawValue) }
         await disable(id)
+        services.stores.close(pluginID: id)
         try? await registry.update(id) { $0.installationState = .uninstalling }
         do {
+            if deleteData {
+                let root = services.stores.dataRoot(pluginID: id, development: record.isDevelopment)
+                if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
+                try database.clearPluginSettings(id)
+                try database.setSetting(Self.keptGenerationKey(record), RetainedData?.none)
+            } else {
+                // An unreadable stored manifest still allows keeping the data. It is labelled with an unknown
+                // schema (-1), so a later install never attaches it silently and offers a fresh partition instead.
+                let schema = (try? record.decodedManifest())?.storageSchemaVersion ?? -1
+                let retained = RetainedData(generation: record.dataGeneration, storageSchemaVersion: schema,
+                                            pluginVersion: record.version, identity: Self.dataIdentity(record))
+                try database.setSetting(Self.keptGenerationKey(record), Optional(retained))
+                if schema >= 0 {
+                    let root = services.stores.dataRoot(pluginID: id, development: record.isDevelopment).appendingPathComponent(String(record.dataGeneration))
+                    try UpdateCoordinator.writeGenerationInfo(.init(storageSchemaVersion: schema, pluginVersion: record.version, createdAt: Date()), to: root)
+                }
+            }
             try installer.removeCode(pluginID: id, teamID: record.teamID)
+            try await registry.remove(id, asUninstalledDefault: record.isDefault, keptData: !deleteData)
         } catch {
-            try? await registry.update(id) { $0.installationState = .installed }
-            throw RuyioError(.fileWriteFailed, objectID: id.rawValue, retryable: true, recovery: .revealInFinder, diagnostic: String(describing: error))
+            // Keep a disabled, retryable record until both code and requested data cleanup have succeeded.
+            try? await registry.update(id) { $0.installationState = .installed; $0.lastErrorCode = ErrorCode.storageFailure.rawValue }
+            throw RuyioError(.storageFailure, objectID: id.rawValue, retryable: true, dataEffect: .partial,
+                             recovery: .retry, diagnostic: "plugin removal incomplete; retained installation record for retry")
         }
-        if deleteData {
-            services.stores.close(pluginID: id)
-            try? FileManager.default.removeItem(at: services.stores.dataRoot(pluginID: id, development: record.isDevelopment))
-            try? database.setSetting(Self.keptGenerationKey(record), Int?.none)
-        } else {
-            // Kept data may be a later generation than 1 (after updates or a snapshot downgrade); a restore or
-            // reinstall of the same identity must reattach exactly this one.
-            try? database.setSetting(Self.keptGenerationKey(record), Int?.some(record.dataGeneration))
-        }
-        try await registry.remove(id, asUninstalledDefault: record.isDefault, keptData: !deleteData)
         log.record(.pluginUninstalled, ["plugin": id.rawValue, "deletedData": String(deleteData)])
     }
 
@@ -339,6 +454,13 @@ public final class HostEngine: @unchecked Sendable {
         public var descriptorURL: URL?
         public var release: PluginDescriptor.Release?
         public var bundled: BundledPackage?
+        public var source: String?
+    }
+
+    public enum UpdateCheckResult: Sendable {
+        case available(AvailableUpdate)
+        case upToDate
+        case unavailable(RuyioError)
     }
 
     private var availableUpdates: [PluginID: AvailableUpdate] {
@@ -350,31 +472,62 @@ public final class HostEngine: @unchecked Sendable {
 
     @discardableResult
     public func checkForUpdate(_ id: PluginID) async -> AvailableUpdate? {
-        guard let record = await registry.record(id), let installed = SemanticVersion(record.version) else { return nil }
+        if case .available(let update) = await checkForUpdateResult(id) { return update }
+        return nil
+    }
+
+    public func checkForUpdateResult(_ id: PluginID) async -> UpdateCheckResult {
+        guard let record = await registry.record(id), let installed = SemanticVersion(record.version) else {
+            return .unavailable(RuyioError(.pluginNotFound, objectID: id.rawValue))
+        }
         try? await registry.update(id) { $0.updateState = .checking }
         var found: AvailableUpdate?
-        switch record.updateChannel {
-        case .bundledWithHost:
-            if let package = lock.withLock({ bundled[id] }), package.manifest.version > installed {
-                found = AvailableUpdate(pluginID: id, version: package.manifest.version, bundled: package)
+        do {
+            switch record.updateChannel {
+            case .bundledWithHost:
+                guard let package = lock.withLock({ bundled[id] }) else { throw RuyioError(.sourceInvalid, diagnostic: "bundled update package is unavailable") }
+                if package.manifest.version > installed {
+                    found = AvailableUpdate(pluginID: id, version: package.manifest.version, bundled: package)
+                }
+            case .descriptor:
+                guard let source = record.source else { throw RuyioError(.sourceInvalid, diagnostic: "no update source") }
+                let (descriptor, descriptorURL) = try await markets.descriptor(source: source)
+                guard descriptor.id == id else { throw RuyioError(.sourceInvalid, diagnostic: "descriptor plugin ID changed") }
+                if let best = descriptor.bestRelease(), best.version > installed {
+                    found = AvailableUpdate(pluginID: id, version: best.version, descriptor: descriptor, descriptorURL: descriptorURL, release: best, source: record.source)
+                }
+            case .market:
+                guard let source = record.source, source.hasPrefix("market:") else { throw RuyioError(.sourceInvalid, diagnostic: "no update source") }
+                let (descriptor, descriptorURL) = try await markets.descriptor(marketID: String(source.dropFirst(7)), pluginID: id, refresh: true)
+                if let best = descriptor.bestRelease(), best.version > installed {
+                    found = AvailableUpdate(pluginID: id, version: best.version, descriptor: descriptor, descriptorURL: descriptorURL, release: best, source: record.source)
+                }
+            case .none, .development:
+                throw RuyioError(.sourceInvalid, diagnostic: "this plugin has no update source")
             }
-        case .descriptor:
-            if let source = record.source, let url = URL(string: source), let (descriptor, descriptorURL) = try? await markets.descriptor(at: url),
-               descriptor.id == id, let best = descriptor.bestRelease(), best.version > installed {
-                found = AvailableUpdate(pluginID: id, version: best.version, descriptor: descriptor, descriptorURL: descriptorURL, release: best)
+        } catch {
+            let failure = (error as? RuyioError) ?? RuyioError(.networkFailure, retryable: true, diagnostic: String(describing: error))
+            if Task.isCancelled {
+                try? await registry.update(id) { $0.updateState = record.updateState }
+                return .unavailable(RuyioError(.cancelled))
             }
-        case .market:
-            if let source = record.source, source.hasPrefix("market:"),
-               let (descriptor, descriptorURL) = await markets.descriptor(marketID: String(source.dropFirst(7)), pluginID: id),
-               let best = descriptor.bestRelease(), best.version > installed {
-                found = AvailableUpdate(pluginID: id, version: best.version, descriptor: descriptor, descriptorURL: descriptorURL, release: best)
-            }
-        case .none, .development:
-            break
+            // A failed check reports the failure to the caller but never hides an update already found.
+            let known = availableUpdates[id] != nil
+            try? await registry.update(id) { $0.updateState = known ? .available : .updateFailed }
+            return .unavailable(failure)
         }
-        availableUpdates[id] = found
+        guard !Task.isCancelled else {
+            try? await registry.update(id) { $0.updateState = record.updateState }
+            return .unavailable(RuyioError(.cancelled))
+        }
+        guard let current = await registry.record(id), current.source == record.source,
+              current.updateChannel == record.updateChannel, current.version == record.version else {
+            try? await registry.update(id) { if $0.updateState == .checking { $0.updateState = .none } }
+            return .unavailable(RuyioError(.cancelled, diagnostic: "plugin or source changed while checking updates"))
+        }
+        lock.withLock { _availableUpdates[id] = found }
         try? await registry.update(id) { $0.updateState = found == nil ? .none : .available }
-        return found
+        return found.map(UpdateCheckResult.available) ?? .upToDate
     }
 
     /// Descriptor for a plugin's recorded source, for listing historical versions (PRD §19.11).
@@ -382,8 +535,7 @@ public final class HostEngine: @unchecked Sendable {
         guard let record = await registry.record(id), let source = record.source else { return nil }
         switch record.updateChannel {
         case .descriptor:
-            guard let url = URL(string: source) else { return nil }
-            return try? await markets.descriptor(at: url)
+            return try? await markets.descriptor(source: source, maxAge: MarketService.refreshFreshness)
         case .market where source.hasPrefix("market:"):
             return await markets.descriptor(marketID: String(source.dropFirst(7)), pluginID: id)
         default:
@@ -393,13 +545,29 @@ public final class HostEngine: @unchecked Sendable {
 
     /// Downloads (or reads the bundled package) and fully verifies the update candidate.
     public func prepareUpdate(_ update: AvailableUpdate, progress: (@Sendable (Int64, Int64?) -> Void)? = nil) async throws -> InstallPreview {
+        try await validateUpdateSource(update.pluginID)
         if let bundled = update.bundled {
             return try installer.inspect(package: bundled.url, trust: .bundledDefault, expectedSHA256: bundled.expectedSHA256)
         }
         guard let descriptor = update.descriptor, let url = update.descriptorURL, let release = update.release else {
             throw RuyioError(.sourceInvalid, diagnostic: "no update source")
         }
-        return try await markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release, progress: progress)
+        let source = await registry.record(update.pluginID)?.source
+        guard source == update.source else { throw RuyioError(.sourceInvalid, diagnostic: "update source changed; check again") }
+        let marketID = source?.hasPrefix("market:") == true ? source.map { String($0.dropFirst(7)) } : nil
+        return try await markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release, marketID: marketID, progress: progress)
+    }
+
+    /// Shared by install, update and downgrade commits, including already downloaded previews.
+    public func validateInstallSource(updateChannel: UpdateChannel, source: String?) async throws {
+        guard updateChannel == .market else { return }
+        guard let source, source.hasPrefix("market:") else { throw RuyioError(.sourceInvalid, diagnostic: "missing market source") }
+        try await markets.requireAvailable(String(source.dropFirst(7)))
+    }
+
+    public func validateUpdateSource(_ id: PluginID) async throws {
+        guard let record = await registry.record(id) else { throw RuyioError(.pluginNotFound, objectID: id.rawValue) }
+        try await validateInstallSource(updateChannel: record.updateChannel, source: record.source)
     }
 
     // MARK: Outcomes that need checking (PRD §20.3, R15)
@@ -435,7 +603,7 @@ public final class HostEngine: @unchecked Sendable {
         case .plugin(let descriptor, let url):
             guard descriptor.id == id, let release = descriptor.bestRelease() else { throw RuyioError(.sourceInvalid, diagnostic: "source does not provide this plugin") }
             preview = try await markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: release)
-            newSource = url.absoluteString
+            newSource = try PluginSourceBinding(resolved).encoded()
             channel = .descriptor
         default:
             throw RuyioError(.sourceInvalid, diagnostic: "choose a plugin descriptor address")
@@ -449,7 +617,9 @@ public final class HostEngine: @unchecked Sendable {
             $0.source = newSource
             $0.updateChannel = channel
             $0.sourceState = .linked
+            $0.updateState = .none
         }
+        lock.withLock { _availableUpdates[id] = nil }
     }
 
     // MARK: Actions and views

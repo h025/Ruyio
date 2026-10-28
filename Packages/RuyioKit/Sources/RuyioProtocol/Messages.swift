@@ -47,6 +47,8 @@ public enum Method {
     public static let localeChanged = "locale.changed"
     public static let lifecycleShutdown = "lifecycle.shutdown"
     public static let lifecyclePing = "lifecycle.ping"
+    public static let lifecycleMigrate = "lifecycle.migrate"
+    public static let lifecycleHealth = "lifecycle.health"
     public static let settingsChanged = "settings.changed"
 
     // plugin → host
@@ -67,6 +69,17 @@ public enum RuntimeMode: String, Codable, Sendable {
     case migration
     /// Read-only health check on the candidate partition.
     case health
+}
+
+/// Explicit data preparation contract. Zero denotes a fresh, empty candidate partition.
+public struct DataPreparationRequest: Codable, Sendable, Hashable {
+    public var sourceSchemaVersion: Int
+    public var targetSchemaVersion: Int
+
+    public init(sourceSchemaVersion: Int, targetSchemaVersion: Int) {
+        self.sourceSchemaVersion = sourceSchemaVersion
+        self.targetSchemaVersion = targetSchemaVersion
+    }
 }
 
 public struct HelloRequest: Codable, Sendable, Hashable {

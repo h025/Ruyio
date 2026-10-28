@@ -158,7 +158,16 @@ struct OnboardingView: View {
         } content: {
             VStack(spacing: 12) {
                 captureStatus
-                Text(l.thenPress("⇧⌘V")).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                if let shortcut = clipboardShortcut {
+                    Text(l.thenPress(shortcut)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                } else {
+                    Text(l.t("历史剪贴板快捷键尚不可用，可在快捷键设置中配置。", "The clipboard shortcut is unavailable. Configure it in Shortcuts."))
+                        .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button(l.shortcuts) {
+                        model.page = .shortcuts
+                        NSApp.sendAction(#selector(AppDelegate.showMainWindow), to: nil, from: nil)
+                    }
+                }
                 TextEditor(text: $state.practiceText)
                     .font(.body).scrollContentBackground(.hidden)
                     .padding(8).frame(height: 84)
@@ -233,7 +242,7 @@ struct OnboardingView: View {
             Image(systemName: "checkmark.seal.fill").font(.system(size: 72)).foregroundStyle(.green.gradient).accessibilityHidden(true)
         } content: {
             VStack(spacing: 0) {
-                summaryRow(clipboardName, shortcut: "⇧⌘V", ok: state.clipboardDone)
+                summaryRow(clipboardName, shortcut: clipboardShortcut ?? l.notSet, ok: state.clipboardDone)
                 Divider().padding(.leading, 14)
                 summaryRow(l.finderExtension, shortcut: "Ruyio ›", ok: model.finderExtensionEnabled)
                 Divider().padding(.leading, 14)
@@ -257,5 +266,11 @@ struct OnboardingView: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private var clipboardShortcut: String? {
+        model.snapshot.entries.hotkeys.first {
+            $0.ref.pluginID.rawValue == "app.ruyio.clipboard-history" && $0.ref.actionID.rawValue == "show-history" && $0.state == .registered
+        }?.shortcut?.displayString
     }
 }

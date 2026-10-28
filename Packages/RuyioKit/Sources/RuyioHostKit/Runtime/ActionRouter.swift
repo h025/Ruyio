@@ -106,6 +106,12 @@ public actor ActionRouter {
         defer { releaseGate(gateKey) }
 
         let generation = await registry.generation
+        // A queued action may outlive a disable. An unresolved earlier outcome does not block it: the UI offers
+        // no one-click retry, and a new operation the user starts explicitly is allowed (PRD §19.15, §20).
+        guard await registry.isInvocable(ref) else {
+            contexts.revokeAll(for: execution)
+            return report(.failed, .none, RuyioError(.pluginNotInvocable, objectID: ref.description))
+        }
         let timeout = action.hasSideEffects ? Self.sideEffectTimeout : Self.defaultTimeout
         running[execution] = (ref, nil)
         defer {

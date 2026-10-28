@@ -39,6 +39,7 @@ let package = Package(
 
         .testTarget(name: "RuyioCoreTests", dependencies: ["RuyioCore"]),
         .testTarget(name: "RuyioProtocolTests", dependencies: ["RuyioProtocol"]),
+        .testTarget(name: "RuyioUITests", dependencies: ["RuyioUI", "RuyioCore", "RuyioProtocol"]),
         .testTarget(name: "RuyioPersistenceTests", dependencies: ["RuyioPersistence"]),
         .testTarget(name: "RuyioSourceTransportTests", dependencies: ["RuyioSourceTransport"]),
         .testTarget(name: "PluginKitTests", dependencies: ["ClipboardHistoryKit", "FinderEssentialsKit"]),

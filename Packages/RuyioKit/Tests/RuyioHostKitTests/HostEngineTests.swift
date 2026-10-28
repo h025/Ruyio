@@ -20,7 +20,7 @@ enum PackageFixture {
     }
 
     static func build(sandbox: Bool = true, extraEntitlements: [String: Any] = [:], infoOverrides: [String: Any] = [:],
-                      version: String = "1.0.0", failMigration: Bool = false, schema: Int = 1) throws -> URL {
+                      version: String = "1.0.0", failMigration: Bool = false, failHealth: Bool = false, schema: Int = 1) throws -> URL {
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("pkg-\(UUID().uuidString)")
         let root = work.appendingPathComponent("Test.ruyioplugin")
         let contents = root.appendingPathComponent("Test.app/Contents")
@@ -36,6 +36,7 @@ enum PackageFixture {
         try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
         let manifestData = try JSONCoding.encoder().encode(manifest(version: version, schema: schema))
         if failMigration { try Data().write(to: contents.appendingPathComponent("Resources/fail-migration")) }
+        if failHealth { try Data().write(to: contents.appendingPathComponent("Resources/fail-health")) }
         try manifestData.write(to: root.appendingPathComponent("manifest.json"))
         try manifestData.write(to: contents.appendingPathComponent("Resources/manifest.json"))
         var entitlements: [String: Any] = sandbox ? ["com.apple.security.app-sandbox": true] : [:]

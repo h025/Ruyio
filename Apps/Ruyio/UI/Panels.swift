@@ -130,16 +130,15 @@ final class OverlayController {
     fileprivate var panel: FloatingPanel?
     private var context: SchemaContext?
     private var current: (PluginID, String)?
+    private var subscription: UUID?
+    private var pendingDocument: ViewDocument?
+    private var pendingSubmission: [String: JSONValue]?
+    private var presentationID = UUID()
+    private var lifecycleTask: Task<Void, Never>?
     weak var palette: CommandPaletteController?
 
     init(model: AppModel) {
         self.model = model
-        model.engine.onViewUpdate { [weak self] pluginID, document in
-            Task { @MainActor in
-                guard let self, let current = self.current, current.0 == pluginID, current.1 == document.viewID else { return }
-                self.context?.apply(document)
-            }
-        }
     }
 
     var isVisible: Bool { panel?.isVisible == true }
@@ -151,15 +150,28 @@ final class OverlayController {
 
     func open(pluginID: PluginID, viewID: String) {
         palette?.close()
-        if isVisible { close() }
+        close()
         PasteService.shared.rememberFrontmostApp()
-        Task {
+        let ticket = presentationID
+        let previous = lifecycleTask
+        lifecycleTask = Task {
+            await previous?.value
+            guard presentationID == ticket else { return }
+            observeUpdates(pluginID: pluginID, viewID: viewID, ticket: ticket)
             do {
                 let document = try await model.engine.openView(pluginID: pluginID, viewID: viewID)
+                guard presentationID == ticket else {
+                    await model.engine.closeView(pluginID: pluginID, viewID: viewID)
+                    return
+                }
                 present(document: document, pluginID: pluginID)
             } catch let error as RuyioError {
+                guard presentationID == ticket else { return }
+                clearSubscription()
                 model.show(model.l.errorText(error))
             } catch {
+                guard presentationID == ticket else { return }
+                clearSubscription()
                 model.show(error.localizedDescription)
             }
         }
@@ -168,24 +180,27 @@ final class OverlayController {
     fileprivate func present(document: ViewDocument, pluginID: PluginID) {
         let l = model.l
         let engine = model.engine
+        let ticket = presentationID
         let context = SchemaContext(
             pluginID: pluginID, document: document,
             strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: l.t("撤销", "Undo"), loading: l.t("正在加载…", "Loading…"), choose: "…"),
-            sendEvent: { [weak self] event, revision in await self?.send(event, revision: revision) },
+            sendEvent: { [weak self] event, revision in await self?.send(event, revision: revision, ticket: ticket) },
             loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) })
-        context.dismiss = { [weak self] in self?.close() }
+        context.dismiss = { [weak self] in if self?.presentationID == ticket { self?.close() } }
         if let summary = model.summary(pluginID), !summary.isDefault {
             context.source = l.fromPlugin(summary.displayName) + (summary.teamID.map { " · Team \($0)" } ?? "")
         }
         self.context = context
         current = (pluginID, document.viewID)
+        if subscription == nil { observeUpdates(pluginID: pluginID, viewID: document.viewID, ticket: ticket) }
+        if let pendingDocument { context.apply(pendingDocument); self.pendingDocument = nil }
         let panel = FloatingPanel(size: NSSize(width: 780, height: 520), minSize: NSSize(width: 640, height: 420), resizable: true)
         panel.contentView = NSHostingView(rootView: OverlayRoot(context: context).environment(\.locale, Locale(identifier: model.language)))
         panel.onKeyDown = { [weak self] event in self?.handleKey(event) ?? false }
         panel.onResignKey = { [weak self] in
             // Clicking outside closes the overlay unless a confirmation or system sheet is up.
             Task { @MainActor in
-                guard let self, NSApp.modalWindow == nil else { return }
+                guard let self, self.presentationID == ticket, NSApp.modalWindow == nil else { return }
                 if NSApp.keyWindow !== self.panel { self.close() }
             }
         }
@@ -204,17 +219,45 @@ final class OverlayController {
     }
 
     func close() {
-        guard let panel, let current else { return }
-        panel.orderOut(nil)
+        presentationID = UUID()
+        clearSubscription()
+        panel?.orderOut(nil)
+        let current = current
         self.panel = nil
         self.context = nil
         self.current = nil
-        Task { await model.engine.closeView(pluginID: current.0, viewID: current.1) }
+        if let current {
+            let previous = lifecycleTask
+            lifecycleTask = Task {
+                await previous?.value
+                await model.engine.closeView(pluginID: current.0, viewID: current.1)
+            }
+        }
+    }
+
+    private func clearSubscription() {
+        if let subscription { model.viewUpdates.remove(subscription) }
+        subscription = nil
+        pendingDocument = nil
+        pendingSubmission = nil
+    }
+
+    private func observeUpdates(pluginID: PluginID, viewID: String, ticket: UUID) {
+        subscription = model.viewUpdates.observe(pluginID: pluginID, viewID: viewID) { [weak self] document in
+            Task { @MainActor in
+                guard let self, self.presentationID == ticket else { return }
+                if let context = self.context { context.apply(document) }
+                else if document.revision >= (self.pendingDocument?.revision ?? Int.min) { self.pendingDocument = document }
+            }
+        }
     }
 
     private func handleKey(_ event: NSEvent) -> Bool {
         guard let context else { return false }
-        let selection = context.localSelection
+        if context.collection == nil {
+            if KeyCommand(event) == .escape { close(); return true }
+            return false
+        }
         switch KeyCommand(event) {
         case .up, .down:
             context.moveSelection(KeyCommand(event) == .up ? -1 : 1)
@@ -224,15 +267,6 @@ final class OverlayController {
                                      userInfo: [.announcement: title, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
             }
             return true
-        case .enter: context.send(.invoke(actionID: "paste", itemID: selection)); return true
-        case .optionEnter: context.send(.invoke(actionID: "paste-plain", itemID: selection)); return true
-        case .commandEnter: context.send(.invoke(actionID: "copy-only", itemID: selection)); return true
-        case .commandY: context.previewVisible.toggle(); return true
-        case .commandD: context.send(.invoke(actionID: "favorite", itemID: selection)); return true
-        case .commandDelete: context.send(.invoke(actionID: "delete", itemID: selection)); return true
-        case .commandZ:
-            if let token = context.collection?.undo?.token { context.send(.undo(token: token)); return true }
-            return false
         case .escape:
             // First Escape clears the search, the second closes (PRD §19.15).
             if let search = context.collection?.searchText, !search.isEmpty {
@@ -242,33 +276,61 @@ final class OverlayController {
                 close()
             }
             return true
-        case .other:
-            return false
+        default: break
         }
+        // Plugin shortcuts need a modifier (Return aside): a bare letter, Space or ⌫ always edits the search.
+        if let shortcut = HotkeyManager.shortcut(from: event), shortcut.key == "return" || !shortcut.modifiers.subtracting(.shift).isEmpty,
+           let action = context.invocation(shortcut: shortcut) {
+            context.send(action)
+            return true
+        }
+        switch KeyCommand(event) {
+        case .enter:
+            if let action = context.invocation() { context.send(action); return true }
+        case .commandY:
+            if context.collection?.preview != nil { context.previewVisible.toggle(); return true }
+        case .commandZ:
+            if let undo = context.collection?.undo, undo.expiresAt > Date() { context.send(.undo(token: undo.token)); return true }
+        default: break
+        }
+        return false
     }
 
-    private func send(_ event: ViewEvent, revision: Int) async {
-        guard let (pluginID, viewID) = current else { return }
+    private func send(_ event: ViewEvent, revision: Int, ticket: UUID) async {
+        guard presentationID == ticket, let (pluginID, viewID) = current else { return }
         if case .invoke(let action, _) = event, action.hasPrefix("host.") {
             if action == "host.open-privacy-settings" { SystemSettings.openPasteboardPrivacy() }
             return
         }
+        if case .submit(let values) = event { pendingSubmission = values }
         do {
             let reply = try await model.engine.viewEvent(pluginID: pluginID, viewID: viewID, revision: revision, event: event)
+            guard presentationID == ticket else { return }
             if let document = reply.document { context?.apply(document) }
+            // A saved form (directly or after its confirmation) adopts the plugin's normalized values.
+            switch reply.effect {
+            case .none, .notice, .close:
+                if let values = pendingSubmission {
+                    context?.acknowledgeSubmission(values, document: reply.document)
+                    pendingSubmission = nil
+                }
+            default: break
+            }
             // Only a deliberate invoke (Return, click, menu) may close the panel and paste; a reply to
             // typing or selection can never send keystrokes to another app.
             var userInvoked = false
             if case .invoke = event { userInvoked = true }
-            await handle(reply.effect, pluginID: pluginID, userInvoked: userInvoked)
+            await handle(reply.effect, pluginID: pluginID, userInvoked: userInvoked, ticket: ticket)
         } catch let error as RuyioError {
+            guard presentationID == ticket else { return }
             model.show(model.l.errorText(error))
         } catch {
+            guard presentationID == ticket else { return }
             model.show(error.localizedDescription)
         }
     }
 
-    private func handle(_ effect: ViewEffect, pluginID: PluginID, userInvoked: Bool) async {
+    private func handle(_ effect: ViewEffect, pluginID: PluginID, userInvoked: Bool, ticket: UUID) async {
         switch effect {
         case .none: break
         case .close: close()
@@ -284,7 +346,7 @@ final class OverlayController {
             let confirm = alert.addButton(withTitle: spec.confirmTitle)
             confirm.hasDestructiveAction = spec.isDestructive
             if alert.runModal() == .alertSecondButtonReturn {
-                await send(.invoke(actionID: spec.confirmActionID, itemID: nil), revision: context?.document.revision ?? 0)
+                await send(.invoke(actionID: spec.confirmActionID, itemID: nil), revision: context?.document.revision ?? 0, ticket: ticket)
             }
         case .closeAndPaste(_, let autoPaste):
             guard userInvoked else { return }

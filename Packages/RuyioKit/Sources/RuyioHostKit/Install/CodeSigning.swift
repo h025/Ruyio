@@ -137,19 +137,35 @@ public enum MachO {
 
     /// True for a main-program image (MH_EXECUTE), thin or universal; libraries and bundles are not.
     public static func isExecutableImage(_ url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url), let header = try? handle.read(upToCount: 4096), header.count >= 16 else { return false }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 4096), header.count >= 4 else { return false }
         let magic = header.readUInt32(0)
         let MH_EXECUTE: UInt32 = 2
         switch magic {
         case 0xFEED_FACF, 0xFEED_FACE:
+            // A truncated recognized image is rejected as potentially launchable, never treated as a resource.
+            guard header.count >= 16 else { return true }
             return header.readUInt32(12) == MH_EXECUTE
         case 0xBEBA_FECA, 0xBFBA_FECA:
-            // First slice is representative; universal slices of one binary share the file type.
-            let offset: UInt64 = magic == 0xBEBA_FECA ? UInt64(header.readUInt32BE(16))
-                : (UInt64(header.readUInt32BE(16)) << 32) | UInt64(header.readUInt32BE(20))
-            guard (try? handle.seek(toOffset: offset)) != nil, let slice = try? handle.read(upToCount: 16), slice.count >= 16 else { return true }
-            return slice.readUInt32(12) == MH_EXECUTE
+            guard header.count >= 8, let fileSize = try? handle.seekToEnd() else { return true }
+            let count = Int(header.readUInt32BE(4))
+            let stride = magic == 0xBEBA_FECA ? 20 : 32
+            guard count > 0, count <= 64, count <= (header.count - 8) / stride else { return true }
+            for index in 0..<count {
+                let base = 8 + index * stride
+                let offset = magic == 0xBEBA_FECA ? UInt64(header.readUInt32BE(base + 8))
+                    : (UInt64(header.readUInt32BE(base + 8)) << 32) | UInt64(header.readUInt32BE(base + 12))
+                let size = magic == 0xBEBA_FECA ? UInt64(header.readUInt32BE(base + 12))
+                    : (UInt64(header.readUInt32BE(base + 16)) << 32) | UInt64(header.readUInt32BE(base + 20))
+                guard offset >= UInt64(8 + count * stride), offset <= fileSize,
+                      size >= 16, size <= fileSize - offset,
+                      (try? handle.seek(toOffset: offset)) != nil,
+                      let slice = try? handle.read(upToCount: 16), slice.count == 16 else { return true }
+                guard [UInt32(0xFEED_FACF), 0xFEED_FACE].contains(slice.readUInt32(0)) else { return true }
+                if slice.readUInt32(12) == MH_EXECUTE { return true }
+            }
+            return false
         default:
             return false
         }

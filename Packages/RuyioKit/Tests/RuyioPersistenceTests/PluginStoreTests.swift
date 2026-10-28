@@ -128,12 +128,66 @@ struct PluginStoreTests {
     }
 
     @Test func quotaRejectsGrowthButAllowsDeletion() throws {
-        let store = try makeStore(quota: 2_000)
+        let store = try makeStore(quota: 20_000)
         try store.put(doc("1", text: String(repeating: "a", count: 500), sort: 1))
         #expect(throws: RuyioError.self) { try store.put(doc("2", text: String(repeating: "b", count: 2_000), sort: 2)) }
         #expect(try store.get(collection: "records", id: "2") == nil)
         try store.delete(collection: "records", id: "1")
         #expect(try store.usage().bytes == 0)
+    }
+
+    @Test func largeDocumentsPageWithinRPCBudgetWithoutSkippingRecords() throws {
+        let store = try makeStore()
+        let text = String(repeating: "文\"\\", count: 40_000)
+        for i in 0..<8 {
+            try store.put(StoredDocument(collection: "large", id: "\(i)", body: .string(text), sortKey: Double(i)))
+        }
+        var cursor: String?
+        var ids: [String] = []
+        repeat {
+            let page = try store.query(StorageQuery(collection: "large", limit: 200, cursor: cursor))
+            #expect(!page.documents.isEmpty)
+            let response = Envelope(kind: .response, method: StorageMethod.query, replyTo: "request", payload: try JSONCoding.value(page))
+            #expect(try Framing.encode(response).count <= Framing.maxFrameBytes + 4)
+            ids += page.documents.map(\.id)
+            cursor = page.nextCursor
+        } while cursor != nil
+        #expect(ids == (0..<8).reversed().map(String.init))
+    }
+
+    @Test func oversizedDocumentIsRejectedAtWriteSoQueriesNeverFail() throws {
+        let store = try makeStore()
+        try store.put(StoredDocument(collection: "large", id: "ok", body: .string("small"), sortKey: 1))
+        // Within one RPC frame, but too large to share a query page: refused when written, not when read.
+        let oversized = StoredDocument(collection: "large", id: "oversized", body: .string(String(repeating: "x", count: 600 * 1024)), sortKey: 2)
+        #expect(throws: RuyioError.self) { try store.put(oversized) }
+        #expect(try store.query(StorageQuery(collection: "large")).documents.map(\.id) == ["ok"])
+    }
+
+    @Test func indexedFieldsConsumeQuotaAndRollbackAtomically() throws {
+        let store = try makeStore(quota: 7_000)
+        try store.put(StoredDocument(collection: "c", id: "small", body: .null))
+        let before = try store.usage().bytes
+        let indexed = StoredDocument(collection: "c", id: "large", body: .null,
+            fields: ["index": .string(String(repeating: "a", count: 4_000))])
+        #expect(throws: RuyioError.self) { try store.put(indexed) }
+        #expect(try store.get(collection: "c", id: "large") == nil)
+        #expect(try store.usage().bytes == before)
+        let roomy = try makeStore()
+        try roomy.put(indexed)
+        #expect(try roomy.usage().bytes > 8_000)
+    }
+
+    @Test func rejectsUnboundedIndexedNamesAndValues() throws {
+        let store = try makeStore()
+        for fields in [
+            [String(repeating: "n", count: 129): JSONValue.bool(true)],
+            ["name": .string(String(repeating: "字", count: 2_000))],
+            ["nested": .array([.string("invalid")])],
+        ] {
+            #expect(throws: RuyioError.self) { try store.put(StoredDocument(collection: "c", id: "bad", body: .null, fields: fields)) }
+        }
+        #expect(try store.usage().documentCount == 0)
     }
 
     @Test func compactRemovesDeletedContentFromDisk() throws {

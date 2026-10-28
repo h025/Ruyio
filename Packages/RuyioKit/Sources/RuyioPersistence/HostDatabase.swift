@@ -139,6 +139,16 @@ public final class HostDatabase: Sendable {
                 t.primaryKey(["pluginID", "sourceKey"])
             }
         }
+        migrator.registerMigration("v3-plugin-setting-identities") { db in
+            // Only installed records have a known owner. Orphaned legacy settings remain unclaimed.
+            // Raw columns, not the record type, so later schema changes cannot break this migration.
+            for row in try Row.fetchAll(db, sql: "SELECT pluginID, teamID, signingIdentifier, isDevelopment FROM installed_plugin") {
+                let pluginID: String = row["pluginID"]
+                let identity = Self.settingsIdentity(pluginID: pluginID, teamID: row["teamID"], signingIdentifier: row["signingIdentifier"],
+                                                     isDevelopment: row["isDevelopment"])
+                try db.execute(sql: "UPDATE plugin_setting SET pluginID = ? WHERE pluginID = ?", arguments: [identity, pluginID])
+            }
+        }
         return migrator
     }
 
@@ -431,10 +441,22 @@ public extension HostDatabase {
         }
     }
 
+    /// Related preferences share one transaction so callers can roll back external side effects on failure.
+    func setSettings(_ values: [String: JSONValue]) throws {
+        let encoded = try values.mapValues { String(decoding: try JSONCoding.encoder().encode($0), as: UTF8.self) }
+        try dbQueue.write { db in
+            for (key, value) in encoded {
+                try db.execute(sql: "INSERT INTO setting (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                               arguments: [key, value])
+            }
+        }
+    }
+
     func pluginSettings(_ id: PluginID) throws -> [String: JSONValue] {
         try dbQueue.read { db in
+            guard let record = try InstalledPluginRecord.fetchOne(db, key: id.rawValue) else { return [:] }
             var result: [String: JSONValue] = [:]
-            for row in try Row.fetchAll(db, sql: "SELECT key, value FROM plugin_setting WHERE pluginID = ?", arguments: [id.rawValue]) {
+            for row in try Row.fetchAll(db, sql: "SELECT key, value FROM plugin_setting WHERE pluginID = ?", arguments: [Self.settingsIdentity(record)]) {
                 let raw: String = row["value"]
                 result[row["key"]] = try JSONCoding.decoder().decode(JSONValue.self, from: Data(raw.utf8))
             }
@@ -445,11 +467,30 @@ public extension HostDatabase {
     func setPluginSetting(_ id: PluginID, key: String, value: JSONValue) throws {
         let raw = String(decoding: try JSONCoding.encoder().encode(value), as: UTF8.self)
         try dbQueue.write { db in
+            guard let record = try InstalledPluginRecord.fetchOne(db, key: id.rawValue) else {
+                throw RuyioError(.pluginNotFound, objectID: id.rawValue)
+            }
             try db.execute(sql: """
                 INSERT INTO plugin_setting (pluginID, key, value) VALUES (?, ?, ?)
                 ON CONFLICT(pluginID, key) DO UPDATE SET value = excluded.value
-                """, arguments: [id.rawValue, key, raw])
+                """, arguments: [Self.settingsIdentity(record), key, raw])
         }
+    }
+
+    func clearPluginSettings(_ id: PluginID) throws {
+        try dbQueue.write { db in
+            guard let record = try InstalledPluginRecord.fetchOne(db, key: id.rawValue) else { return }
+            try db.execute(sql: "DELETE FROM plugin_setting WHERE pluginID = ?", arguments: [Self.settingsIdentity(record)])
+        }
+    }
+
+    private static func settingsIdentity(_ record: InstalledPluginRecord) -> String {
+        settingsIdentity(pluginID: record.pluginID, teamID: record.teamID, signingIdentifier: record.signingIdentifier, isDevelopment: record.isDevelopment)
+    }
+
+    fileprivate static func settingsIdentity(pluginID: String, teamID: String?, signingIdentifier: String?, isDevelopment: Bool) -> String {
+        (isDevelopment ? "dev:" : "release:") + AppPaths.dataIdentityDirectoryName(
+            pluginID: PluginID(pluginID), teamID: teamID, signingIdentifier: signingIdentifier)
     }
 
     // Operations (plan §13.3)

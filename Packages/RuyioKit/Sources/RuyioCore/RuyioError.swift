@@ -26,6 +26,7 @@ public struct ErrorCode: RawRepresentable, Hashable, Codable, Sendable, Expressi
     public static let frameTooLarge: ErrorCode = "protocol.frameTooLarge"
     public static let storageQuotaExceeded: ErrorCode = "storage.quotaExceeded"
     public static let storageFailure: ErrorCode = "storage.failure"
+    public static let retainedDataIncompatible: ErrorCode = "storage.retainedDataIncompatible"
     public static let fileConflict: ErrorCode = "file.conflict"
     public static let fileWriteFailed: ErrorCode = "file.writeFailed"
     public static let fileNameInvalid: ErrorCode = "file.nameInvalid"
