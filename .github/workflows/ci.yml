@@ -1,14 +1,23 @@
 # Untrusted PR pipeline (plan §19): no certificates, no secrets, no signing.
 # Third-party actions are pinned to full commit SHAs (plan §19 supply chain).
 name: CI
+# Day-to-day commits are checked locally (Scripts/check.sh) before they land on main; GitHub only sees
+# main when it is published, so this runs once per publish, plus for outside pull requests.
 on:
-  pull_request:
   push:
     branches: [main]
+    paths-ignore: ['**.md', '.gitignore']
+  pull_request:
+    paths-ignore: ['**.md', '.gitignore']
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
+    timeout-minutes: 45
     # Liquid Glass code needs the macOS 26 SDK; macos-15 images default to Xcode 16.
     runs-on: macos-26
     steps:

@@ -1,5 +1,22 @@
 # Notes for coding agents
 
+## Workflow
+
+Several agents work on this repository at the same time, so nobody edits the main working copy
+(`~/Developer/Ruyio`): it stays on `main`, which only moves forward through `Scripts/land.sh`.
+
+1. Start every task on its own branch in its own worktree, from the main working copy:
+   `git worktree add ../Ruyio-wt/<agent>-<topic> -b <agent>/<topic> main`
+2. Commit as often as you like. Branch commits run nothing remotely; run the tests you need locally.
+3. To finish, rebase on `main` (`git rebase main`) and run `Scripts/land.sh <agent>/<topic>`. It runs
+   `Scripts/check.sh` (all package tests plus a Release app build of that exact commit, in a clean
+   worktree) and fast-forwards `main` only if it passes. Then remove your worktree and branch.
+4. Publish to GitHub with `Scripts/publish-code.sh` when landed work should go public. It publishes only
+   `main`, removes `docs/` and `design/` from the whole history, and GitHub CI runs once per publish.
+   Never add a GitHub remote or `git push` directly; that would publish the private docs.
+
+## Installing
+
 - Install into `/Applications` only with `Scripts/install-local.sh` (pass a built `Ruyio.app`, or no
   argument to build Release). Copying an ad-hoc build over `/Applications/Ruyio.app` voids the user's
   Accessibility and pasteboard grants while System Settings still shows them on.

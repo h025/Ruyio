@@ -35,6 +35,14 @@ rebuilds, replaces `/Applications/Ruyio.app`, and leaves only that copy's Finder
 Copying an ad-hoc build over `/Applications/Ruyio.app` instead voids the grants: System Settings keeps
 showing them on, but macOS no longer matches the app.
 
+## Development workflow
+
+Work happens on branches in separate worktrees. `Scripts/check.sh` (all package tests plus a Release
+build of one exact commit) gates every change, `Scripts/land.sh` fast-forwards `main` only to commits
+that passed it, and `main` is published here with `Scripts/publish-code.sh`, which triggers CI. Pull
+requests are welcome: CI runs on them, and maintainers land them through the same gate. Details are in
+[`AGENTS.md`](AGENTS.md).
+
 ## Test
 
 ```sh

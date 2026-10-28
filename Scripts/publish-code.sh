@@ -2,11 +2,13 @@
 # Publishes the committed code to GitHub without product and design material: `docs/` and `design/`
 # are removed from every commit, so they never reach the remote's history either. The rewrite is
 # deterministic (same commits in, same hashes out), so each run fast-forwards the remote.
-# Uncommitted work is never published.
+# Only main is published, and only once its code passed Scripts/check.sh; uncommitted work never is.
+# GitHub CI then runs once per publish, however many commits it carries.
 #
 # Usage: Scripts/publish-code.sh [--dry-run]
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+[ "${1:-}" = "--dry-run" ] || "$ROOT/Scripts/check.sh" main
 REMOTE=${RUYIO_PUBLIC_REMOTE:-git@github.com:h025/Ruyio.git}
 EXCLUDED="docs design"
 
