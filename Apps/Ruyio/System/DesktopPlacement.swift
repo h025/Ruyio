@@ -32,8 +32,10 @@ enum DesktopPlacement {
             // Finder lays out a file it has only just noticed on its own a moment later, which can undo
             // the first move; check once and move it again if needed.
             try? await Task.sleep(for: .milliseconds(900))
-            let actual = await position(of: url)
+            let read = await send(event(AEEventID(kAEGetData), url))
+            let actual = read.numbers.count >= 2 ? (read.numbers[0], read.numbers[1]) : nil
             fields["after"] = actual.map { "\($0.0),\($0.1)" } ?? "-"
+            fields["get"] = "\(read.code) \(read.type)"
             if let actual, abs(actual.0 - target.0) > 80 || abs(actual.1 - target.1) > 80 {
                 fields["retry"] = String(await send(setEvent(url, target)).code)
                 fields["final"] = (await position(of: url)).map { "\($0.0),\($0.1)" } ?? "-"
@@ -111,17 +113,23 @@ enum DesktopPlacement {
 
     /// Sends off the main thread (the first send waits for the Automation consent dialog). Returns the
     /// error number and, for a reply that is a list, its integers.
-    private static func send(_ event: NSAppleEventDescriptor?) async -> (code: Int, numbers: [Int32]) {
-        guard let event else { return (-1, []) }
+    private static func send(_ event: NSAppleEventDescriptor?) async -> (code: Int, numbers: [Int32], type: String) {
+        guard let event else { return (-1, [], "-") }
         nonisolated(unsafe) let message = event
         return await withCheckedContinuation { continuation in
             queue.async {
                 do {
                     let reply = try message.sendEvent(options: [.waitForReply, .canInteract], timeout: 60)
                     let error = Int(reply.paramDescriptor(forKeyword: AEKeyword(keyErrorNumber))?.int32Value ?? 0)
-                    continuation.resume(returning: (error, numbers(in: reply.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)))))
+                    let result = reply.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))
+                    let type = result.map { descriptor -> String in
+                        let code = descriptor.descriptorType
+                        let chars = [24, 16, 8, 0].map { Character(UnicodeScalar(UInt8((code >> $0) & 0xFF))) }
+                        return String(chars) + "/\(descriptor.data.count)"
+                    } ?? "none"
+                    continuation.resume(returning: (error, numbers(in: result), type))
                 } catch {
-                    continuation.resume(returning: ((error as NSError).code, []))
+                    continuation.resume(returning: ((error as NSError).code, [], "thrown"))
                 }
             }
         }
