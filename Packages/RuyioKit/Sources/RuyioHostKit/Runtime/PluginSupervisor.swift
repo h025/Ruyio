@@ -109,7 +109,7 @@ public actor PluginSupervisor {
     /// Keeps the plugin alive while `body` runs (an open panel or a running action holds a lease).
     public func withLease<T: Sendable>(_ id: PluginID, _ body: @Sendable (PluginSession) async throws -> T) async throws -> T {
         let session = try await acquireLease(id)
-        defer { Task { await self.release(session) } }
+        defer { Task { self.release(session) } }
         return try await body(session)
     }
 
