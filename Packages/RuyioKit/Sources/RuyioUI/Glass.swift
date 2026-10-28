@@ -116,6 +116,7 @@ public struct SymbolBadge: View {
 /// AppKit's own search field (magnifier, clear button, Liquid Glass styling) for SwiftUI. Takes focus
 /// when it joins a window, since floating panels open straight into typing.
 public struct NativeSearchField: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
     @Binding var text: String
     let placeholder: String
     var controlSize: NSControl.ControlSize
@@ -135,17 +136,35 @@ public struct NativeSearchField: NSViewRepresentable {
         field.font = .systemFont(ofSize: NSFont.systemFontSize(for: controlSize))
         field.setAccessibilityLabel(placeholder)
         field.stringValue = text
+        field.isEnabled = isEnabled
         return field
     }
 
     public func updateNSView(_ field: NSSearchField, context: Context) {
         if field.stringValue != text { field.stringValue = text }
+        guard field.isEnabled != isEnabled else { return }
+        // AppKit draws its field editor above SwiftUI overlays. Relinquish it while a preview
+        // covers the search field, and restore typing when that preview closes.
+        if !isEnabled, let window = field.window,
+           window.firstResponder === field.currentEditor() || window.firstResponder === field {
+            context.coordinator.restoreFocus = true
+            window.makeFirstResponder(nil)
+        }
+        field.isEnabled = isEnabled
+        if isEnabled, context.coordinator.restoreFocus {
+            context.coordinator.restoreFocus = false
+            DispatchQueue.main.async { [weak field] in
+                guard let field, field.isEnabled, let window = field.window, window.isVisible else { return }
+                window.makeFirstResponder(field)
+            }
+        }
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
     public final class Coordinator: NSObject, NSSearchFieldDelegate {
         var text: Binding<String>
+        var restoreFocus = false
         init(text: Binding<String>) { self.text = text }
         public func controlTextDidChange(_ notification: Notification) {
             if let field = notification.object as? NSTextField { text.wrappedValue = field.stringValue }
@@ -157,7 +176,7 @@ public struct NativeSearchField: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self, window.firstResponder !== self.currentEditor() else { return }
+                guard let self, self.isEnabled, window.firstResponder !== self.currentEditor() else { return }
                 window.makeFirstResponder(self)
             }
         }

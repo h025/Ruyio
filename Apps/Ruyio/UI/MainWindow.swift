@@ -48,13 +48,16 @@ struct MainView: View {
                 model.page = page
             })) {
                 Section {
-                    sidebarRow(.plugins).badge(model.snapshot.plugins.filter { $0.status.needsAttention }.count)
-                    sidebarRow(.market)
+                    // Keep the selection tag outside badge: List reads the completed row's trait.
+                    sidebarRow(.plugins)
+                        .badge(model.snapshot.plugins.filter { $0.status.needsAttention }.count)
+                        .tag(Page.plugins)
+                    sidebarRow(.market).tag(Page.market)
                 }
                 Section(l.settings) {
-                    sidebarRow(.shortcuts)
-                    sidebarRow(.privacy)
-                    sidebarRow(.general)
+                    sidebarRow(.shortcuts).tag(Page.shortcuts)
+                    sidebarRow(.privacy).tag(Page.privacy)
+                    sidebarRow(.general).tag(Page.general)
                 }
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 280)
@@ -71,7 +74,8 @@ struct MainView: View {
     }
 
     func sidebarRow(_ page: Page) -> some View {
-        Label(page.title(l), systemImage: page.symbol).tag(page)
+        Label(page.title(l), systemImage: page.symbol)
+            .accessibilityIdentifier("sidebar.\(page.rawValue)")
     }
 
     @ViewBuilder

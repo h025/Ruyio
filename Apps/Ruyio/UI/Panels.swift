@@ -183,7 +183,8 @@ final class OverlayController {
         let ticket = presentationID
         let context = SchemaContext(
             pluginID: pluginID, document: document,
-            strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: l.t("撤销", "Undo"), loading: l.t("正在加载…", "Loading…"), choose: "…"),
+            strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: l.t("撤销", "Undo"), loading: l.t("正在加载…", "Loading…"), choose: "…",
+                                   preview: l.t("预览", "Preview"), moreActions: l.t("更多操作", "More Actions")),
             sendEvent: { [weak self] event, revision in await self?.send(event, revision: revision, ticket: ticket) },
             loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) })
         context.dismiss = { [weak self] in if self?.presentationID == ticket { self?.close() } }
@@ -268,6 +269,7 @@ final class OverlayController {
             }
             return true
         case .escape:
+            if context.compactPreviewVisible { context.compactPreviewVisible = false; return true }
             // First Escape clears the search, the second closes (PRD §19.15).
             if let search = context.collection?.searchText, !search.isEmpty {
                 context.send(.searchChanged(""))
@@ -288,7 +290,11 @@ final class OverlayController {
         case .enter:
             if let action = context.invocation() { context.send(action); return true }
         case .commandY:
-            if context.collection?.preview != nil { context.previewVisible.toggle(); return true }
+            if context.collection?.preview != nil {
+                if (panel?.contentView?.bounds.width ?? 780) < 700 { context.compactPreviewVisible.toggle() }
+                else { context.previewVisible.toggle() }
+                return true
+            }
         case .commandZ:
             if let undo = context.collection?.undo, undo.expiresAt > Date() { context.send(.undo(token: undo.token)); return true }
         default: break
@@ -367,6 +373,7 @@ final class OverlayController {
 #if DEBUG
 extension OverlayController {
     func presentForGallery(document: ViewDocument, pluginID: PluginID) { present(document: document, pluginID: pluginID) }
+    func setCompactPreviewForGallery(_ visible: Bool) { context?.compactPreviewVisible = visible }
     var galleryWindow: NSWindow? { panel }
 }
 

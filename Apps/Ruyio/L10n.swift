@@ -242,8 +242,8 @@ struct L10n {
 
     // Market (M4)
     var marketEmpty: String { t("尚未添加插件市场", "No plugin markets added") }
-    var marketEmptyHint: String { t("添加一个 GitHub 或 HTTPS 地址。地址只会在点击“解析”后访问。", "Add a GitHub or HTTPS address. It is only accessed after you click Resolve.") }
-    var addMarket: String { t("添加插件或市场…", "Add Plugin or Market…") }
+    var marketEmptyHint: String { t("添加 GitHub 或 HTTPS 市场地址，浏览并安装更多插件。", "Add a GitHub or HTTPS market address to browse and install more plugins.") }
+    var addMarket: String { t("添加市场…", "Add Market…") }
     var resolve: String { t("解析", "Resolve") }
     var addressPrompt: String { t("GitHub 仓库、子目录或 HTTPS 地址", "GitHub repository, subfolder or HTTPS address") }
 

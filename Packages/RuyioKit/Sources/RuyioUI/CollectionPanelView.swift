@@ -20,8 +20,9 @@ public struct CollectionPanelView: View {
     public var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 700
+            let showingCompactPreview = !wide && context.compactPreviewVisible && spec.preview != nil
             VStack(alignment: .leading, spacing: 12) {
-                header
+                header(wide: wide)
                 searchRow
                 if let banner = spec.banner { bannerView(banner) }
                 HStack(alignment: .top, spacing: 12) {
@@ -34,14 +35,30 @@ public struct CollectionPanelView: View {
                 actionBar
             }
             .padding(16)
+            .disabled(showingCompactPreview)
+            .accessibilityHidden(showingCompactPreview)
             .overlay(alignment: .bottom) { undoToast.padding(.bottom, 64) }
             // Narrow windows show the preview as a temporary overlay (interaction §10.1).
             .overlay {
-                if !wide && !context.previewVisible, let preview = spec.preview {
-                    ScrollView { SchemaNodeView(node: preview, context: context).padding(16) }
+                if showingCompactPreview, let preview = spec.preview {
+                    VStack(spacing: 12) {
+                        HStack {
+                            Text(context.strings.preview).font(.headline)
+                            Spacer()
+                            Button { context.compactPreviewVisible = false } label: { Image(systemName: "xmark") }
+                                .ruyioGlassButton().buttonBorderShape(.circle)
+                                .help(context.strings.cancel).accessibilityLabel(context.strings.cancel)
+                        }
+                        ScrollView { SchemaNodeView(node: preview, context: context).frame(maxWidth: .infinity, alignment: .leading) }
+                    }
+                        .padding(16)
                         .ruyioGlass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                         .padding(28)
                 }
+            }
+            .onChange(of: wide) { _, _ in context.compactPreviewVisible = false }
+            .onChange(of: spec.preview == nil) { _, missing in
+                if missing { context.compactPreviewVisible = false }
             }
         }
         .keyWindowControls()
@@ -52,7 +69,7 @@ public struct CollectionPanelView: View {
 
     // MARK: Header and search
 
-    var header: some View {
+    func header(wide: Bool) -> some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 1) {
                 if let title = context.document.title {
@@ -63,6 +80,13 @@ public struct CollectionPanelView: View {
                 }
             }
             Spacer()
+            if spec.preview != nil {
+                Button {
+                    if wide { context.previewVisible.toggle() } else { context.compactPreviewVisible.toggle() }
+                } label: { Image(systemName: "sidebar.right") }
+                    .ruyioGlassButton().buttonBorderShape(.circle).controlSize(.large)
+                    .help(context.strings.preview + "  ⌘Y").accessibilityLabel(context.strings.preview)
+            }
             if let dismiss = context.dismiss {
                 Button(action: dismiss) { Image(systemName: "xmark") }
                     .ruyioGlassButton()
@@ -76,7 +100,13 @@ public struct CollectionPanelView: View {
     }
 
     var searchRow: some View {
-        HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { searchField.frame(minWidth: 220); filters }
+            VStack(alignment: .leading, spacing: 10) { searchField; filters }
+        }
+    }
+
+    var searchField: some View {
             NativeSearchField(text: $query, placeholder: spec.searchPlaceholder)
                 .onChange(of: query) { _, newValue in
                     debounce?.cancel()
@@ -86,6 +116,10 @@ public struct CollectionPanelView: View {
                         context.send(.searchChanged(newValue))
                     }
                 }
+    }
+
+    @ViewBuilder
+    var filters: some View {
             if !spec.filters.isEmpty {
                 Picker("", selection: Binding(get: { spec.selectedFilter ?? spec.filters.first?.id ?? "" }, set: { context.send(.filterChanged($0)) })) {
                     ForEach(spec.filters, id: \.id) { Text($0.title).tag($0.id) }
@@ -95,20 +129,25 @@ public struct CollectionPanelView: View {
                 .fixedSize()
                 .controlSize(.large)
             }
-        }
     }
 
     func bannerView(_ banner: BannerSpec) -> some View {
         let tone: Color = banner.tone == .critical ? .red : (banner.tone == .warning ? .orange : .secondary)
-        return HStack(spacing: 10) {
+        let message = Label {
+            Text(banner.text).font(.callout).fixedSize(horizontal: false, vertical: true)
+        } icon: {
             Image(systemName: banner.tone == .critical ? "exclamationmark.octagon.fill" : (banner.tone == .warning ? "exclamationmark.triangle.fill" : "pause.circle.fill"))
                 .foregroundStyle(tone)
-            Text(banner.text).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer()
+        }
+        let actions = HStack {
             ForEach(banner.actions, id: \.id) { action in
                 Button(action.title) { context.send(.invoke(actionID: action.id, itemID: nil)) }
                     .ruyioGlassButton()
             }
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { message; Spacer(minLength: 8); actions.fixedSize() }
+            VStack(alignment: .leading, spacing: 10) { message; actions }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(tone.opacity(banner.tone == .info ? 0.08 : 0.14)))
@@ -162,10 +201,12 @@ public struct CollectionPanelView: View {
     /// Native glass buttons; the default action is prominent, shortcuts appear in tooltips and in the
     /// overflow menu, which lists every action with its key equivalent.
     var actionBar: some View {
-        let keyed = spec.footerActions.filter { $0.shortcut != nil }
+        let primary = spec.footerActions.filter { $0.isDefault }
+        let secondary = spec.footerActions.filter { !$0.isDefault && $0.shortcut != nil && !$0.isDestructive }
+        let visible = Array((primary + secondary).prefix(2))
         return GlassGroup(spacing: 8) {
             HStack(spacing: 8) {
-                ForEach(keyed, id: \.id) { action in
+                ForEach(visible, id: \.id) { action in
                     let button = Button(role: action.isDestructive ? .destructive : nil) {
                         if let event = context.footerInvocation(action) { context.send(event) }
                     } label: {
@@ -176,7 +217,7 @@ public struct CollectionPanelView: View {
                     if action.isDefault { button.ruyioGlassButton(prominent: true) } else { button.ruyioGlassButton() }
                 }
                 Spacer(minLength: 0)
-                Menu {
+                if !spec.footerActions.isEmpty { Menu {
                     ForEach(spec.footerActions, id: \.id) { action in
                         Button(role: action.isDestructive ? .destructive : nil) {
                             if let event = context.footerInvocation(action) { context.send(event) }
@@ -187,12 +228,12 @@ public struct CollectionPanelView: View {
                         .disabled(context.footerInvocation(action) == nil)
                     }
                 } label: {
-                    Image(systemName: "ellipsis")
+                    Label(context.strings.moreActions, systemImage: "ellipsis")
                 }
                 .menuIndicator(.hidden)
                 .ruyioGlassButton()
-                .buttonBorderShape(.circle)
                 .fixedSize()
+                }
             }
             .controlSize(.large)
         }

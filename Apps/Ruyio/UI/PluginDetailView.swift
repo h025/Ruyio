@@ -61,15 +61,16 @@ struct PluginDetailView: View {
             }
             Section(l.actionsAndEntries) {
                 ForEach(summary.manifest.actions, id: \.id) { action in
-                    LabeledContent {
-                        HStack(spacing: 6) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(summary.manifest.actionTitle(action, locale: model.language).text)
+                            .fixedSize(horizontal: false, vertical: true)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), alignment: .leading)], alignment: .leading, spacing: 6) {
                             ForEach(action.presentations, id: \.type) { presentation in
                                 EntryToggle(model: model, ref: ActionRef(pluginID: summary.id, actionID: action.id), kind: presentation.kind)
                             }
                         }
-                    } label: {
-                        Text(summary.manifest.actionTitle(action, locale: model.language).text)
                     }
+                    .padding(.vertical, 3)
                 }
                 if summary.manifest.actions.contains(where: { $0.presentation(.finderContextMenu) != nil }) {
                     Button(l.manageFinderMenu) { showFinderMenu = true }
@@ -109,7 +110,7 @@ struct PluginDetailView: View {
     }
 }
 
-/// Version tab with check / update (PRD §19.11): differences are shown before the user confirms.
+/// Version section with check / update (PRD §19.11): differences are shown before the user confirms.
 struct UpdateSection: View {
     @ObservedObject var model: AppModel
     let summary: PluginSummary
@@ -131,24 +132,21 @@ struct UpdateSection: View {
             HStack(spacing: 8) {
                 Button(l.t("检查更新", "Check for Update")) { check() }.disabled(checking || working || summary.status.updateChannel == .none)
                 if checking || working { ProgressView().controlSize(.small) }
-                if let available {
-                    Text(l.t("发现新版本 \(available.version)", "Version \(available.version) is available"))
-                    Button(l.t("更新…", "Update…")) { update(available) }.buttonStyle(.borderedProminent).disabled(working)
-                } else if checked {
-                    Text(l.t("已是最新版本", "Up to date")).foregroundStyle(.secondary)
-                }
                 Spacer()
-                if summary.status.updateChannel == .descriptor || summary.status.updateChannel == .market {
-                    Button(l.t("更换来源…", "Change Source…")) { changeSource() }.disabled(working)
+                if let available {
+                    Button(l.t("更新…", "Update…")) { update(available) }.buttonStyle(.borderedProminent).disabled(working)
                 }
-                if !olderReleases.isEmpty {
-                    Menu(l.t("安装其他版本…", "Install Another Version…")) {
-                        ForEach(olderReleases, id: \.version) { release in
-                            Button(release.version.description) { downgrade(release) }
-                        }
-                    }
-                    .fixedSize()
-                    .disabled(working)
+            }
+            if let available {
+                Text(l.t("发现新版本 \(available.version)", "Version \(available.version) is available"))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if checked {
+                Text(l.t("已是最新版本", "Up to date")).foregroundStyle(.secondary)
+            }
+            if canChangeSource || !olderReleases.isEmpty {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) { sourceActions }
+                    VStack(alignment: .leading, spacing: 10) { sourceActions }
                 }
             }
             if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
@@ -162,6 +160,26 @@ struct UpdateSection: View {
         }
         .onChange(of: summary.status.update) { _, state in
             if state == .available { available = model.engine.availableUpdate(summary.id) }
+        }
+    }
+
+    private var canChangeSource: Bool {
+        summary.status.updateChannel == .descriptor || summary.status.updateChannel == .market
+    }
+
+    @ViewBuilder
+    private var sourceActions: some View {
+        if canChangeSource {
+            Button(l.t("更换来源…", "Change Source…")) { changeSource() }
+                .fixedSize().disabled(working)
+        }
+        if !olderReleases.isEmpty {
+            Menu(l.t("安装其他版本…", "Install Another Version…")) {
+                ForEach(olderReleases, id: \.version) { release in
+                    Button(release.version.description) { downgrade(release) }
+                }
+            }
+            .fixedSize().disabled(working)
         }
     }
 
@@ -378,7 +396,7 @@ struct EntryToggle: View {
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: visible ? "checkmark" : "plus").font(.caption2.weight(.bold))
-                Text(label)
+                Text(label).fixedSize(horizontal: true, vertical: false)
             }
             .font(.caption)
         }
@@ -531,6 +549,10 @@ struct PluginSettingsSheet: View {
     @ObservedObject var model: AppModel
     let summary: PluginSummary
     @Binding var isPresented: Bool
+    #if DEBUG
+    var galleryDocument: ViewDocument? = nil
+    var galleryError: String? = nil
+    #endif
     @StateObject private var holder = SettingsHolder()
     var l: L10n { model.l }
 
@@ -543,8 +565,9 @@ struct PluginSettingsSheet: View {
             }
             .padding(.horizontal, 20).padding(.top, 18)
             if let error = holder.error {
-                HStack {
+                HStack(alignment: .top) {
                     Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                     if holder.canRetry {
                         Button(l.retry) { Task { await holder.retry(model: model, pluginID: summary.id, viewID: settingsViewID) } }
                     }
@@ -561,15 +584,26 @@ struct PluginSettingsSheet: View {
                     Color.clear
                 }
             }
-            .frame(minHeight: 360)
+            .frame(minHeight: 0, maxHeight: .infinity)
             HStack {
                 Spacer()
-                Button(l.done) { isPresented = false }.keyboardShortcut(.defaultAction)
+                Button(l.t("关闭", "Close")) { isPresented = false }.keyboardShortcut(.cancelAction)
             }
             .padding(16)
         }
-        .frame(width: 520, height: 480)
+        .frame(width: 560, height: 560)
         .task {
+            #if DEBUG
+            if model.isGallery {
+                if let galleryDocument {
+                    holder.context = SchemaContext(pluginID: summary.id, document: galleryDocument,
+                                                   strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: "", loading: "", choose: "…"),
+                                                   sendEvent: { _, _ in }, loadBlob: { _ in nil })
+                }
+                holder.error = galleryError
+                return
+            }
+            #endif
             guard summary.status.isInvocable, let viewID = settingsViewID else { return }
             await holder.open(model: model, pluginID: summary.id, viewID: viewID)
         }

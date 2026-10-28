@@ -11,12 +11,21 @@ struct MarketPage: View {
     @State private var tab = 0
     var l: L10n { model.l }
 
+    init(model: AppModel) {
+        self.model = model
+        #if DEBUG
+        _tab = State(initialValue: model.isGallery ? model.galleryMarketTab : 0)
+        #else
+        _tab = State(initialValue: 0)
+        #endif
+    }
+
     var body: some View {
         MarketContent(model: model, showAdd: $showAdd, tab: $tab)
             .navigationTitle(l.market)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Picker("", selection: $tab) {
+                    Picker(l.t("市场视图", "Market View"), selection: $tab) {
                         Text(l.t("发现", "Discover")).tag(0)
                         Text(l.t("来源", "Sources")).tag(1)
                     }

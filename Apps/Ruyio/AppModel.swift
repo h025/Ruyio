@@ -60,6 +60,11 @@ final class AppModel: ObservableObject {
     @Published var finderExtensionEnabled = false
     @Published var settingsError: String?
     @Published var startupError: String?
+    #if DEBUG
+    /// Visual fixtures use synthetic permission states and never inspect the system pasteboard.
+    var isGallery = false
+    var galleryMarketTab = 0
+    #endif
 
     var l: L10n { L10n(settings.language.resolved) }
     var language: String { settings.language.resolved }
@@ -175,6 +180,13 @@ final class AppModel: ObservableObject {
     }
 
     func refreshSystemState() {
+        #if DEBUG
+        if isGallery {
+            accessibilityTrusted = false
+            finderExtensionEnabled = true
+            return
+        }
+        #endif
         accessibilityTrusted = AXIsProcessTrusted()
         finderExtensionEnabled = FinderExtensionStatus.isEnabled
     }

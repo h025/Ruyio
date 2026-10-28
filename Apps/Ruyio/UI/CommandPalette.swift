@@ -40,8 +40,17 @@ final class CommandPaletteController: ObservableObject {
         phase = .browsing
         usage = Dictionary(uniqueKeysWithValues: ((try? model.engine.database.usage()) ?? []).map { ("\($0.pluginID)/\($0.actionID)", ($0.count, $0.lastUsedAt)) })
         selection = results.first?.id
-        let panel = panel ?? FloatingPanel(size: NSSize(width: 680, height: 460), minSize: NSSize(width: 680, height: 300), resizable: false)
-        panel.contentView = NSHostingView(rootView: CommandPaletteView(controller: self, model: model).environment(\.locale, Locale(identifier: model.language)))
+        let panel = panel ?? FloatingPanel(size: NSSize(width: 680, height: 460), minSize: NSSize(width: 680, height: 80), resizable: false)
+        self.panel = panel
+        let hosting = NSHostingView(rootView: CommandPaletteView(controller: self, model: model).environment(\.locale, Locale(identifier: model.language)))
+        // The visible cards define the window bounds; an invisible fixed-height tail would also
+        // displace the palette's apparent center when there are only a few matching commands.
+        hosting.sizingOptions = [.intrinsicContentSize]
+        panel.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        let initialHeight = hosting.fittingSize.height
+        hosting.sizingOptions = []
+        resizeToContentHeight(initialHeight)
         panel.onKeyDown = { [weak self] event in self?.handleKey(event) ?? false }
         panel.onResignKey = { [weak self] in
             Task { @MainActor in
@@ -53,7 +62,17 @@ final class CommandPaletteController: ObservableObject {
         }
         panel.centerOnActiveScreen()
         panel.makeKeyAndOrderFront(nil)
-        self.panel = panel
+    }
+
+    fileprivate func resizeToContentHeight(_ height: CGFloat) {
+        guard height.isFinite, height >= 80, let panel else { return }
+        let height = ceil(height)
+        guard abs(panel.frame.height - height) > 0.5 else { return }
+        var frame = panel.frame
+        // Keep the search field stationary as results, errors and parameter forms change below it.
+        frame.origin.y = frame.maxY - height
+        frame.size.height = height
+        panel.setFrame(frame, display: panel.isVisible)
     }
 
     func close() {
@@ -181,7 +200,9 @@ struct CommandPaletteView: View {
             }
         }
         .padding(12)
-        .frame(width: 680, height: 460, alignment: .top)
+        .frame(width: 680)
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controller.resizeToContentHeight($0) }
         .keyWindowControls()
         .onAppear { focused = true }
     }
@@ -306,7 +327,7 @@ struct CommandPaletteView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .frame(maxHeight: 340)
+            .frame(height: 340)
         }
         .ruyioGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }

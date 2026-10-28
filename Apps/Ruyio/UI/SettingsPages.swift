@@ -172,6 +172,9 @@ struct PrivacyPage: View {
     }
 
     var clipboardState: (String, Bool) {
+        #if DEBUG
+        if model.isGallery { return (l.authorized, true) }
+        #endif
         if #available(macOS 15.4, *) {
             switch NSPasteboard.general.accessBehavior {
             case .alwaysAllow, .default: return (l.authorized, true)

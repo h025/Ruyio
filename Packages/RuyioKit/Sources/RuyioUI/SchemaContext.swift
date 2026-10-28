@@ -13,6 +13,7 @@ public final class SchemaContext: ObservableObject {
     @Published public private(set) var document: ViewDocument
     @Published public var isBusy = false
     @Published public var previewVisible = true
+    @Published public var compactPreviewVisible = false
     @Published public var localSelection: String?
     @Published public private(set) var formSubmissionAcknowledgement: FormSubmissionAcknowledgement?
     /// Host-owned close for floating presentations (close button); plugins cannot trigger it.
@@ -133,12 +134,17 @@ public struct SchemaStrings: Sendable {
     public var undo: String
     public var loading: String
     public var choose: String
-    public init(submit: String, cancel: String, undo: String, loading: String, choose: String) {
+    public var preview: String
+    public var moreActions: String
+    public init(submit: String, cancel: String, undo: String, loading: String, choose: String,
+                preview: String = "Preview", moreActions: String = "More Actions") {
         self.submit = submit
         self.cancel = cancel
         self.undo = undo
         self.loading = loading
         self.choose = choose
+        self.preview = preview
+        self.moreActions = moreActions
     }
 }
 

@@ -145,7 +145,9 @@ struct MarketContent: View {
 
     func sourceStatus(_ market: MarketRecord) -> String {
         let count = (market.index.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["market"] as? [String: Any])?["plugins"] as? [Any]
-        let time = market.lastRefreshAt.map { RelativeDateTimeFormatter().localizedString(for: $0, relativeTo: Date()) } ?? "—"
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: model.language)
+        let time = market.lastRefreshAt.map { formatter.localizedString(for: $0, relativeTo: Date()) } ?? "—"
         var parts = [l.t("\(count?.count ?? 0) 个插件", "\(count?.count ?? 0) plugins"), time]
         if !market.enabled { parts.append(l.t("已停用", "Disabled")) }
         switch market.state {
@@ -193,7 +195,7 @@ struct AddSourceSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(l.addMarket.replacingOccurrences(of: "…", with: "")).font(.headline)
+            Text(l.t("添加插件或市场", "Add Plugin or Market")).font(.headline)
             Text(l.addressPrompt)
             TextField("https://", text: $address).textFieldStyle(.roundedBorder).disabled(resolving)
             Text(l.t("地址只会在点击“解析”后访问。私有仓库暂不支持。", "The address is accessed only after Resolve. Private repositories are not supported.")).font(.caption).foregroundStyle(.secondary)
