@@ -328,6 +328,7 @@ struct OverlayRoot: View {
             }
             SchemaNodeView(node: context.document.root, context: context)
         }
+        .keyWindowControls()
             .frame(minWidth: 640, minHeight: 420)
             .ruyioGlass(in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             .ignoresSafeArea()

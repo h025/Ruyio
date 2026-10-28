@@ -295,17 +295,16 @@ struct SchemaListView: View {
             EmptyStateView(spec: empty, context: context)
         } else {
             List(spec.items, selection: Binding(get: { context.localSelection }, set: { context.localSelection = $0; context.send(.selectionChanged($0)) })) { item in
-                ItemRow(item: item, context: context, isSelected: false).tag(item.id)
+                ItemRow(item: item, context: context).tag(item.id)
             }
         }
     }
 }
 
-/// One plugin-provided row. Selection is drawn by the host as an accent capsule, as in Spotlight.
+/// One plugin-provided row; selection, emphasis and hover come from the native List.
 struct ItemRow: View {
     let item: ListItem
     @ObservedObject var context: SchemaContext
-    var isSelected: Bool
 
     var body: some View {
         HStack(spacing: 12) {
@@ -318,29 +317,15 @@ struct ItemRow: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).font(.body.weight(.medium)).lineLimit(2)
-                if let subtitle = item.subtitle {
-                    Text(subtitle).font(.caption).lineLimit(1)
-                        .foregroundStyle(isSelected ? AnyShapeStyle(Color.white.opacity(0.82)) : AnyShapeStyle(.secondary))
-                }
+                if let subtitle = item.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer(minLength: 8)
-            if item.isFavorite {
-                Image(systemName: "star.fill").font(.caption)
-                    .foregroundStyle(isSelected ? Color.white : Color.yellow).accessibilityLabel("★")
-            }
-            if let detail = item.detail {
-                Text(detail).font(.caption)
-                    .foregroundStyle(isSelected ? AnyShapeStyle(Color.white.opacity(0.82)) : AnyShapeStyle(.secondary))
-            }
+            if item.isFavorite { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow).accessibilityLabel("★") }
+            if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
         }
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .padding(.horizontal, 10).padding(.vertical, 7)
-        .background {
-            if isSelected { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor) }
-        }
+        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(item.accessibilityLabel ?? item.title)
-        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
         .contextMenu {
             ForEach(item.actions, id: \.id) { action in
                 Button(role: action.isDestructive ? .destructive : nil) { context.send(.invoke(actionID: action.id, itemID: item.id)) } label: {

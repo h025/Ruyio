@@ -174,6 +174,7 @@ struct CommandPaletteView: View {
         }
         .padding(12)
         .frame(width: 680, height: 460, alignment: .top)
+        .keyWindowControls()
         .onAppear { focused = true }
     }
 
@@ -208,20 +209,18 @@ struct CommandPaletteView: View {
                     .frame(maxWidth: .infinity).padding(.vertical, 28)
                 } else {
                     ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(spacing: 2) {
-                                ForEach(results) { entry in
-                                    row(entry, selected: entry.id == controller.selection)
-                                        .id(entry.id)
-                                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                        .onTapGesture {
-                                            if NSApp.currentEvent?.clickCount == 2 { controller.run(entry) } else { controller.selection = entry.id }
-                                        }
-                                }
+                        List(selection: $controller.selection) {
+                            ForEach(results) { entry in
+                                row(entry).tag(entry.id).id(entry.id)
                             }
-                            .padding(6)
                         }
-                        .frame(height: min(CGFloat(results.count) * 46 + 12, 300))
+                        .listStyle(.inset)
+                        .scrollContentBackground(.hidden)
+                        .alternatingRowBackgrounds(.disabled)
+                        .contextMenu(forSelectionType: String.self) { _ in } primaryAction: { ids in
+                            if let id = ids.first, let entry = controller.results.first(where: { $0.id == id }) { controller.run(entry) }
+                        }
+                        .frame(height: min(CGFloat(results.count) * 44 + 16, 300))
                         .onChange(of: controller.selection) { _, id in if let id { proxy.scrollTo(id) } }
                     }
                 }
@@ -239,52 +238,34 @@ struct CommandPaletteView: View {
                     .background(Color.orange.opacity(0.1))
                 }
                 Divider().opacity(0.5)
-                HStack(spacing: 12) {
-                    hint("↑↓", l.t("选择", "Select"))
-                    hint("↩", l.t("执行", "Run"))
-                    hint("esc", l.t("关闭", "Close"))
+                HStack(spacing: 14) {
+                    Text(l.paletteHelp)
                     Spacer()
-                    if let entry = controller.results.first(where: { $0.id == controller.selection }) {
-                        Text(entry.pluginName).font(.caption).foregroundStyle(.secondary)
-                    }
+                    if let entry = controller.results.first(where: { $0.id == controller.selection }) { Text(entry.pluginName) }
                 }
+                .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 9)
             }
             .ruyioGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
     }
 
-    func hint(_ key: String, _ title: String) -> some View {
-        HStack(spacing: 5) {
-            KeyCap(key)
-            Text(title).font(.caption)
-        }
-        .foregroundStyle(.secondary)
-    }
-
-    func row(_ entry: CommandEntry, selected: Bool) -> some View {
+    func row(_ entry: CommandEntry) -> some View {
         HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(selected ? AnyShapeStyle(Color.white.opacity(0.22)) : AnyShapeStyle(Color.accentColor.gradient))
-                .frame(width: 30, height: 30)
-                .overlay(Image(systemName: entry.symbol ?? "bolt.fill").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white))
+            Image(systemName: entry.symbol ?? "bolt.fill")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.tint)
+                .frame(width: 24)
             VStack(alignment: .leading, spacing: 1) {
-                Text(entry.title).font(.body.weight(.medium))
-                if let subtitle = entry.subtitle {
-                    Text(subtitle).font(.caption).foregroundStyle(selected ? AnyShapeStyle(Color.white.opacity(0.8)) : AnyShapeStyle(.secondary))
-                }
+                Text(entry.title)
+                if let subtitle = entry.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
             }
             Spacer()
-            Text(entry.pluginName).font(.caption).foregroundStyle(selected ? AnyShapeStyle(Color.white.opacity(0.8)) : AnyShapeStyle(.secondary))
-            if let shortcut = entry.shortcut { KeyCap(shortcut.displayString, inverted: selected) }
+            Text(entry.pluginName).font(.caption).foregroundStyle(.secondary)
+            if let shortcut = entry.shortcut { Text(shortcut.displayString).font(.caption.monospaced()).foregroundStyle(.secondary) }
         }
-        .foregroundStyle(selected ? Color.white : Color.primary)
-        .padding(.horizontal, 10).padding(.vertical, 7)
-        .background {
-            if selected { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor) }
-        }
+        .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
     }
 
     func formCard(ref: ActionRef, form: FormSpec) -> some View {
@@ -293,12 +274,11 @@ struct CommandPaletteView: View {
                                     sendEvent: { _, _ in }, loadBlob: { _ in nil })
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Button { controller.phase = .browsing } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold)).frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-                .ruyioGlass(in: Circle(), interactive: true)
-                .accessibilityLabel(l.back)
+                Button { controller.phase = .browsing } label: { Image(systemName: "chevron.left") }
+                    .ruyioGlassButton()
+                    .buttonBorderShape(.circle)
+                    .help(l.back)
+                    .accessibilityLabel(l.back)
                 Text(model.snapshot.entries.commands.first { $0.ref == ref }?.title ?? "").font(.headline)
                 Spacer()
             }

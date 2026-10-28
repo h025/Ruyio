@@ -128,7 +128,7 @@ struct OnboardingView: View {
         Button(action: action) { Text(title).frame(minWidth: 220) }
             .controlSize(.extraLarge)
             .buttonBorderShape(.capsule)
-            .buttonStyle(.borderedProminent)
+            .ruyioGlassButton(prominent: true)
             .keyboardShortcut(.defaultAction)
             .disabled(!enabled)
     }

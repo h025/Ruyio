@@ -2,16 +2,15 @@ import AppKit
 import RuyioProtocol
 import SwiftUI
 
-/// Search + filters + list + preview + hint bar (interaction §10), laid out as a floating glass panel:
-/// large title, capsule search, grouped list and preview cards, and a floating hint capsule.
-/// Keyboard commands are dispatched by the hosting panel so typing, Space and ⌫ always edit the search
-/// field (PRD §19.15).
+/// Search + filters + list + preview + action bar (interaction §10), as a floating glass panel built from
+/// native controls: AppKit search field, large segmented control, a List with system selection, and glass
+/// buttons. Keyboard commands are dispatched by the hosting panel so typing, Space and ⌫ always edit the
+/// search field (PRD §19.15).
 public struct CollectionPanelView: View {
     let spec: CollectionSpec
     @ObservedObject var context: SchemaContext
     @State private var query = ""
     @State private var debounce: Task<Void, Never>?
-    @FocusState private var searchFocused: Bool
 
     public init(spec: CollectionSpec, context: SchemaContext) {
         self.spec = spec
@@ -32,17 +31,10 @@ public struct CollectionPanelView: View {
                     }
                 }
                 .frame(maxHeight: .infinity)
+                actionBar
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 62)
-            .overlay(alignment: .bottom) {
-                VStack(spacing: 8) {
-                    undoToast
-                    footer
-                }
-                .padding(.bottom, 12)
-            }
+            .padding(16)
+            .overlay(alignment: .bottom) { undoToast.padding(.bottom, 64) }
             // Narrow windows show the preview as a temporary overlay (interaction §10.1).
             .overlay {
                 if !wide && !context.previewVisible, let preview = spec.preview {
@@ -52,10 +44,8 @@ public struct CollectionPanelView: View {
                 }
             }
         }
-        .onAppear {
-            query = spec.searchText
-            searchFocused = true
-        }
+        .keyWindowControls()
+        .onAppear { query = spec.searchText }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("app.ruyio.clearSearch"))) { _ in query = "" }
     }
 
@@ -73,13 +63,12 @@ public struct CollectionPanelView: View {
             }
             Spacer()
             if let dismiss = context.dismiss {
-                Button(action: dismiss) {
-                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .ruyioGlass(in: Circle(), interactive: true)
-                .accessibilityLabel(context.strings.cancel)
+                Button(action: dismiss) { Image(systemName: "xmark") }
+                    .ruyioGlassButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.large)
+                    .help(context.strings.cancel)
+                    .accessibilityLabel(context.strings.cancel)
             }
         }
         .padding(.leading, 4)
@@ -87,27 +76,15 @@ public struct CollectionPanelView: View {
 
     var searchRow: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField(spec.searchPlaceholder, text: $query)
-                    .textFieldStyle(.plain)
-                    .focused($searchFocused)
-                    .accessibilityLabel(spec.searchPlaceholder)
-                    .onChange(of: query) { _, newValue in
-                        debounce?.cancel()
-                        debounce = Task {
-                            try? await Task.sleep(for: .milliseconds(150))
-                            guard !Task.isCancelled else { return }
-                            context.send(.searchChanged(newValue))
-                        }
+            NativeSearchField(text: $query, placeholder: spec.searchPlaceholder)
+                .onChange(of: query) { _, newValue in
+                    debounce?.cancel()
+                    debounce = Task {
+                        try? await Task.sleep(for: .milliseconds(150))
+                        guard !Task.isCancelled else { return }
+                        context.send(.searchChanged(newValue))
                     }
-                if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
-                        .buttonStyle(.plain)
                 }
-            }
-            .padding(.horizontal, 10).frame(height: 32)
-            .background(Capsule().fill(Color.primary.opacity(0.07)))
             if !spec.filters.isEmpty {
                 Picker("", selection: Binding(get: { spec.selectedFilter ?? spec.filters.first?.id ?? "" }, set: { context.send(.filterChanged($0)) })) {
                     ForEach(spec.filters, id: \.id) { Text($0.title).tag($0.id) }
@@ -115,6 +92,7 @@ public struct CollectionPanelView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
+                .controlSize(.large)
             }
         }
     }
@@ -128,7 +106,6 @@ public struct CollectionPanelView: View {
             Spacer()
             ForEach(banner.actions, id: \.id) { action in
                 Button(action.title) { context.send(.invoke(actionID: action.id, itemID: nil)) }
-                    .controlSize(.small)
                     .ruyioGlassButton()
             }
         }
@@ -136,7 +113,7 @@ public struct CollectionPanelView: View {
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(tone.opacity(banner.tone == .info ? 0.08 : 0.14)))
     }
 
-    // MARK: List
+    // MARK: List and preview
 
     var listCard: some View {
         Group {
@@ -144,33 +121,23 @@ public struct CollectionPanelView: View {
                 EmptyStateView(spec: empty, context: context)
             } else {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            let items = spec.list.items
-                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                                let selected = item.id == context.localSelection
-                                ItemRow(item: item, context: context, isSelected: selected)
-                                    .id(item.id)
-                                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                    .onTapGesture {
-                                        // Double-click pastes; single-click selects without waiting for a second tap.
-                                        if NSApp.currentEvent?.clickCount == 2 {
-                                            context.send(.invoke(actionID: "paste", itemID: item.id))
-                                        } else {
-                                            context.select(item.id)
-                                        }
-                                    }
-                                    .onAppear {
-                                        if item.id == items.last?.id, let cursor = spec.list.nextCursor { context.send(.loadNextPage(cursor: cursor)) }
-                                    }
-                                if index < items.count - 1 && !selected && items[index + 1].id != context.localSelection {
-                                    Divider().padding(.leading, 52).padding(.trailing, 10)
+                    List(selection: Binding(get: { context.localSelection }, set: { id in if let id { context.select(id) } })) {
+                        ForEach(spec.list.items) { item in
+                            ItemRow(item: item, context: context)
+                                .tag(item.id)
+                                .id(item.id)
+                                .onAppear {
+                                    if item.id == spec.list.items.last?.id, let cursor = spec.list.nextCursor { context.send(.loadNextPage(cursor: cursor)) }
                                 }
-                            }
                         }
-                        .padding(6)
                     }
-                    .scrollIndicators(.automatic)
+                    .listStyle(.inset)
+                    .scrollContentBackground(.hidden)
+                    .alternatingRowBackgrounds(.disabled)
+                    // Native double-click / Return-on-row handling; item menus come from the row.
+                    .contextMenu(forSelectionType: String.self) { _ in } primaryAction: { ids in
+                        if let id = ids.first { context.send(.invoke(actionID: "paste", itemID: id)) }
+                    }
                     .onChange(of: context.localSelection) { _, id in if let id { proxy.scrollTo(id) } }
                 }
             }
@@ -189,39 +156,45 @@ public struct CollectionPanelView: View {
         .ruyioCard(radius: 18)
     }
 
-    // MARK: Hint bar
+    // MARK: Action bar
 
-    var footer: some View {
+    /// Native glass buttons; the default action is prominent, shortcuts appear in tooltips and in the
+    /// overflow menu, which lists every action with its key equivalent.
+    var actionBar: some View {
         let selection = context.localSelection
         let keyed = spec.footerActions.filter { $0.shortcut != nil }
-        let others = spec.footerActions.filter { $0.shortcut == nil }
-        return HStack(spacing: 14) {
-            ForEach(keyed, id: \.id) { action in
-                Button { context.send(.invoke(actionID: action.id, itemID: selection)) } label: {
-                    HStack(spacing: 5) {
-                        KeyCap(Self.symbol(for: action.shortcut ?? ""))
-                        Text(action.title).font(.callout)
+        return GlassGroup(spacing: 8) {
+            HStack(spacing: 8) {
+                ForEach(keyed, id: \.id) { action in
+                    let button = Button(role: action.isDestructive ? .destructive : nil) {
+                        context.send(.invoke(actionID: action.id, itemID: selection))
+                    } label: {
+                        Text(action.title)
                     }
-                    .foregroundStyle(action.isDestructive ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .help("\(action.title)  \(Self.symbol(for: action.shortcut ?? ""))")
+                    .disabled(selection == nil)
+                    if action.isDefault { button.ruyioGlassButton(prominent: true) } else { button.ruyioGlassButton() }
                 }
-                .buttonStyle(.plain)
-                .disabled(selection == nil)
-            }
-            if !others.isEmpty {
+                Spacer(minLength: 0)
                 Menu {
-                    ForEach(others, id: \.id) { action in
-                        Button(action.title, role: action.isDestructive ? .destructive : nil) { context.send(.invoke(actionID: action.id, itemID: nil)) }
+                    ForEach(spec.footerActions, id: \.id) { action in
+                        Button(role: action.isDestructive ? .destructive : nil) {
+                            context.send(.invoke(actionID: action.id, itemID: action.shortcut == nil ? nil : selection))
+                        } label: {
+                            Text(action.title)
+                            if let shortcut = action.shortcut { Text(Self.symbol(for: shortcut)) }
+                        }
                     }
                 } label: {
-                    Image(systemName: "ellipsis").frame(width: 18, height: 18)
+                    Image(systemName: "ellipsis")
                 }
-                .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .ruyioGlassButton()
+                .buttonBorderShape(.circle)
                 .fixedSize()
             }
+            .controlSize(.large)
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
-        .ruyioGlass(in: Capsule())
     }
 
     @ViewBuilder
@@ -231,11 +204,9 @@ public struct CollectionPanelView: View {
                 Text(undo.text).font(.callout)
                 Button(context.strings.undo) { context.send(.undo(token: undo.token)) }
                     .keyboardShortcut("z", modifiers: .command)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .fontWeight(.semibold)
+                    .ruyioGlassButton()
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
+            .padding(.leading, 16).padding(.trailing, 6).padding(.vertical, 6)
             .ruyioGlass(in: Capsule())
             .accessibilityElement(children: .contain)
         }

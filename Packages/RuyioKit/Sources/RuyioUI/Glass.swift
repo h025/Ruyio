@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // Liquid Glass on macOS 26+ with material fallbacks on macOS 15, so callers stay free of availability checks.
@@ -109,5 +110,64 @@ public struct SymbolBadge: View {
         case "star", "star.fill": return .yellow
         default: return .blue
         }
+    }
+}
+
+/// AppKit's own search field (magnifier, clear button, Liquid Glass styling) for SwiftUI. Takes focus
+/// when it joins a window, since floating panels open straight into typing.
+public struct NativeSearchField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    var controlSize: NSControl.ControlSize
+
+    public init(text: Binding<String>, placeholder: String, controlSize: NSControl.ControlSize = .large) {
+        _text = text
+        self.placeholder = placeholder
+        self.controlSize = controlSize
+    }
+
+    public func makeNSView(context: Context) -> NSSearchField {
+        let field = FocusingSearchField()
+        field.placeholderString = placeholder
+        field.delegate = context.coordinator
+        field.sendsSearchStringImmediately = true
+        field.controlSize = controlSize
+        field.font = .systemFont(ofSize: NSFont.systemFontSize(for: controlSize))
+        field.setAccessibilityLabel(placeholder)
+        field.stringValue = text
+        return field
+    }
+
+    public func updateNSView(_ field: NSSearchField, context: Context) {
+        if field.stringValue != text { field.stringValue = text }
+    }
+
+    public func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    public final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        public func controlTextDidChange(_ notification: Notification) {
+            if let field = notification.object as? NSTextField { text.wrappedValue = field.stringValue }
+        }
+    }
+
+    final class FocusingSearchField: NSSearchField {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, window.firstResponder !== self.currentEditor() else { return }
+                window.makeFirstResponder(self)
+            }
+        }
+    }
+}
+
+public extension View {
+    /// Floating panels never activate Ruyio (the previous app stays frontmost), which would otherwise draw
+    /// every native control in its dimmed inactive state. The panel is the key window, so render it as one.
+    func keyWindowControls() -> some View {
+        environment(\.controlActiveState, .key)
     }
 }
