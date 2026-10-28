@@ -341,3 +341,47 @@ struct ClipboardHistoryRegressionTests {
         #expect(reps[1].text == html)
     }
 }
+
+extension ClipboardHistoryRegressionTests {
+    @Test func onlyWholeObjectsAndArraysCountAsJSON() {
+        for text in [#"{"a": 1}"#, "  [1, 2, {\"b\": null}]\n", "{}", "[]"] { #expect(JSONDetection.isStructured(text), "\(text)") }
+        for text in ["42", "true", #""quoted""#, "{not json}", "[1, 2", "plain words", #"{"a": 1} trailing"#] {
+            #expect(!JSONDetection.isStructured(text), "\(text)")
+        }
+    }
+
+    @Test func jsonIsFlaggedFilteredAndPreviewedAsJSON() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        let source = #"{"b": 1, "a": [true, null]}"#
+        let json = try await fixture.plugin.makeRecord(fixture.clip(source), kind: .text, fingerprint: "json", date: Date(timeIntervalSince1970: 2))
+        let plain = try await fixture.plugin.makeRecord(fixture.clip("just words"), kind: .text, fingerprint: "plain", date: Date(timeIntervalSince1970: 1))
+        #expect(json.isJSON == true && plain.isJSON == false)
+        fixture.host.insert(try json.document())
+        fixture.host.insert(try plain.document())
+        _ = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        let reply = try await fixture.plugin.handleViewEvent(ViewEventRequest(viewID: "history", revision: 0, event: .filterChanged("json")))
+        guard case .collection(let collection)? = reply.document?.root else { Issue.record("Expected collection"); return }
+        #expect(collection.filters.map(\.id) == ["all", "text", "json", "image", "url", "file", "favorite"])
+        #expect(collection.list.items.map(\.id) == [json.id])
+        #expect(collection.list.items.first?.symbol == "curlybraces")
+        guard case .stack(let stack)? = collection.preview else { Issue.record("Expected preview"); return }
+        #expect(stack.children.contains(.json(source)))
+    }
+
+    @Test func recordsFromBeforeDetectionAreFlaggedOnce() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        var old = try await fixture.plugin.makeRecord(fixture.clip(#"[{"id": 1}]"#), kind: .text, fingerprint: "old", date: Date())
+        old.isJSON = nil
+        var words = try await fixture.plugin.makeRecord(fixture.clip("words"), kind: .text, fingerprint: "words", date: Date())
+        words.isJSON = nil
+        fixture.host.insert(try old.document())
+        fixture.host.insert(try words.document())
+        await fixture.plugin.flagJSONInEarlierRecords()
+        let stored = fixture.host.lock.withLock { fixture.host.docs }
+        #expect(stored["records/\(old.id)"]?.fields["json"] == .bool(true))
+        #expect(stored["records/\(words.id)"]?.fields["json"] == .bool(false))
+        #expect(stored["settings/json-detection-v1"] != nil)
+    }
+}

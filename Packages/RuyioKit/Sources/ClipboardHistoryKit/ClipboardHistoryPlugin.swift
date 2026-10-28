@@ -75,6 +75,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         await purgeExpiredSoftDeletes()
         await applyRetention()
         await MainActor.run { self.setUpMonitor() }
+        Task { await self.flagJSONInEarlierRecords() }
         await publishDynamicItems()
         // Retention is a promise about the past, not about the next copy: enforce it on a clock too.
         let task = Task { [weak self] in
@@ -88,6 +89,30 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             }
         }
         lock.withLock { maintenanceTask = task }
+    }
+
+    /// Records captured before JSON detection get their flag once, so the JSON filter finds them too.
+    func flagJSONInEarlierRecords() async {
+        let marker = StorageKey(collection: Self.settingsKey.collection, id: "json-detection-v1")
+        guard (try? await context.storage.get(collection: marker.collection, id: marker.id)) == nil else { return }
+        var cursor: String?
+        repeat {
+            guard let page = try? await context.storage.query(StorageQuery(
+                collection: ClipRecord.collection, filters: [StorageFilter(field: "kind", value: .string("text"))], limit: 200, cursor: cursor))
+            else { return }
+            for document in page.documents {
+                guard let record = try? ClipRecord(from: document), record.isJSON == nil,
+                      let text = record.plainText(), JSONDetection.isStructured(text) else { continue }
+                try? await mutations.run {
+                    guard var current = try await self.record(record.id), current.isJSON == nil else { return }
+                    current.isJSON = true
+                    try await self.context.storage.put(try current.document())
+                }
+            }
+            cursor = page.nextCursor
+        } while cursor != nil
+        try? await context.storage.put(StoredDocument(collection: marker.collection, id: marker.id, body: .bool(true)))
+        refreshOpenView()
     }
 
     public func shutdown() async {
@@ -266,6 +291,8 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         record.imageSize = imageSize
         record.fileNames = fileNames.isEmpty ? nil : fileNames
         record.filePaths = filePaths.isEmpty ? nil : filePaths
+        // Decided on the full text, before large text moves to blobs.
+        if kind == .text || kind == .richText { record.isJSON = record.plainText().map(JSONDetection.isStructured) ?? false }
         let storage = context.storage
         try await Self.fitDocument(&record) { try await storage.putBlob($0) }
         return record
@@ -746,6 +773,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         var filters = [StorageFilter(field: "deleted", value: false)]
         switch state.filter {
         case "text", "image", "url", "file": filters.append(StorageFilter(field: "kind", value: .string(state.filter)))
+        case "json": filters.append(StorageFilter(field: "json", value: true))
         case "favorite": filters.append(StorageFilter(field: "favorite", value: true))
         default: break
         }
@@ -874,8 +902,8 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         let rows = items.map { record -> ListItem in
             let symbol: String
             switch record.kind {
-            case .text: symbol = "doc.plaintext"
-            case .richText: symbol = "doc.richtext"
+            case .text: symbol = record.isJSON == true ? "curlybraces" : "doc.plaintext"
+            case .richText: symbol = record.isJSON == true ? "curlybraces" : "doc.richtext"
             case .image: symbol = "photo"
             case .url: symbol = "link"
             case .file: symbol = "doc"
@@ -914,7 +942,8 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             : EmptySpec(title: s.noResults, action: ItemAction(id: "clear-filters", title: s.clearFilters))
         let spec = CollectionSpec(
             searchText: query, searchPlaceholder: s.searchPlaceholder,
-            filters: [FilterOption(id: "all", title: s.all), FilterOption(id: "text", title: s.text), FilterOption(id: "image", title: s.image),
+            filters: [FilterOption(id: "all", title: s.all), FilterOption(id: "text", title: s.text), FilterOption(id: "json", title: s.json),
+                      FilterOption(id: "image", title: s.image),
                       FilterOption(id: "url", title: s.link), FilterOption(id: "file", title: s.file), FilterOption(id: "favorite", title: s.favorites)],
             selectedFilter: filter,
             // Infinite scroll over a bounded window keeps every entry reachable within the schema limits.
@@ -960,7 +989,12 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         case .url:
             children.append(.text(TextSpec(record.plainText() ?? record.title, style: .body)))
         case .text, .richText:
-            children.append(.text(TextSpec(String((record.plainText() ?? record.title).prefix(20_000)), style: .body)))
+            if record.isJSON == true, let text = record.plainText() {
+                // The host indents and colours it; the cut keeps the view well inside one message.
+                children.append(.json(String(text.prefix(100_000))))
+            } else {
+                children.append(.text(TextSpec(String((record.plainText() ?? record.title).prefix(20_000)), style: .body)))
+            }
         }
         children.append(.keyValue(rows))
         return .stack(StackSpec(children: children))

@@ -29,6 +29,9 @@ public struct SchemaNodeView: View {
             Text(Self.inertMarkdown(text)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         case .code(let text):
             Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+        case .json(let text):
+            Text(JSONFormatting.highlighted(JSONFormatting.indented(text)))
+                .font(.system(.callout, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         case .image(let spec):
             BlobImageView(blobID: spec.blobID, context: context, label: spec.accessibilityLabel, maxHeight: 360)
         case .keyValue(let rows):

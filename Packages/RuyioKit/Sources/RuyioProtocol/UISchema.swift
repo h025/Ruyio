@@ -22,6 +22,9 @@ public indirect enum UINode: Sendable, Hashable {
     case text(TextSpec)
     case markdown(String)
     case code(String)
+    /// JSON text as copied; the host shows it indented and highlighted, keeping key order. Text that is
+    /// cut short or not valid JSON still shows, just less tidily.
+    case json(String)
     case image(ImageSpec)
     case keyValue([KeyValueRow])
     case form(FormSpec)
@@ -44,6 +47,7 @@ extension UINode: Codable {
         case "text": self = .text(try c.decode(TextSpec.self, forKey: .spec))
         case "markdown": self = .markdown(try c.decode(String.self, forKey: .spec))
         case "code": self = .code(try c.decode(String.self, forKey: .spec))
+        case "json": self = .json(try c.decode(String.self, forKey: .spec))
         case "image": self = .image(try c.decode(ImageSpec.self, forKey: .spec))
         case "keyValue": self = .keyValue(try c.decode([KeyValueRow].self, forKey: .spec))
         case "form": self = .form(try c.decode(FormSpec.self, forKey: .spec))
@@ -65,6 +69,7 @@ extension UINode: Codable {
         case .text(let s): try c.encode("text", forKey: .type); try c.encode(s, forKey: .spec)
         case .markdown(let s): try c.encode("markdown", forKey: .type); try c.encode(s, forKey: .spec)
         case .code(let s): try c.encode("code", forKey: .type); try c.encode(s, forKey: .spec)
+        case .json(let s): try c.encode("json", forKey: .type); try c.encode(s, forKey: .spec)
         case .image(let s): try c.encode("image", forKey: .type); try c.encode(s, forKey: .spec)
         case .keyValue(let s): try c.encode("keyValue", forKey: .type); try c.encode(s, forKey: .spec)
         case .form(let s): try c.encode("form", forKey: .type); try c.encode(s, forKey: .spec)

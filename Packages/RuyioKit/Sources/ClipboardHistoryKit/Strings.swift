@@ -12,6 +12,7 @@ struct Strings {
     var text: String { t("文本", "Text") }
     var image: String { t("图片", "Images") }
     var link: String { t("链接", "Links") }
+    var json: String { "JSON" }
     var file: String { t("文件", "Files") }
     var favorites: String { t("收藏", "Favorites") }
     var paste: String { t("粘贴", "Paste") }

@@ -32,6 +32,8 @@ public struct ClipRecord: Codable, Sendable, Hashable, Identifiable {
     public var imageSize: [Int]?
     public var fileNames: [String]?
     public var filePaths: [String]?
+    /// Text that is a whole JSON object or array; nil for records captured before detection existed.
+    public var isJSON: Bool?
 
     public static let collection = "records"
 
@@ -58,6 +60,7 @@ public struct ClipRecord: Codable, Sendable, Hashable, Identifiable {
                 "kind": .string(kind.filter),
                 "favorite": .bool(favorite),
                 "deleted": .bool(deletedAt != nil),
+                "json": .bool(isJSON == true),
                 "fingerprint": .string(fingerprint),
                 "lastCopiedAt": .number(lastCopiedAt.timeIntervalSince1970),
             ],
@@ -97,5 +100,19 @@ public enum ClipText {
 
     public static func searchText(for text: String) -> String {
         String(text.prefix(64 * 1024))
+    }
+}
+
+/// Whole-text JSON objects and arrays. Bare scalars are valid JSON too, but would turn every copied number
+/// or "true" into a JSON record.
+public enum JSONDetection {
+    public static let maxBytes = 4 << 20
+
+    public static func isStructured(_ text: String) -> Bool {
+        guard text.utf8.count <= maxBytes else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first, let last = trimmed.last,
+              (first == "{" && last == "}") || (first == "[" && last == "]") else { return false }
+        return (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) != nil
     }
 }
