@@ -451,7 +451,6 @@ struct FinderMenuSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(l.manageFinderMenu.replacingOccurrences(of: "…", with: "")).font(.headline)
             List {
-                Text("Ruyio ›").foregroundStyle(.secondary)
                 ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                     Section {
                         ForEach(Array(group.items.enumerated()), id: \.element.id) { itemIndex, item in

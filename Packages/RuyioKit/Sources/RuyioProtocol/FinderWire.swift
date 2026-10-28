@@ -69,7 +69,7 @@ public struct FinderMenuSnapshot: Codable, Sendable, Hashable {
         public var selection: [String]
         public var requiresWritableTarget: Bool
         public var requiresClipboardKind: [String]?
-        /// When present, the item expands inline into these children (no fourth level).
+        /// When present, the item expands inline into these children inside its plugin group.
         public var children: [Child]?
         public var needsInput: Bool
 
@@ -102,6 +102,7 @@ public struct FinderMenuSnapshot: Codable, Sendable, Hashable {
     public var generatedAt: Date
     public var dynamicGeneratedAt: Date?
     public var locale: String
+    /// Kept for older extension processes; current menus insert plugin groups directly into Finder.
     public var rootTitle: String
     public var groups: [Group]
     /// Kinds currently on the pasteboard ("text", "image", "url", "file"), for context filtering.

@@ -60,7 +60,8 @@ final class FinderSync: FIFinderSync {
         menuClickLocation = menuKind == .contextualMenuForContainer ? NSEvent.mouseLocation : nil
 
         guard let snapshot else {
-            let item = NSMenuItem(title: "Ruyio › Open Ruyio to Load", action: #selector(openHost(_:)), keyEquivalent: "")
+            let title = Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "打开 Ruyio 以加载工具" : "Open Ruyio to Load Tools"
+            let item = NSMenuItem(title: title, action: #selector(openHost(_:)), keyEquivalent: "")
             item.target = self
             menu.addItem(item)
             return menu
@@ -71,13 +72,12 @@ final class FinderSync: FIFinderSync {
             selectionCount: selection.count, selectionHasDirectories: !directories.isEmpty,
             selectionHasFiles: directories.count < selection.count, clipboardKinds: snapshot.clipboardKinds)
 
-        let root = NSMenu(title: snapshot.rootTitle)
         var tag = menuBuild * 10_000 + 1
         for group in snapshot.groups {
             let submenu = NSMenu(title: group.title)
             for item in group.items where FinderContextMatcher.applies(item, to: context) {
                 if let children = item.children {
-                    // Dynamic children expand inline inside the plugin group: no fourth level (PRD §7.3).
+                    // Dynamic children expand inline inside the plugin group, without another submenu.
                     for child in children {
                         submenu.addItem(menuItem(child.title, tag: tag))
                         pending[tag] = (group, item, child.id)
@@ -93,15 +93,10 @@ final class FinderSync: FIFinderSync {
             guard !submenu.items.isEmpty else { continue }
             let groupItem = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
             groupItem.submenu = submenu
-            root.addItem(groupItem)
+            menu.addItem(groupItem)
         }
-        // The root menu exists only when at least one action applies.
-        guard !root.items.isEmpty else { return nil }
-        let rootItem = NSMenuItem(title: snapshot.rootTitle, action: nil, keyEquivalent: "")
-        rootItem.submenu = root
-        rootItem.image = NSImage(named: "MenuBarIcon")
-        menu.addItem(rootItem)
-        return menu
+        // Finder inserts these plugin groups directly into its context menu.
+        return menu.items.isEmpty ? nil : menu
     }
 
     /// The sandbox may refuse resource values for arbitrary files; Finder folder URLs end with "/".

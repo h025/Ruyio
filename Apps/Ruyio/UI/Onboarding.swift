@@ -244,7 +244,7 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 summaryRow(clipboardName, shortcut: clipboardShortcut ?? l.notSet, ok: state.clipboardDone)
                 Divider().padding(.leading, 14)
-                summaryRow(l.finderExtension, shortcut: "Ruyio ›", ok: model.finderExtensionEnabled)
+                summaryRow(l.finderExtension, shortcut: l.t("右键菜单", "Context Menu"), ok: model.finderExtensionEnabled)
                 Divider().padding(.leading, 14)
                 summaryRow(l.commandPalette, shortcut: model.settings.commandPaletteShortcut.flatMap(KeyShortcut.init(manifestString:))?.displayString ?? l.notSet, ok: nil)
             }
