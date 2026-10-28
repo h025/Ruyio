@@ -13,7 +13,8 @@ final class MediaDecoder: NSObject, RuyioMediaDecoding {
     static let maxSourcePixels = 40_000_000
 
     func decodeThumbnail(_ data: Data, maxPixel: Int, reply: @escaping (Data?, Int, Int) -> Void) {
-        let limit = max(16, min(maxPixel, 2048))
+        // 8192 lets pinned Retina screenshots keep their full resolution; thumbnails ask for far less.
+        let limit = max(16, min(maxPixel, 8192))
         guard data.count <= Self.maxInputBytes,
               let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let type = CGImageSourceGetType(source) as String?, ["public.png", "public.jpeg", "public.tiff", "public.heic"].contains(type),

@@ -6,8 +6,9 @@
 # code requirement"). With this identity the designated requirement is the bundle id plus the local
 # certificate, which stays the same across builds.
 #
-# Only the outer app is re-signed. Nested code and the packaged default plugins keep their build
-# signatures, so plugin identities and data directories are unaffected.
+# Only the outer app and the helpers that hold their own grants (Contents/Helpers) are re-signed. Other
+# nested code and the packaged default plugins keep their build signatures, so plugin identities and data
+# directories are unaffected.
 #
 # Usage: Scripts/install-local.sh [path/to/Ruyio.app]   (no argument: build Release first)
 set -eu
@@ -64,6 +65,12 @@ STAGE="$ROOT/build/install-staging/Ruyio.app"
 rm -rf "$ROOT/build/install-staging"
 mkdir -p "$ROOT/build/install-staging"
 /usr/bin/ditto "$SRC" "$STAGE"
+# Inside out: the capture helper holds Screen Recording, so it needs the stable identity too.
+for HELPER in "$STAGE"/Contents/Helpers/*.app; do
+  [ -d "$HELPER" ] || continue
+  /usr/bin/codesign --force --sign "$HASH" --keychain "$KEYCHAIN" \
+    --preserve-metadata=entitlements,flags,runtime --timestamp=none "$HELPER"
+done
 /usr/bin/codesign --force --sign "$HASH" --keychain "$KEYCHAIN" \
   --preserve-metadata=entitlements,flags,runtime --timestamp=none "$STAGE"
 /usr/bin/codesign --verify --deep --strict "$STAGE"
@@ -88,7 +95,9 @@ rm -rf "$ROOT/build/install-staging"
 # Grants recorded for a different signature can never match again, and toggling the switch does not
 # rewrite them; clear them so macOS asks afresh for this identity.
 if [ "$OLD_REQ" != "$NEW_REQ" ]; then
-  /usr/bin/tccutil reset All app.ruyio.mac >/dev/null
+  for ID in app.ruyio.mac app.ruyio.mac.CaptureHelper; do
+    /usr/bin/tccutil reset All "$ID" >/dev/null 2>&1 || true
+  done
   RESET=1
 else
   RESET=0

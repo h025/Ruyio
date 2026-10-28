@@ -167,7 +167,7 @@ public final class HostEngine: @unchecked Sendable {
     public func requiresFreshData(for preview: InstallPreview) throws -> Bool {
         let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
                                                  executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
-                                                 signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust == .development,
+                                                 signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust.isDevelopment,
                                                  isDefault: false, updateChannel: .none)
         do {
             _ = try retainedGeneration(for: proposed, choice: .keepCompatible)
@@ -312,7 +312,7 @@ public final class HostEngine: @unchecked Sendable {
         }
         let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
                                                  executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
-                                                 signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust == .development,
+                                                 signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust.isDevelopment,
                                                  isDefault: false, updateChannel: updateChannel)
         let kept: Int?
         do { kept = try retainedGeneration(for: proposed, choice: dataChoice) }
@@ -329,6 +329,7 @@ public final class HostEngine: @unchecked Sendable {
         get { lock.withLock { _developerMode } }
         set {
             lock.withLock { _developerMode = newValue }
+            Task { [markets] in await markets.setDeveloperMode(newValue) }
             if !newValue {
                 // Turning developer mode off disables every development plugin (PRD §13).
                 Task {

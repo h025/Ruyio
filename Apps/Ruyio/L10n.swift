@@ -208,6 +208,8 @@ struct L10n {
         case .pasteAutomatic: return t("自动粘贴", "Automatic paste")
         case .background: return t("后台运行", "Run in background")
         case .networkClient: return t("网络访问（互联网、本机及局域网）", "Network (internet, this Mac and local network)")
+        case .screenCapture: return t("截取你框选的屏幕区域", "Capture the screen area you select")
+        case .windowsPin: return t("在其他窗口上方显示图片", "Show images above other windows")
         }
     }
     var auditedNote: String { t("原生插件可能绕过声明直接访问剪贴板；如需阻止，请停用或卸载插件。", "Native plugins can bypass declarations to read the clipboard; disable or uninstall the plugin to stop it.") }
@@ -231,7 +233,7 @@ struct L10n {
     var includeInBackup: String { t("插件数据包含在 Time Machine 备份中", "Include plugin data in Time Machine backups") }
     var advanced: String { t("高级", "Advanced") }
     var developerMode: String { t("开发者模式", "Developer Mode") }
-    var developerModeWarning: String { t("开发者插件可以访问你的数据，且未经 Apple 公证。仅加载你信任的本地插件。", "Developer plugins can access your data and are not notarized by Apple. Only load local plugins you trust.") }
+    var developerModeWarning: String { t("开发者插件可以访问你的数据，且未经 Apple 公证。开启后，本地插件包和市场中未公证的插件都会作为开发者插件安装；关闭后它们会被停用。仅安装你信任的插件。", "Developer plugins can access your data and are not notarized by Apple. While this is on, local packages and un-notarized market plugins install as developer plugins; turning it off disables them. Only install plugins you trust.") }
     var loadDevelopmentPlugin: String { t("选择本地开发插件…", "Choose Local Development Plugin…") }
     var help: String { t("帮助", "Help") }
     var rerunOnboarding: String { t("重新运行首次引导", "Run Onboarding Again") }

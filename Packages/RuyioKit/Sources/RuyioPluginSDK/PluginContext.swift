@@ -183,6 +183,20 @@ public final class CapabilityClient: Sendable {
         _ = try await peer.request(CapabilityMethod.fileReveal, payload: JSONCoding.value(RevealRequest(paths: paths)))
     }
 
+    /// Lets the user select part of the screen with the system screenshot UI. Throws `cancelled` when the
+    /// user cancels. The image lands in this plugin's blob store; reference it from a document to keep it.
+    /// Only available inside `perform` for that execution; declare the action with `hasSideEffects` so its
+    /// longer timeout covers the selection.
+    public func captureScreen(execution: ExecutionID) async throws -> ScreenCaptureReply {
+        try await peer.request(CapabilityMethod.screenCapture, payload: .null, executionID: execution, timeout: .seconds(115))
+            .decoded(as: ScreenCaptureReply.self)
+    }
+
+    /// Pins an image from this plugin's blob store above other windows.
+    public func pinImage(blobID: String, scale: Double) async throws {
+        _ = try await peer.request(CapabilityMethod.windowPin, payload: JSONCoding.value(PinImageRequest(blobID: blobID, scale: scale)))
+    }
+
     public func toggleHiddenFiles() async throws -> Bool {
         try await peer.request(CapabilityMethod.finderToggleHiddenFiles, payload: .null).decoded(as: Bool.self)
     }

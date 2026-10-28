@@ -34,7 +34,7 @@ final class MediaDecoderClient: @unchecked Sendable {
     }
 
     func image(from data: Data, maxPixel: Int = 1024) async -> NSImage? {
-        let limit = max(16, min(maxPixel, 2048))
+        let limit = max(16, min(maxPixel, 8192))
         let result: (Data?, Int, Int) = await withCheckedContinuation { continuation in
             let once = OnceBox()
             let finish: (Data?, Int, Int) -> Void = { pixels, w, h in

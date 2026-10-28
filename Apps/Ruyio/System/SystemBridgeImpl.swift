@@ -96,6 +96,23 @@ final class SystemBridgeImpl: SystemBridge, @unchecked Sendable {
         await MainActor.run { model?.show(model?.l.hiddenFilesHowTo ?? "") }
         throw RuyioError(.cancelled, diagnostic: "hidden files: instructions shown")
     }
+
+    func captureScreen() async throws -> CapturedScreen {
+        try await CaptureService.shared.capture(model: await MainActor.run { model })
+    }
+
+    func pinImage(_ data: Data, scale: Double, pluginID: PluginID) async throws {
+        // The bytes come from the plugin's store: decode them in the sandboxed service, never in the host.
+        guard let image = await MediaDecoderClient.shared.image(from: data, maxPixel: 8192) else {
+            throw RuyioError(.invalidRequest, diagnostic: "not a decodable image")
+        }
+        let manifest = await model?.engine.registry.manifest(pluginID)
+        await MainActor.run {
+            let l = model?.l ?? L10n("en")
+            let name = manifest?.displayName(locale: model?.language ?? "en").text ?? pluginID.rawValue
+            PinnedImages.shared.pin(image, scale: scale, pluginName: name, l: l)
+        }
+    }
 }
 
 enum FinderExtensionStatus {
@@ -119,6 +136,10 @@ enum SystemSettings {
 
     static func openFilesAndFolders() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+    }
+
+    static func openScreenRecording() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
     }
 
     static func openPasteboardPrivacy() {

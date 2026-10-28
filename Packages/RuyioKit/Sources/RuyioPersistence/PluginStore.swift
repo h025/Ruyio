@@ -262,6 +262,20 @@ public final class PluginStore: Sendable {
         return BlobPutReply(uploadID: uploadID, blobID: blobID)
     }
 
+    /// Whole-blob write for the host's own use (e.g. a capture delivered to the plugin), through the same
+    /// chunked, quota-checked path as plugin uploads.
+    public func putBlob(_ data: Data) throws -> String {
+        var uploadID: String?
+        var offset = 0
+        repeat {
+            let end = min(offset + StorageLimits.blobChunkBytes, data.count)
+            let reply = try appendUpload(BlobPutRequest(uploadID: uploadID, chunk: data.subdata(in: offset..<end), isFinal: end == data.count))
+            if let blobID = reply.blobID { return blobID }
+            uploadID = reply.uploadID
+            offset = end
+        } while true
+    }
+
     public func readBlob(_ request: BlobGetRequest) throws -> BlobGetReply {
         guard Self.isValidBlobID(request.blobID),
               try dbQueue.read({ db in try Bool.fetchOne(db, sql: "SELECT 1 FROM blob WHERE id = ?", arguments: [request.blobID]) }) == true

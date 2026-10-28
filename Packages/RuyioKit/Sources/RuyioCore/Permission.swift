@@ -10,11 +10,15 @@ public enum Permission: String, Codable, Sendable, CaseIterable, Comparable {
     case pasteAutomatic = "paste.automatic"
     case background = "background"
     case networkClient = "network.client"
+    /// Interactive screen capture: the user selects the region; the plugin receives only that image.
+    case screenCapture = "screen.capture"
+    /// Host-drawn, always-on-top image windows (pinned screenshots).
+    case windowsPin = "windows.pin"
 
     public var enforcement: EnforcementLevel {
         switch self {
         case .clipboardRead: return .declaredAudited
-        case .clipboardWrite, .filesReadSelected, .filesWrite, .appsOpen, .pasteAutomatic: return .hostMediated
+        case .clipboardWrite, .filesReadSelected, .filesWrite, .appsOpen, .pasteAutomatic, .screenCapture, .windowsPin: return .hostMediated
         case .background: return .hostLifecycle
         case .networkClient: return .systemEnforced
         }

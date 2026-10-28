@@ -114,6 +114,7 @@ public actor ActionRouter {
         }
         let timeout = action.hasSideEffects ? Self.sideEffectTimeout : Self.defaultTimeout
         running[execution] = (ref, nil)
+        contexts.begin(execution, for: ref.pluginID)
         defer {
             running[execution] = nil
             contexts.revokeAll(for: execution)

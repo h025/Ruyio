@@ -29,6 +29,7 @@ public final class InvocationContexts: @unchecked Sendable {
     private let lock = NSLock()
     private var grants: [String: Grant] = [:]
     private var ended: [ExecutionID: Date] = [:]
+    private var running: [ExecutionID: PluginID] = [:]
     public var lifetime: TimeInterval = 600
     public var uses: Int = 64
 
@@ -77,8 +78,21 @@ public final class InvocationContexts: @unchecked Sendable {
         }
     }
 
+    /// Marks an action execution as running for a plugin until `revokeAll(for:)` ends it.
+    public func begin(_ execution: ExecutionID, for pluginID: PluginID) {
+        lock.withLock { running[execution] = pluginID }
+    }
+
+    /// True while the plugin's own action execution runs: user-initiated work such as a screen capture
+    /// is only available inside it.
+    public func isRunning(_ execution: ExecutionID?, for pluginID: PluginID) -> Bool {
+        guard let execution else { return false }
+        return lock.withLock { running[execution] == pluginID && ended[execution] == nil }
+    }
+
     public func revokeAll(for execution: ExecutionID) {
         lock.withLock {
+            running[execution] = nil
             grants = grants.filter { $0.value.executionID != execution }
             let cutoff = Date().addingTimeInterval(-3600)
             ended = ended.filter { $0.value > cutoff }

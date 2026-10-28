@@ -16,6 +16,23 @@ public protocol SystemBridge: AnyObject, Sendable {
     /// Lets the user pick an application for a role; returns its bundle ID.
     func chooseApplication(role: String) async -> String?
     func toggleFinderHiddenFiles() async throws -> Bool
+    /// Runs the system's interactive screenshot selection; throws `cancelled` when the user cancels.
+    func captureScreen() async throws -> CapturedScreen
+    /// Shows an untrusted image (decoded out of process) in a host-drawn window above other apps.
+    func pinImage(_ data: Data, scale: Double, pluginID: PluginID) async throws
+}
+
+public struct CapturedScreen: Sendable {
+    public var png: Data
+    public var pixelWidth: Int
+    public var pixelHeight: Int
+    public var scale: Double
+    public init(png: Data, pixelWidth: Int, pixelHeight: Int, scale: Double) {
+        self.png = png
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.scale = scale
+    }
 }
 
 /// Opens per-plugin stores bound to the session's identity, mode and generation (plan §8.3).
@@ -268,6 +285,25 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
 
         case CapabilityMethod.finderToggleHiddenFiles:
             return .bool(try await bridge.toggleFinderHiddenFiles())
+
+        case CapabilityMethod.screenCapture:
+            // Only inside an action of this plugin that the user started: a plugin cannot raise the selection
+            // on its own, and a capture finished after the action ended is discarded.
+            guard contexts.isRunning(envelope.executionID, for: pluginID) else {
+                throw RuyioError(.permissionDenied, diagnostic: "screen capture needs a running action")
+            }
+            let capture = try await bridge.captureScreen()
+            guard !contexts.hasEnded(envelope.executionID) else { throw RuyioError(.cancelled) }
+            let blobID = try stores.store(for: session).putBlob(capture.png)
+            return try JSONCoding.value(ScreenCaptureReply(blobID: blobID, pixelWidth: capture.pixelWidth,
+                                                           pixelHeight: capture.pixelHeight, scale: capture.scale))
+
+        case CapabilityMethod.windowPin:
+            let request = try JSONCoding.decode(PinImageRequest.self, from: envelope.payload)
+            guard request.scale.isFinite, (1...4).contains(request.scale) else { throw RuyioError(.invalidRequest, diagnostic: "scale out of range") }
+            let data = try stores.store(for: session).blobData(request.blobID, maxBytes: PinImageRequest.maxBlobBytes)
+            try await bridge.pinImage(data, scale: request.scale, pluginID: pluginID)
+            return .null
 
         default:
             throw RuyioError(.invalidRequest, diagnostic: envelope.method)

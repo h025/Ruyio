@@ -344,10 +344,17 @@ struct PluginInstallPreviewView: View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(preview.checks, id: \.name) { check in
                 HStack {
-                    Image(systemName: check.outcome == .passed ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                        .foregroundStyle(check.outcome == .passed ? .green : .red)
-                    Text(check.name)
-                    if let detail = check.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                    switch check.outcome {
+                    case .passed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                    case .notChecked: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    }
+                    if check.name == "developerMode" {
+                        Text(l.developerModeInstall).foregroundStyle(.orange)
+                    } else {
+                        Text(check.name)
+                        if let detail = check.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                    }
                 }
             }
             // No expected digest for direct packages: never claim a "match" (R21).

@@ -11,6 +11,8 @@ public enum CapabilityMethod {
     public static let fileReveal = "capability.file.reveal"
     public static let finderToggleHiddenFiles = "capability.finder.toggleHiddenFiles"
     public static let operationReceipt = "capability.operation.receipt"
+    public static let screenCapture = "capability.screen.capture"
+    public static let windowPin = "capability.window.pin"
 
     /// Permission required for each method.
     public static func permission(for method: String) -> Permission? {
@@ -18,6 +20,8 @@ public enum CapabilityMethod {
         case clipboardWrite: return .clipboardWrite
         case openWebLink, openTerminalDirectory, openInConfiguredApplication, fileReveal, finderToggleHiddenFiles: return .appsOpen
         case fileWrite: return .filesWrite
+        case screenCapture: return .screenCapture
+        case windowPin: return .windowsPin
         case operationReceipt: return nil
         default: return nil
         }
@@ -56,6 +60,34 @@ public struct ClipboardWriteRequest: Codable, Sendable, Hashable {
 public struct ClipboardWriteReply: Codable, Sendable, Hashable {
     public var changeCount: Int
     public init(changeCount: Int) { self.changeCount = changeCount }
+}
+
+/// Result of an interactive capture. The host stores the PNG in the calling plugin's blob store; the plugin
+/// never captures the screen itself and never sees anything the user did not select.
+public struct ScreenCaptureReply: Codable, Sendable, Hashable {
+    public var blobID: String
+    public var pixelWidth: Int
+    public var pixelHeight: Int
+    /// Pixels per point of the screen it came from, so a pin can show it at its on-screen size.
+    public var scale: Double
+    public init(blobID: String, pixelWidth: Int, pixelHeight: Int, scale: Double) {
+        self.blobID = blobID
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.scale = scale
+    }
+}
+
+/// Shows an image from the plugin's blob store in a host-drawn window above other apps.
+public struct PinImageRequest: Codable, Sendable, Hashable {
+    public static let maxBlobBytes = 16 << 20
+    public var blobID: String
+    /// Pixels per point; 1...4.
+    public var scale: Double
+    public init(blobID: String, scale: Double) {
+        self.blobID = blobID
+        self.scale = scale
+    }
 }
 
 public struct WebLinkRequest: Codable, Sendable, Hashable {

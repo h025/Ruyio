@@ -60,6 +60,10 @@ final class TestBridge: SystemBridge, @unchecked Sendable {
     func confirmBatch(title: String, count: Int) async -> Bool { true }
     func chooseApplication(role: String) async -> String? { nil }
     func toggleFinderHiddenFiles() async throws -> Bool { false }
+    var capture: Result<CapturedScreen, RuyioError> = .failure(RuyioError(.cancelled))
+    var pins: [(data: Data, scale: Double, pluginID: PluginID)] = []
+    func captureScreen() async throws -> CapturedScreen { try capture.get() }
+    func pinImage(_ data: Data, scale: Double, pluginID: PluginID) async throws { pins.append((data, scale, pluginID)) }
 }
 
 @Suite(.serialized)

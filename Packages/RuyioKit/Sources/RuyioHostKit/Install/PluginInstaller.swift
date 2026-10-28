@@ -12,6 +12,12 @@ public enum TrustMode: String, Sendable, Hashable {
     case remote
     /// Developer mode: relaxed signing, sandbox still required, never official IDs.
     case development
+    /// A market package installed in developer mode without Developer ID or notarization. Same checks as
+    /// `development` except that the ID may update itself; it is kept apart as a development plugin (own
+    /// data root, disabled when developer mode is turned off).
+    case remoteDevelopment
+
+    public var isDevelopment: Bool { self == .development || self == .remoteDevelopment }
 }
 
 public struct VerificationCheck: Sendable, Hashable {
@@ -99,7 +105,7 @@ public final class PluginInstaller: Sendable {
         let executable = versionDir.appendingPathComponent(preview.manifest.executable)
         return try InstalledPluginRecord(manifest: preview.manifest, installPath: bundle, executablePath: executable,
                                          teamID: preview.signing.teamID, signingIdentifier: preview.signing.identifier,
-                                         isDevelopment: preview.trust == .development, isDefault: isDefault,
+                                         isDevelopment: preview.trust.isDevelopment, isDefault: isDefault,
                                          updateChannel: updateChannel, source: source, artifactSHA256: preview.sha256.isEmpty ? nil : preview.sha256)
     }
 
@@ -169,6 +175,8 @@ public final class PluginInstaller: Sendable {
         case .development:
             check("developmentID", !manifest.id.isOfficialNamespace, "development plugins may not use app.ruyio. IDs")
             check("developmentConflict", !installedIDs.contains(manifest.id), "ID already used by an installed plugin")
+        case .remoteDevelopment:
+            check("developmentID", !manifest.id.isOfficialNamespace, "development plugins may not use app.ruyio. IDs")
         }
         if let expectedSHA256 {
             check("sha256", expectedSHA256.lowercased() == sha256, "SHA-256 mismatch")

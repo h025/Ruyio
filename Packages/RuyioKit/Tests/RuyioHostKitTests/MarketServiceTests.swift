@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import RuyioHostKit
@@ -276,5 +277,27 @@ struct MarketServiceTests {
         #expect(preview.expectedSHA256 == nil)
         #expect(!preview.isInstallable)
         #expect(preview.checks.contains { $0.name == "developerID" && $0.outcome == .failed })
+    }
+
+    @Test func developerModeInstallsUnnotarizedMarketPackagesOnlyAsDevelopmentPlugins() async throws {
+        let fetcher = FakeFetcher()
+        let data = try Data(contentsOf: try PackageFixture.build())
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        fetcher.files["https://example.com/plugins/test/releases/1.0.0/T.ruyioplugin.zip"] = data
+        let engine = try engine(fetcher)
+        let descriptor = try PluginDescriptor.decode(Data("{\"schemaVersion\":1,\"kind\":\"plugin\",\"id\":\"org.ruyio.test-plugin\",\"name\":\"T\",\"releases\":[{\"version\":\"1.0.0\",\"minimumHostVersion\":\"1.0.0\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/1.0.0/T.ruyioplugin.zip\",\"sha256\":\"\(digest)\"}]}".utf8))
+        let url = URL(string: "https://example.com/plugins/test/ruyio-plugin.json")!
+
+        let strict = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
+        #expect(!strict.isInstallable && strict.trust == .remote)
+        engine.installer.discard(strict)
+
+        await engine.markets.setDeveloperMode(true)
+        let relaxed = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
+        #expect(relaxed.isInstallable)
+        #expect(relaxed.trust == .remoteDevelopment && relaxed.trust.isDevelopment)
+        #expect(relaxed.checks.contains { $0.name == "developerMode" && $0.outcome == .notChecked })
+        #expect(relaxed.checks.contains { $0.name == "sha256" && $0.outcome == .passed })
+        engine.installer.discard(relaxed)
     }
 }
