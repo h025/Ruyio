@@ -33,7 +33,9 @@ final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown, let handler = onKeyDown, handler(event) { return }
+        // While an input method is composing (pinyin, kana…), Return, Esc and arrows belong to it.
+        let composing = (firstResponder as? NSTextView)?.hasMarkedText() == true
+        if event.type == .keyDown, !composing, let handler = onKeyDown, handler(event) { return }
         super.sendEvent(event)
     }
 
@@ -56,6 +58,15 @@ enum KeyCommand: Equatable {
 
     init(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        // Letter shortcuts follow the active layout (⌘Z is Z on QWERTZ too); named keys use key codes.
+        if flags == [.command], let letter = event.charactersIgnoringModifiers?.lowercased() {
+            switch letter {
+            case "y": self = .commandY; return
+            case "d": self = .commandD; return
+            case "z": self = .commandZ; return
+            default: break
+            }
+        }
         switch (event.keyCode, flags) {
         case (126, []): self = .up
         case (125, []): self = .down
@@ -63,10 +74,7 @@ enum KeyCommand: Equatable {
         case (36, [.option]), (76, [.option]): self = .optionEnter
         case (36, [.command]), (76, [.command]): self = .commandEnter
         case (53, []): self = .escape
-        case (16, [.command]): self = .commandY
-        case (2, [.command]): self = .commandD
         case (51, [.command]): self = .commandDelete
-        case (6, [.command]): self = .commandZ
         default: self = .other
         }
     }
@@ -166,6 +174,9 @@ final class OverlayController {
             sendEvent: { [weak self] event, revision in await self?.send(event, revision: revision) },
             loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) })
         context.dismiss = { [weak self] in self?.close() }
+        if let summary = model.summary(pluginID), !summary.isDefault {
+            context.source = l.fromPlugin(summary.displayName) + (summary.teamID.map { " · Team \($0)" } ?? "")
+        }
         self.context = context
         current = (pluginID, document.viewID)
         let panel = FloatingPanel(size: NSSize(width: 780, height: 520), minSize: NSSize(width: 640, height: 420), resizable: true)
@@ -245,7 +256,11 @@ final class OverlayController {
         do {
             let reply = try await model.engine.viewEvent(pluginID: pluginID, viewID: viewID, revision: revision, event: event)
             if let document = reply.document { context?.apply(document) }
-            await handle(reply.effect)
+            // Only a deliberate invoke (Return, click, menu) may close the panel and paste; a reply to
+            // typing or selection can never send keystrokes to another app.
+            var userInvoked = false
+            if case .invoke = event { userInvoked = true }
+            await handle(reply.effect, pluginID: pluginID, userInvoked: userInvoked)
         } catch let error as RuyioError {
             model.show(model.l.errorText(error))
         } catch {
@@ -253,15 +268,17 @@ final class OverlayController {
         }
     }
 
-    private func handle(_ effect: ViewEffect) async {
+    private func handle(_ effect: ViewEffect, pluginID: PluginID, userInvoked: Bool) async {
         switch effect {
         case .none: break
         case .close: close()
         case .notice(let text): model.show(text)
         case .confirm(let spec):
+            guard userInvoked else { return }
             let alert = NSAlert()
             alert.messageText = spec.title
-            alert.informativeText = spec.message
+            // Host-drawn provenance: a plugin can never pose as Ruyio or macOS (plan §9 source bar).
+            alert.informativeText = model.l.fromPlugin(model.summary(pluginID)?.displayName ?? pluginID.rawValue) + "\n\n" + spec.message
             // The safe action keeps default focus; destructive buttons are never default (PRD §18.3).
             alert.addButton(withTitle: model.l.cancel)
             let confirm = alert.addButton(withTitle: spec.confirmTitle)
@@ -270,9 +287,12 @@ final class OverlayController {
                 await send(.invoke(actionID: spec.confirmActionID, itemID: nil), revision: context?.document.revision ?? 0)
             }
         case .closeAndPaste(_, let autoPaste):
+            guard userInvoked else { return }
             close()
             if PasteService.shared.deliverInApp() { return }
-            var wantsAuto = autoPaste
+            // Synthesized ⌘V requires the plugin to declare paste.automatic (PRD §10.2); otherwise copy only.
+            let declared = model.summary(pluginID)?.manifest.permissions.contains(.pasteAutomatic) == true
+            var wantsAuto = autoPaste && declared
             if wantsAuto && !AXIsProcessTrusted() {
                 wantsAuto = PasteService.shared.requestAccessibilityIfAppropriate(model: model)
             }
@@ -300,7 +320,14 @@ extension Notification.Name {
 struct OverlayRoot: View {
     @ObservedObject var context: SchemaContext
     var body: some View {
-        SchemaNodeView(node: context.document.root, context: context)
+        VStack(alignment: .leading, spacing: 0) {
+            // Collections draw the source line in their own header; other views get it on top.
+            if let source = context.source, context.collection == nil {
+                Label(source, systemImage: "puzzlepiece.extension").font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 18).padding(.top, 14)
+            }
+            SchemaNodeView(node: context.document.root, context: context)
+        }
             .frame(minWidth: 640, minHeight: 420)
             .ruyioGlass(in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             .ignoresSafeArea()

@@ -549,7 +549,7 @@ final class SettingsHolder: ObservableObject {
                                             case .confirm(let spec):
                                                 let alert = NSAlert()
                                                 alert.messageText = spec.title
-                                                alert.informativeText = spec.message
+                                                alert.informativeText = l.fromPlugin(model.summary(pluginID)?.displayName ?? pluginID.rawValue) + "\n\n" + spec.message
                                                 alert.addButton(withTitle: l.cancel)
                                                 alert.addButton(withTitle: spec.confirmTitle).hasDestructiveAction = spec.isDestructive
                                                 if alert.runModal() == .alertSecondButtonReturn {

@@ -9,7 +9,14 @@ public enum JSONValue: Hashable, Sendable, Codable {
     case array([JSONValue])
     case object([String: JSONValue])
 
+    /// Nesting is bounded while decoding, not afterwards: recursion on a reader thread must never be
+    /// able to exhaust its stack (a deeply nested frame would otherwise crash the host).
+    public static let maxDecodingDepth = 48
+
     public init(from decoder: Decoder) throws {
+        guard decoder.codingPath.count <= Self.maxDecodingDepth else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "JSON nested too deeply"))
+        }
         let container = try decoder.singleValueContainer()
         if container.decodeNil() { self = .null }
         else if let value = try? container.decode(Bool.self) { self = .bool(value) }

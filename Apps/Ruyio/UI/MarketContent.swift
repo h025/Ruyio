@@ -325,6 +325,12 @@ struct PluginInstallPreviewView: View {
                 }
             }
         }
+        // Closing the preview without installing drops the verified staging copy.
+        .onDisappear { task?.cancel(); discardStaging() }
+    }
+
+    func discardStaging() {
+        if let preview { model.engine.installer.discard(preview) }
     }
 
     func verification(_ preview: InstallPreview) -> some View {
@@ -375,8 +381,10 @@ struct PluginInstallPreviewView: View {
     func install(_ preview: InstallPreview) {
         Task {
             do {
-                let channel: UpdateChannel = descriptor != nil ? .descriptor : .none
-                let id = try await model.engine.commitInstall(preview, updateChannel: channel, source: descriptorURL?.absoluteString ?? source)
+                // Installs from a market follow that market (removal marks them orphaned, updates come from it).
+                let fromMarket = source.hasPrefix("market:")
+                let channel: UpdateChannel = fromMarket ? .market : (descriptor != nil ? .descriptor : .none)
+                let id = try await model.engine.commitInstall(preview, updateChannel: channel, source: fromMarket ? source : (descriptorURL?.absoluteString ?? source))
                 model.selectedPlugin = id
                 model.page = .plugins
                 done()

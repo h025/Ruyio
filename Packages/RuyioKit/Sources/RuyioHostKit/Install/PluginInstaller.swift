@@ -142,6 +142,8 @@ public final class PluginInstaller: Sendable {
         let infoPlist = NSDictionary(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")) as? [String: Any] ?? [:]
         let plistProblems = Self.infoPlistViolations(infoPlist, manifest: manifest)
         check("bundle", plistProblems.isEmpty, plistProblems.joined(separator: ", "))
+        let nestedProblems = Self.nestedCodeViolations(bundle: bundle, mainExecutable: executable)
+        check("nestedCode", nestedProblems.isEmpty, nestedProblems.prefix(5).joined(separator: ", "))
 
         let signing = CodeSigning.inspect(bundle: bundle, checkRevocation: trust == .remote)
         check("signature", signing.isValid, signing.validationError ?? "invalid signature")
@@ -192,6 +194,36 @@ public final class PluginInstaller: Sendable {
         for key in forbidden where plist[key] != nil { problems.append("forbidden key \(key)") }
         if let bundleID = plist["CFBundleIdentifier"] as? String, bundleID.hasPrefix("app.ruyio.mac") {
             problems.append("bundle identifier collides with the host")
+        }
+        return problems
+    }
+
+    /// No separately launchable code (plan §7.1): nested apps, XPC services, extensions, login items, launchd
+    /// plists or extra executables would run under their own entitlements, outside the checks above.
+    /// In-process libraries and frameworks are allowed; they are covered by the bundle signature.
+    static func nestedCodeViolations(bundle: URL, mainExecutable: URL) -> [String] {
+        let launchable: Set<String> = ["app", "xpc", "appex", "systemextension", "kext", "driverkit"]
+        let forbiddenDirectories = ["Contents/Library/LoginItems", "Contents/Library/LaunchServices", "Contents/Library/LaunchAgents",
+                                    "Contents/Library/LaunchDaemons", "Contents/XPCServices", "Contents/PlugIns", "Contents/Library/SystemExtensions"]
+        var problems: [String] = []
+        let root = bundle.standardizedFileURL.path
+        let main = mainExecutable.standardizedFileURL.resolvingSymlinksInPath().path
+        guard let walker = FileManager.default.enumerator(at: bundle, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey]) else {
+            return ["unreadable bundle"]
+        }
+        for case let url as URL in walker {
+            let relative = String(url.standardizedFileURL.path.dropFirst(root.count + 1))
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey])
+            if values?.isSymbolicLink == true { continue }
+            if values?.isDirectory == true {
+                if launchable.contains(url.pathExtension.lowercased()) || forbiddenDirectories.contains(relative) {
+                    problems.append(relative)
+                    walker.skipDescendants()
+                }
+                continue
+            }
+            guard values?.isRegularFile == true, url.standardizedFileURL.resolvingSymlinksInPath().path != main else { continue }
+            if MachO.isExecutableImage(url) { problems.append(relative) }
         }
         return problems
     }

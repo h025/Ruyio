@@ -36,7 +36,8 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         PasteService.shared.inAppPasteTarget = { [weak self] text in
             guard let self, self.state.step == 1 else { return false }
-            self.state.practiceText = text
+            // An image (or any non-text item) completes the step too, without an Accessibility prompt.
+            self.state.practiceText = text ?? self.model.l.t("（已粘贴一张图片或文件）", "(Pasted an image or file)")
             self.state.clipboardDone = true
             return true
         }

@@ -25,6 +25,14 @@ final class MediaDecoderClient: @unchecked Sendable {
         }
     }
 
+    private func resetConnection() {
+        let stale = lock.withLock { () -> NSXPCConnection? in
+            defer { connection = nil }
+            return connection
+        }
+        stale?.invalidate()
+    }
+
     func image(from data: Data, maxPixel: Int = 1024) async -> NSImage? {
         let limit = max(16, min(maxPixel, 2048))
         let result: (Data?, Int, Int) = await withCheckedContinuation { continuation in
@@ -34,7 +42,14 @@ final class MediaDecoderClient: @unchecked Sendable {
             }
             guard let decoder = proxy({ _ in finish(nil, 0, 0) }) else { finish(nil, 0, 0); return }
             decoder.decodeThumbnail(data, maxPixel: limit) { pixels, w, h in finish(pixels, w, h) }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { finish(nil, 0, 0) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
+                // A stuck decode would hold up every later thumbnail on this connection: drop it so the
+                // service restarts for the next request.
+                if once.claim() {
+                    continuation.resume(returning: (nil, 0, 0))
+                    self?.resetConnection()
+                }
+            }
         }
         let (pixels, width, height) = result
         guard let pixels, width > 0, height > 0, width <= limit, height <= limit, pixels.count == width * height * 4,

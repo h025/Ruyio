@@ -24,6 +24,10 @@ public final class RPCPeer: @unchecked Sendable {
     /// Guarded by `writeQueue`: once set, no write ever touches the (possibly reused) descriptor number.
     private var writeClosed = false
     private var inboundInFlight = 0
+    /// Set under `lock` when the reader has closed `readFD`; `close` never touches the number afterwards.
+    private var readerFinished = false
+    /// A peer that stops reading must not block the host: writes give up after this long (plan §8.2).
+    public static let writeTimeout: TimeInterval = 5
     private var onRequest: RequestHandler?
     private var onEvent: EventHandler?
     private var onClose: CloseHandler?
@@ -36,6 +40,7 @@ public final class RPCPeer: @unchecked Sendable {
         self.maxInFlight = maxInFlight
         self.writeQueue = DispatchQueue(label: "ruyio.rpc.write.\(label)")
         _ = fcntl(writeFD, F_SETNOSIGPIPE, 1)
+        _ = fcntl(writeFD, F_SETFL, fcntl(writeFD, F_GETFL) | O_NONBLOCK)
     }
 
     /// Starts the reader thread. Handlers run on arbitrary threads.
@@ -57,6 +62,7 @@ public final class RPCPeer: @unchecked Sendable {
         let thread = Thread { [self] in readLoop() }
         thread.name = "ruyio.rpc.read.\(label)"
         thread.qualityOfService = .userInitiated
+        thread.stackSize = 8 << 20
         thread.start()
     }
 
@@ -88,16 +94,16 @@ public final class RPCPeer: @unchecked Sendable {
             pending[envelope.messageID] = continuation
             lock.unlock()
 
-            do {
-                try write(envelope)
-            } catch {
-                failPending(envelope.messageID, error: error)
-                return
-            }
+            // The timeout starts before the write, so a stalled write can never suspend the caller forever.
             let id = envelope.messageID
             Task { [weak self] in
                 try? await Task.sleep(for: timeout)
                 self?.failPending(id, error: RuyioError(.requestTimeout, retryable: true, diagnostic: method))
+            }
+            do {
+                try write(envelope)
+            } catch {
+                failPending(envelope.messageID, error: error)
             }
         }
         if let error = reply.error { throw error }
@@ -137,16 +143,18 @@ public final class RPCPeer: @unchecked Sendable {
         waiting = Array(pending.values)
         pending.removeAll()
         handler = onClose
-        let readerRunning = started
-        lock.unlock()
-
-        if readerRunning {
+        if started {
             // Keep the number reserved: point it at /dev/null so the reader sees EOF and closes it itself.
-            let devNull = open("/dev/null", O_RDONLY)
-            if devNull >= 0 { dup2(devNull, readFD); Darwin.close(devNull) }
+            // Done under the lock so it can never race the reader's own close and hit a reused number.
+            if !readerFinished {
+                let devNull = open("/dev/null", O_RDONLY)
+                if devNull >= 0 { dup2(devNull, readFD); Darwin.close(devNull) }
+            }
         } else {
             Darwin.close(readFD)
         }
+        lock.unlock()
+
         writeQueue.sync {
             writeClosed = true
             _ = Darwin.close(writeFD)
@@ -166,6 +174,7 @@ public final class RPCPeer: @unchecked Sendable {
                 failure = RuyioError(.pluginCrashed, diagnostic: "connection closed")
                 return
             }
+            let deadline = Date().addingTimeInterval(Self.writeTimeout)
             frame.withUnsafeBytes { raw in
                 guard var pointer = raw.baseAddress else { return }
                 var remaining = raw.count
@@ -173,6 +182,16 @@ public final class RPCPeer: @unchecked Sendable {
                     let written = Darwin.write(writeFD, pointer, remaining)
                     if written < 0 {
                         if errno == EINTR { continue }
+                        if errno == EAGAIN {
+                            // The peer is not reading. Wait for room, but never past the deadline.
+                            let wait = Int32(max(0, deadline.timeIntervalSinceNow) * 1000)
+                            var descriptor = pollfd(fd: writeFD, events: Int16(POLLOUT), revents: 0)
+                            if wait > 0, poll(&descriptor, 1, wait) > 0 { continue }
+                            // Writes queued behind this one must fail at once, not wait their own deadline.
+                            writeClosed = true
+                            failure = RuyioError(.requestTimeout, diagnostic: "peer stopped reading")
+                            return
+                        }
                         failure = RuyioError(.pluginCrashed, diagnostic: "write failed errno=\(errno)")
                         return
                     }
@@ -196,7 +215,12 @@ public final class RPCPeer: @unchecked Sendable {
 
     private func readLoop() {
         // The reader owns the read descriptor's final close (see `close`).
-        defer { Darwin.close(readFD) }
+        defer {
+            lock.withLock {
+                readerFinished = true
+                Darwin.close(readFD)
+            }
+        }
         var decoder = FrameDecoder()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {

@@ -134,6 +134,26 @@ public enum MachO {
             return false
         }
     }
+
+    /// True for a main-program image (MH_EXECUTE), thin or universal; libraries and bundles are not.
+    public static func isExecutableImage(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url), let header = try? handle.read(upToCount: 4096), header.count >= 16 else { return false }
+        defer { try? handle.close() }
+        let magic = header.readUInt32(0)
+        let MH_EXECUTE: UInt32 = 2
+        switch magic {
+        case 0xFEED_FACF, 0xFEED_FACE:
+            return header.readUInt32(12) == MH_EXECUTE
+        case 0xBEBA_FECA, 0xBFBA_FECA:
+            // First slice is representative; universal slices of one binary share the file type.
+            let offset: UInt64 = magic == 0xBEBA_FECA ? UInt64(header.readUInt32BE(16))
+                : (UInt64(header.readUInt32BE(16)) << 32) | UInt64(header.readUInt32BE(20))
+            guard (try? handle.seek(toOffset: offset)) != nil, let slice = try? handle.read(upToCount: 16), slice.count >= 16 else { return true }
+            return slice.readUInt32(12) == MH_EXECUTE
+        default:
+            return false
+        }
+    }
 }
 
 extension Data {

@@ -123,6 +123,7 @@ struct L10n {
         case .storageQuotaExceeded: return t("插件数据已达到容量上限。", "The plugin's storage is full.")
         case .cancelled: return t("已取消。", "Cancelled.")
         case .sourceInvalid: return t("插件包未通过校验：", "The package failed verification: ") + (error.diagnostic ?? "")
+        case .pluginAlreadyInstalled: return t("该插件已安装。请在插件详情中检查更新或更换来源。", "This plugin is already installed. Check for updates or change its source in its details.")
         default: return t("操作失败：", "The operation failed: ") + error.code.rawValue
         }
     }
@@ -253,6 +254,7 @@ struct L10n {
     var skip: String { t("跳过", "Skip") }
     var clipboardStepTitle: String { t("复制一段文字或一张图片", "Copy some text or an image") }
     var waitingForCopy: String { t("等待新的复制…", "Waiting for a new copy…") }
+    func fromPlugin(_ name: String) -> String { t("来自插件「\(name)」", "From the plugin “\(name)”") }
     func thenPress(_ shortcut: String) -> String { t("然后按 \(shortcut)，在历史中选择它并按 ↩", "Then press \(shortcut), pick it and press ↩") }
     var practiceField: String { t("练习输入框", "Practice field") }
     var clipboardStepDone: String { t("完成！内容已插入练习输入框。", "Done! The item was inserted into the practice field.") }

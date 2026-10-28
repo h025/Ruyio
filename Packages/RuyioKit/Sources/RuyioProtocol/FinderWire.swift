@@ -12,6 +12,7 @@ public enum FinderWire {
     public static let requestTTL: TimeInterval = 15
     /// Dynamic (clipboard) children older than this are treated as stale.
     public static let dynamicTTL: TimeInterval = 6 * 3600
+    public static let maxDynamicItems = 5
     public static let maxRequestBytes = 64 * 1024
     public static let maxTitleCharacters = 60
 

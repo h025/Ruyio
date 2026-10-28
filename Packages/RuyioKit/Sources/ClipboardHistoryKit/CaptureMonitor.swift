@@ -23,7 +23,10 @@ public final class CaptureMonitor {
     private var timer: Timer?
     private var baseline = 0
     private var wantsRecording = false
-    private var suspended = false
+    /// Asleep and locked are tracked apart: waking into the lock screen must not resume capture.
+    private var asleep = false
+    private var locked = false
+    private var suspended: Bool { asleep || locked }
     private(set) public var state: CaptureState = .userPaused
     private var observers: [NSObjectProtocol] = []
 
@@ -139,22 +142,26 @@ public final class CaptureMonitor {
     private func installObservers() {
         guard observers.isEmpty else { return }
         let ws = NSWorkspace.shared.notificationCenter
-        let suspend: @Sendable (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.suspended = true; self?.evaluate() } }
-        let resume: @Sendable (Notification) -> Void = { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.suspended = false
-                self.rebaseline() // never back-fill content copied while asleep or locked
-                self.evaluate()
+        func handler(asleep: Bool? = nil, locked: Bool? = nil) -> @Sendable (Notification) -> Void {
+            { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let wasSuspended = self.suspended
+                    if let asleep { self.asleep = asleep }
+                    if let locked { self.locked = locked }
+                    // Never back-fill content copied while asleep or locked.
+                    if wasSuspended && !self.suspended { self.rebaseline() }
+                    self.evaluate()
+                }
             }
         }
-        observers.append(ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main, using: suspend))
-        observers.append(ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: resume))
-        observers.append(ws.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main, using: suspend))
-        observers.append(ws.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main, using: resume))
+        observers.append(ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main, using: handler(asleep: true)))
+        observers.append(ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: handler(asleep: false)))
+        observers.append(ws.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main, using: handler(locked: true)))
+        observers.append(ws.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main, using: handler(locked: false)))
         let dnc = DistributedNotificationCenter.default()
-        observers.append(dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main, using: suspend))
-        observers.append(dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main, using: resume))
+        observers.append(dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main, using: handler(locked: true)))
+        observers.append(dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main, using: handler(locked: false)))
     }
 }
 

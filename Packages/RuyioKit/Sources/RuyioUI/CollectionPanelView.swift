@@ -63,8 +63,13 @@ public struct CollectionPanelView: View {
 
     var header: some View {
         HStack(alignment: .center) {
-            if let title = context.document.title {
-                Text(title).font(.title2.weight(.bold)).accessibilityAddTraits(.isHeader)
+            VStack(alignment: .leading, spacing: 1) {
+                if let title = context.document.title {
+                    Text(title).font(.title2.weight(.bold)).accessibilityAddTraits(.isHeader)
+                }
+                if let source = context.source {
+                    Label(source, systemImage: "puzzlepiece.extension").font(.caption).foregroundStyle(.secondary)
+                }
             }
             Spacer()
             if let dismiss = context.dismiss {

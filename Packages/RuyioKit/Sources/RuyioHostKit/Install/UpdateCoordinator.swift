@@ -207,9 +207,11 @@ public actor UpdateCoordinator {
         // After commit: reopen entries per the user's previous preference.
         if journal.wasEnabled, let error = await engine.enable(id, userInitiated: false) {
             try? await engine.registry.setRuntimeError(id, error)
+            // Committed is final: finish now, so a stale journal can never delete code installed later.
+            await cleanup(journal)
             return .committedWithRuntimeError(version: preview.manifest.version, error: error)
         }
-        cleanup(journal)
+        await cleanup(journal)
         return .completed(version: preview.manifest.version)
     }
 
@@ -220,7 +222,7 @@ public actor UpdateCoordinator {
             guard let data = try? Data(contentsOf: file), let journal = try? JSONCoding.decoder().decode(Journal.self, from: data) else { continue }
             switch journal.phase {
             case .committed:
-                cleanup(journal)
+                await cleanup(journal)
             case .rolledBack, .failed:
                 try? FileManager.default.removeItem(at: file)
             default:
@@ -228,7 +230,7 @@ public actor UpdateCoordinator {
                 // The Host.sqlite switch is the commit point: if it already happened, finish, never roll back.
                 if record.version == journal.newVersion && record.dataGeneration == journal.newGeneration {
                     if journal.wasEnabled { _ = await engine.enable(journal.pluginID, userInitiated: false) }
-                    cleanup(journal)
+                    await cleanup(journal)
                 } else {
                     await rollback(journal, record: record)
                 }
@@ -263,10 +265,15 @@ public actor UpdateCoordinator {
         ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).compactMap(Int.init).max() ?? 0
     }
 
-    private func cleanup(_ journal: Journal) {
-        // Old backup is removed only after the new version is healthy (plan §15.2 step 8).
+    private func cleanup(_ journal: Journal) async {
+        // Old backup is removed only after the new version is healthy (plan §15.2 step 8), and never while
+        // it is the installed code again (e.g. the user downgraded back to it).
         if journal.oldInstallPath != journal.newInstallPath {
-            try? FileManager.default.removeItem(at: URL(fileURLWithPath: journal.oldInstallPath).deletingLastPathComponent())
+            let oldDirectory = URL(fileURLWithPath: journal.oldInstallPath).deletingLastPathComponent()
+            let current = await engine.registry.record(journal.pluginID)?.installPath
+            if current.map({ !$0.hasPrefix(oldDirectory.path + "/") }) ?? true {
+                try? FileManager.default.removeItem(at: oldDirectory)
+            }
         }
         try? FileManager.default.removeItem(at: journalsDirectory.appendingPathComponent("\(journal.id).json"))
     }

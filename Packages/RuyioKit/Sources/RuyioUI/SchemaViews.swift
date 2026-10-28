@@ -24,9 +24,9 @@ public struct SchemaNodeView: View {
         case .text(let spec):
             styledText(spec).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         case .markdown(let text):
-            // Markdown without HTML, scripts or network resources (plan §9).
-            Text((try? AttributedString(markdown: text, options: .init(allowsExtendedAttributes: false, interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
-                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            // Markdown without HTML, scripts or network resources (plan §9). Links are shown as text only:
+            // opening URLs goes through the host's checked capability, never a click in rendered content.
+            Text(Self.inertMarkdown(text)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         case .code(let text):
             Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         case .image(let spec):
@@ -63,6 +63,13 @@ public struct SchemaNodeView: View {
         case .loading:
             ProgressView(context.strings.loading).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    static func inertMarkdown(_ text: String) -> AttributedString {
+        var parsed = (try? AttributedString(markdown: text, options: .init(allowsExtendedAttributes: false, interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+        for run in parsed.runs where run.link != nil { parsed[run.range].link = nil }
+        return parsed
     }
 
     @ViewBuilder
@@ -191,10 +198,16 @@ struct FieldView: View {
                 ForEach(field.options ?? [], id: \.id) { Text($0.title).tag($0.id) }
             }
         case .slider:
-            Slider(value: doubleBinding, in: (field.minimum ?? 0)...(field.maximum ?? 1)) { Text(field.label) }
+            Slider(value: sliderBinding, in: Self.range(field.minimum, field.maximum, default: 0...1)) { Text(field.label) }
         case .stepper:
-            Stepper(value: doubleBinding, in: (field.minimum ?? 0)...(field.maximum ?? 1_000_000), step: field.step ?? 1) {
-                HStack { Text(field.label); Spacer(); Text(String(Int(value.doubleValue ?? 0))).monospacedDigit().foregroundStyle(.secondary) }
+            let range = Self.range(field.minimum, field.maximum, default: 0...1_000_000)
+            let step = field.step.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 1
+            Stepper(value: doubleBinding, in: range, step: step) {
+                HStack {
+                    Text(field.label)
+                    Spacer()
+                    Text(Self.displayNumber(value.doubleValue ?? range.lowerBound)).monospacedDigit().foregroundStyle(.secondary)
+                }
             }
         case .fileChooser, .directoryChooser, .applicationChooser:
             HStack {
@@ -208,6 +221,20 @@ struct FieldView: View {
 
     var stringBinding: Binding<String> { Binding(get: { value.stringValue ?? "" }, set: { value = .string($0) }) }
     var doubleBinding: Binding<Double> { Binding(get: { value.doubleValue ?? 0 }, set: { value = .number($0.rounded()) }) }
+    var sliderBinding: Binding<Double> { Binding(get: { value.doubleValue ?? 0 }, set: { value = .number($0) }) }
+
+    /// Plugin-supplied bounds are untrusted: an inverted or non-finite range must never trap the host.
+    static func range(_ minimum: Double?, _ maximum: Double?, default fallback: ClosedRange<Double>) -> ClosedRange<Double> {
+        let low = minimum.flatMap { $0.isFinite ? $0 : nil } ?? fallback.lowerBound
+        let high = maximum.flatMap { $0.isFinite ? $0 : nil } ?? fallback.upperBound
+        return low <= high ? low...high : fallback
+    }
+
+    static func displayNumber(_ number: Double) -> String {
+        guard number.isFinite else { return "—" }
+        if let exact = Int(exactly: number.rounded()) { return String(exact) }
+        return number.formatted(.number.notation(.compactName))
+    }
 
     func choose() {
         let panel = NSOpenPanel()

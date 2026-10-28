@@ -30,9 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         do {
+            // The engine opens Host.sqlite first so a pending migration always gets its pre-migration backup
+            // (plan §19.1); the saved language is applied right after, before any plugin starts.
             let paths = try AppPaths.standard()
-            let language = Self.initialLanguage(paths: paths)
-            let engine = try HostEngine(paths: paths, locale: language)
+            let engine = try HostEngine(paths: paths, locale: Localization.hostLanguage(for: Locale.preferredLanguages))
             model = AppModel(engine: engine)
         } catch {
             // Host database recovery window: no plugin and no Finder request runs (plan §19.1, R09).
@@ -81,11 +82,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             do {
+                await model.engine.setLocale(model.language)
                 try await model.engine.start(bundledPackages: Self.bundledPackages())
             } catch {
                 model.startupError = error.localizedDescription
                 model.show(error.localizedDescription)
             }
+            // Judge waiting Finder clicks against the fully started registry, not a partial one.
+            let started = await model.engine.registry.snapshot()
+            finderBridge?.update(projection: started.entries, locale: model.language, strings: ["openRuyio": model.l.openRuyioToLoad])
+            finderBridge?.markReady()
             if !model.settings.onboardingCompleted { showOnboarding() }
         }
     }
@@ -124,12 +130,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             semaphore.signal()
         }
         _ = semaphore.wait(timeout: .now() + 3)
-    }
-
-    static func initialLanguage(paths: AppPaths) -> String {
-        let database = try? HostDatabase(url: paths.hostDatabase)
-        let settings = ((try? database?.setting("host.settings", as: HostSettings.self)) ?? nil) ?? HostSettings()
-        return settings.language.resolved
     }
 
     static func bundledPackages() -> [URL] {
@@ -226,7 +226,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .requestInput(let form):
                 guard let request else { return }
                 showInput(form: form, request: request)
-            case .revealFiles(let paths): NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(fileURLWithPath: $0) })
+            case .revealFiles(let paths):
+                // Same rule as the reveal capability: only files this plugin wrote through the broker.
+                let allowed = model.engine.services.fileBroker.revealablePaths(for: report.ref.pluginID)
+                let urls = paths.prefix(64).filter { allowed.contains($0) }.map { URL(fileURLWithPath: $0) }
+                if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
             case .none: break
             }
         case .cancelled:
@@ -237,8 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showInput(form: FormSpec, request: InvocationRequest) {
-        let title = model.summary(request.ref.pluginID)?.manifest.action(request.ref.actionID)
-            .map { model.summary(request.ref.pluginID)!.manifest.actionTitle($0, locale: model.language).text } ?? ""
+        let summary = model.summary(request.ref.pluginID)
+        let action = summary?.manifest.action(request.ref.actionID).map { summary!.manifest.actionTitle($0, locale: model.language).text } ?? ""
+        // The window title names the plugin, so a form asking for input can never pass as Ruyio or macOS.
+        let title = "\(summary?.displayName ?? request.ref.pluginID.rawValue) — \(action)"
         if inputSheet == nil { inputSheet = InputSheetController(model: model) }
         inputSheet?.show(title: title, form: form) { [weak self] values in
             guard let self else { return }
@@ -274,6 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         })
         model.engine.onDynamicItems { [weak bridge] pluginID, report in bridge?.update(dynamicItems: report, pluginID: pluginID) }
+        bridge.holdUntilReady()
         bridge.startListening()
         finderBridge = bridge
     }

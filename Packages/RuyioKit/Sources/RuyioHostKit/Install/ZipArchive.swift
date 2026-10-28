@@ -75,9 +75,13 @@ public struct ZipArchive: Sendable {
                 symlinks.append((entry, linkTarget))
             }
         }
+        let linkPaths = Set(symlinks.map(\.0.path))
         for (entry, linkTarget) in symlinks {
             let location = destination.appendingPathComponent(entry.path)
-            guard Self.symlinkStaysInside(entryPath: entry.path, target: linkTarget, root: root) else {
+            // The literal check below assumes every component is a real directory. A link placed under (or
+            // resolving through) another link breaks that assumption, e.g. `l1 -> .` plus `l1/l1/x -> ../../..`.
+            guard !Self.passesThroughLink(entryPath: entry.path, target: linkTarget, links: linkPaths),
+                  Self.symlinkStaysInside(entryPath: entry.path, target: linkTarget, root: root) else {
                 throw Self.error("symlink escapes archive: \(entry.path)")
             }
             try fm.createDirectory(at: location.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -187,6 +191,21 @@ public struct ZipArchive: Sendable {
         for component in path.split(separator: "/", omittingEmptySubsequences: false) {
             guard !component.isEmpty, component != ".", component != ".." else { throw error("unsafe path \(path)") }
         }
+    }
+
+    static func passesThroughLink(entryPath: String, target: String, links: Set<String>) -> Bool {
+        var components = entryPath.split(separator: "/").dropLast().map(String.init)
+        var prefix: [String] = []
+        for component in components {
+            prefix.append(component)
+            if links.contains(prefix.joined(separator: "/")) { return true }
+        }
+        for part in target.split(separator: "/").dropLast() where part != "." {
+            if part == ".." { if !components.isEmpty { components.removeLast() }; continue }
+            components.append(String(part))
+            if links.contains(components.joined(separator: "/")) { return true }
+        }
+        return false
     }
 
     static func symlinkStaysInside(entryPath: String, target: String, root: String) -> Bool {

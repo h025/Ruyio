@@ -8,6 +8,7 @@ public struct ErrorCode: RawRepresentable, Hashable, Codable, Sendable, Expressi
     public var description: String { rawValue }
 
     public static let pluginNotFound: ErrorCode = "plugin.notFound"
+    public static let pluginAlreadyInstalled: ErrorCode = "plugin.alreadyInstalled"
     public static let pluginNotInvocable: ErrorCode = "plugin.notInvocable"
     public static let pluginLaunchFailed: ErrorCode = "plugin.launchFailed"
     public static let handshakeFailed: ErrorCode = "plugin.handshakeFailed"

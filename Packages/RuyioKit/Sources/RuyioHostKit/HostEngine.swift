@@ -32,6 +32,7 @@ public final class HostEngine: @unchecked Sendable {
     private var bundled: [PluginID: BundledPackage] = [:]
     private var viewUpdateHandler: (@Sendable (PluginID, ViewDocument) -> Void)?
     private var dynamicItemsHandler: (@Sendable (PluginID, DynamicItemsReport) -> Void)?
+    private var statusThrottle: [PluginID: StatusThrottle] = [:]
     private var noticeHandler: (@Sendable (String) -> Void)?
     private var _locale: String
     private var _developerMode = false
@@ -95,6 +96,11 @@ public final class HostEngine: @unchecked Sendable {
             if let pid = PluginID(rawValue: id) { await registry.setPendingOutcomes(pid, count: ops.count) }
         }
 
+        // Staging copies left by previews that were closed or failed are never resumed (plan §15.3).
+        for leftover in (try? FileManager.default.contentsOfDirectory(at: paths.downloads, includingPropertiesForKeys: nil)) ?? []
+        where leftover.lastPathComponent.hasPrefix("staging-") {
+            try? FileManager.default.removeItem(at: leftover)
+        }
         let packages = bundledPackages.compactMap(Self.readBundledPackage)
         lock.withLock { bundled = Dictionary(uniqueKeysWithValues: packages.map { ($0.manifest.id, $0) }) }
         await registry.setBundledDefaults(packages.map(\.manifest))
@@ -108,16 +114,20 @@ public final class HostEngine: @unchecked Sendable {
             } else if let installed, installed.isDefault, let current = SemanticVersion(installed.version),
                       current < package.manifest.version, installed.updateChannel == .bundledWithHost {
                 // PRD §23 #12 (decided A12): defaults update with the host through the normal transaction.
-                if let preview = try? installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256),
-                   preview.isInstallable {
-                    _ = await updater.update(with: preview)
+                if let preview = try? installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
+                    if preview.isInstallable { _ = await updater.update(with: preview) } else { installer.discard(preview) }
                 }
             } else if let installed, installed.isDefault, installed.updateChannel == .bundledWithHost, HostInfo.officialTeamID.isEmpty,
                       installed.version == package.manifest.version.description, let digest = Self.sha256(of: package.url),
                       installed.artifactSHA256 != digest {
                 // Development builds only (decided A22): a rebuilt default plugin keeps its version, so the stale
                 // installed copy is replaced in place. Same version means same data schema; data is untouched.
-                _ = try? await install(bundled: package, enable: installed.enabledPreference)
+                // Only for the same signing identity: a team change would move code and data to another identity.
+                if let preview = try? installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
+                    let sameIdentity = preview.signing.teamID == installed.teamID && preview.signing.identifier == installed.signingIdentifier
+                    installer.discard(preview)
+                    if sameIdentity { _ = try? await install(bundled: package, enable: installed.enabledPreference) }
+                }
             }
         }
 
@@ -129,6 +139,14 @@ public final class HostEngine: @unchecked Sendable {
                 try? await registry.setActivation(id, .disabled)
             }
         }
+    }
+
+    static func keptGenerationKey(_ record: InstalledPluginRecord) -> String {
+        "data.keptGeneration." + (record.isDevelopment ? "dev." : "") + AppPaths.identityDirectoryName(pluginID: PluginID(record.pluginID), teamID: record.teamID)
+    }
+
+    private func keptGeneration(for record: InstalledPluginRecord) -> Int? {
+        ((try? database.setting(Self.keptGenerationKey(record), as: Int?.self)) ?? nil) ?? nil
     }
 
     /// Same digest format as `PluginInstaller.inspect`; unpacked directory packages have none.
@@ -167,6 +185,8 @@ public final class HostEngine: @unchecked Sendable {
             record.dataGeneration = previous.dataGeneration
             record.enabledPreference = previous.enabledPreference
             record.installedAt = previous.installedAt
+        } else if let kept = keptGeneration(for: record) {
+            record.dataGeneration = kept
         }
         record.enabledPreference = enable
         try await registry.insert(record)
@@ -187,8 +207,15 @@ public final class HostEngine: @unchecked Sendable {
         return try installer.inspect(package: url, trust: .development, installedIDs: installed)
     }
 
+    /// New installs only. An installed ID changes only through the update transaction or the two-step
+    /// cross-identity reinstall, never by overwriting its record (R08, plan §15).
     public func commitInstall(_ preview: InstallPreview, updateChannel: UpdateChannel, source: String?) async throws -> PluginID {
-        let record = try installer.commit(preview, isDefault: false, updateChannel: updateChannel, source: source)
+        if await registry.record(preview.manifest.id) != nil {
+            installer.discard(preview)
+            throw RuyioError(.pluginAlreadyInstalled, objectID: preview.manifest.id.rawValue)
+        }
+        var record = try installer.commit(preview, isDefault: false, updateChannel: updateChannel, source: source)
+        if let kept = keptGeneration(for: record) { record.dataGeneration = kept }
         try await registry.insert(record)
         log.record(.pluginInstalled, ["plugin": preview.manifest.id.rawValue, "version": preview.manifest.version.description, "trust": preview.trust.rawValue])
         await enable(preview.manifest.id, userInitiated: true)
@@ -293,6 +320,11 @@ public final class HostEngine: @unchecked Sendable {
         if deleteData {
             services.stores.close(pluginID: id)
             try? FileManager.default.removeItem(at: services.stores.dataRoot(pluginID: id, development: record.isDevelopment))
+            try? database.setSetting(Self.keptGenerationKey(record), Int?.none)
+        } else {
+            // Kept data may be a later generation than 1 (after updates or a snapshot downgrade); a restore or
+            // reinstall of the same identity must reattach exactly this one.
+            try? database.setSetting(Self.keptGenerationKey(record), Int?.some(record.dataGeneration))
         }
         try await registry.remove(id, asUninstalledDefault: record.isDefault, keptData: !deleteData)
         log.record(.pluginUninstalled, ["plugin": id.rawValue, "deletedData": String(deleteData)])
@@ -501,9 +533,14 @@ public final class HostEngine: @unchecked Sendable {
         switch envelope.method {
         case Method.statusPublish:
             guard let report = try? JSONCoding.decode(PluginStatusReport.self, from: envelope.payload) else { return }
-            Task { await registry.setReport(session.pluginID, report) }
+            applyStatusThrottled(report, pluginID: session.pluginID)
         case Method.snapshotPublish:
-            guard let report = try? JSONCoding.decode(DynamicItemsReport.self, from: envelope.payload) else { return }
+            guard var report = try? JSONCoding.decode(DynamicItemsReport.self, from: envelope.payload) else { return }
+            // Only providers the manifest declares, so a plugin cannot grow the Finder state without bound;
+            // only a clipboard-reading plugin may describe what is on the clipboard.
+            let declared = Set(session.manifest.actions.compactMap { $0.presentation(.finderContextMenu)?.childrenProvider })
+            guard declared.contains(report.provider) else { return }
+            if !session.manifest.permissions.contains(.clipboardRead) { report.clipboardKinds = [] }
             let handler = lock.withLock { dynamicItemsHandler }
             handler?(session.pluginID, report)
         case Method.viewUpdate:
@@ -518,6 +555,43 @@ public final class HostEngine: @unchecked Sendable {
             break
         }
     }
+
+    /// Status changes rebuild the menu bar and Finder snapshot, so each plugin gets at most a few per
+    /// second (plan §9: UI updates are coalesced and throttled); the latest report always wins.
+    private func applyStatusThrottled(_ report: PluginStatusReport, pluginID: PluginID) {
+        let now = Date()
+        let action: (apply: Bool, schedule: Bool) = lock.withLock {
+            var entry = statusThrottle[pluginID] ?? StatusThrottle()
+            defer { statusThrottle[pluginID] = entry }
+            if now.timeIntervalSince(entry.lastApplied) >= Self.statusInterval && entry.pending == nil {
+                entry.lastApplied = now
+                return (true, false)
+            }
+            let schedule = entry.pending == nil
+            entry.pending = report
+            return (false, schedule)
+        }
+        if action.apply { Task { await registry.setReport(pluginID, report) } }
+        guard action.schedule else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.statusInterval))
+            guard let self else { return }
+            let latest: PluginStatusReport? = self.lock.withLock {
+                let pending = self.statusThrottle[pluginID]?.pending
+                self.statusThrottle[pluginID]?.pending = nil
+                self.statusThrottle[pluginID]?.lastApplied = Date()
+                return pending
+            }
+            if let latest { await self.registry.setReport(pluginID, latest) }
+        }
+    }
+
+    struct StatusThrottle {
+        var lastApplied = Date.distantPast
+        var pending: PluginStatusReport?
+    }
+
+    static let statusInterval: TimeInterval = 0.25
 
     /// Crash: mark runtimeFailed, keep files and diagnostics, never auto-restart in a loop (PRD §17).
     private func pluginCrashed(_ id: PluginID, error: RuyioError) async {

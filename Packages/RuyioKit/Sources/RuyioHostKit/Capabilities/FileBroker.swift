@@ -84,7 +84,7 @@ public final class FileBroker: Sendable {
         for (index, item) in request.items.enumerated() {
             // Once the execution has ended (timeout, cancel, disable) its grants are revoked: stop here,
             // and report what was already committed (plan §13.3).
-            if !cancelled, (try? contexts.resolve(request.directory, for: pluginID)) == nil { cancelled = true }
+            if !cancelled, !contexts.isStillValid(request.directory, for: pluginID) { cancelled = true }
             if cancelled {
                 outcomes.append(FileWriteOutcome(requestedName: item.fileName, finalPath: nil, status: .cancelled))
                 continue
@@ -92,7 +92,9 @@ public final class FileBroker: Sendable {
             do {
                 let data = try payload(for: item.source, pluginID: pluginID)
                 let destination = directory.appendingPathComponent(item.fileName)
-                var policy = request.conflictPolicy
+                // Replacing an existing file is the user's call, made in the host conflict dialog (PRD §19.19);
+                // a plugin asking for .replace gets that dialog, never a silent overwrite.
+                var policy = request.conflictPolicy == .replace ? .ask : request.conflictPolicy
                 if FileManager.default.fileExists(atPath: destination.path) {
                     if policy == .ask {
                         let resolution: ConflictResolution
@@ -106,6 +108,12 @@ public final class FileBroker: Sendable {
                                 existingModified: attrs?[.modificationDate] as? Date,
                                 newSize: data.map { Int64($0.count) }, remainingCount: request.items.count - index - 1))
                             if resolution.applyToAll { stickyResolution = resolution }
+                            // The dialog may outlive the action (timeout, cancel): never write after that.
+                            if !contexts.isStillValid(request.directory, for: pluginID) {
+                                cancelled = true
+                                outcomes.append(FileWriteOutcome(requestedName: item.fileName, finalPath: nil, status: .cancelled))
+                                continue
+                            }
                         } else {
                             resolution = ConflictResolution(.skip)
                         }
@@ -163,10 +171,11 @@ public final class FileBroker: Sendable {
 
     // MARK: Validation
 
-    /// Rejects empty names, separators, traversal, NUL and over-long names (plan §13.3).
+    /// Rejects empty names, separators, traversal, NUL, over-long names (plan §13.3) and hidden names:
+    /// dot files such as `.zshenv` are invisible in Finder and some are executed by other programs.
     public static func validateFileName(_ name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, name != ".", name != "..",
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("."),
               !name.contains("/"), !name.contains(":"), !name.contains("\0"),
               name.utf8.count <= 255 else {
             throw RuyioError(.fileNameInvalid, objectID: name, recovery: .rename)

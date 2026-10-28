@@ -40,6 +40,9 @@ public final class SourceFetcher: NSObject, URLSessionTaskDelegate, RemoteFetchi
     public static let totalTimeout: TimeInterval = 30
 
     private var session: URLSession!
+    /// Packages may be large: same privacy settings, but a resource limit sized for downloads.
+    private var downloadSession: URLSession!
+    public static let downloadTimeout: TimeInterval = 600
     private let lock = NSLock()
     private var redirectCounts: [Int: Int] = [:]
     public var hostCheck: @Sendable (String) throws -> Void = NetworkPolicy.checkHost
@@ -57,6 +60,9 @@ public final class SourceFetcher: NSObject, URLSessionTaskDelegate, RemoteFetchi
         configuration.timeoutIntervalForResource = Self.totalTimeout
         configuration.httpAdditionalHeaders = ["User-Agent": "Ruyio/\(HostInfo.version)"]
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        let downloads = configuration.copy() as! URLSessionConfiguration
+        downloads.timeoutIntervalForResource = Self.downloadTimeout
+        downloadSession = URLSession(configuration: downloads, delegate: self, delegateQueue: nil)
     }
 
     public func fetch(_ url: URL, maxBytes: Int, accept: String? = nil, timeout: TimeInterval = SourceFetcher.totalTimeout) async throws -> FetchResult {
@@ -97,7 +103,14 @@ public final class SourceFetcher: NSObject, URLSessionTaskDelegate, RemoteFetchi
     /// Downloads a package to a file, streaming with a byte limit and cooperative cancellation.
     public func download(_ url: URL, to destination: URL, maxBytes: Int, progress: (@Sendable (Int64, Int64?) -> Void)? = nil) async throws {
         try validate(url)
-        let (bytes, response) = try await session.bytes(for: URLRequest(url: url, timeoutInterval: 300))
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await downloadSession.bytes(for: URLRequest(url: url, timeoutInterval: 60))
+        } catch let error as RuyioError {
+            throw error
+        } catch {
+            throw RuyioError(.networkFailure, objectID: url.host, retryable: true, diagnostic: (error as NSError).localizedDescription)
+        }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let finalURL = http.url else {
             throw RuyioError(.networkFailure, objectID: url.host, retryable: true)
         }
@@ -109,6 +122,7 @@ public final class SourceFetcher: NSObject, URLSessionTaskDelegate, RemoteFetchi
         defer { try? handle.close() }
         var buffer = Data()
         var total: Int64 = 0
+        do {
         for try await byte in bytes {
             buffer.append(byte)
             if buffer.count >= 256 * 1024 {
@@ -119,6 +133,13 @@ public final class SourceFetcher: NSObject, URLSessionTaskDelegate, RemoteFetchi
                 progress?(total, expected)
                 if total > Int64(maxBytes) { throw RuyioError(.sourceInvalid, diagnostic: "package exceeds limit") }
             }
+        }
+        } catch let error as RuyioError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw RuyioError(.networkFailure, objectID: url.host, retryable: true, diagnostic: (error as NSError).localizedDescription)
         }
         try handle.write(contentsOf: buffer)
         total += Int64(buffer.count)

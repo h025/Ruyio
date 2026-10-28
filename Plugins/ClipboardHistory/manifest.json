@@ -133,6 +133,7 @@
     "clipboard.read",
     "clipboard.write",
     "files.write",
+    "paste.automatic",
     "background"
   ],
   "runtime": "native-isolated",

@@ -150,6 +150,16 @@ struct PluginStoreTests {
     }
 }
 
+struct UnicodeSearchTests {
+    @Test func searchFoldsCaseBeyondASCII() throws {
+        let store = try PluginStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("uni-\(UUID().uuidString)"))
+        try store.put(StoredDocument(collection: "c", id: "1", body: ["v": "x"], searchText: "Привет, Ärger und Öl", sortKey: 1))
+        #expect(try store.query(StorageQuery(collection: "c", search: "привет")).documents.count == 1)
+        #expect(try store.query(StorageQuery(collection: "c", search: "ärger")).documents.count == 1)
+        #expect(try store.count(StorageQuery(collection: "c", search: "öl")) == 1)
+    }
+}
+
 struct HostDatabaseTests {
     @Test func settingsAndOperations() throws {
         let db = try HostDatabase()

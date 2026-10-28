@@ -44,6 +44,7 @@ struct ShortcutsPage: View {
                             Text(entry.title)
                             if !entry.isPluginEnabled { Text(l.pluginDisabledNote) }
                             else if entry.state == .unavailable { Text(l.unavailable).foregroundStyle(.orange) }
+                            else if entry.state == .conflict { Text(l.t("与其他快捷键冲突，未生效", "Conflicts with another shortcut; not active")).foregroundStyle(.orange) }
                         }
                         .opacity(entry.isPluginEnabled ? 1 : 0.55)
                     }
@@ -66,15 +67,22 @@ struct ShortcutsPage: View {
                 case .clear: apply(nil)
                 case .shortcut(let shortcut):
                     if let reason = shortcut.rejection() { message = l.shortcutRejected(reason); return }
-                    // Internal conflicts need an explicit replacement decision (PRD §19.12).
-                    if let other = model.snapshot.entries.hotkeys.first(where: { $0.shortcut == shortcut && $0.id != key }) {
+                    // Internal conflicts need an explicit replacement decision (PRD §19.12), including the
+                    // command palette's own shortcut.
+                    let palette = model.settings.commandPaletteShortcut.flatMap(KeyShortcut.init(manifestString:))
+                    let other = model.snapshot.entries.hotkeys.first(where: { $0.shortcut == shortcut && $0.id != key })
+                    if other != nil || (key != "host.palette" && palette == shortcut) {
                         let alert = NSAlert()
                         alert.messageText = shortcut.displayString
-                        alert.informativeText = l.conflictMessage(other.title)
+                        alert.informativeText = l.conflictMessage(other?.title ?? l.openCommandPalette)
                         alert.addButton(withTitle: l.cancel)
                         alert.addButton(withTitle: l.replace)
                         guard alert.runModal() == .alertSecondButtonReturn else { return }
-                        Task { try? await model.engine.registry.setHotkey(other.ref, shortcut: nil) }
+                        if let other {
+                            Task { try? await model.engine.registry.setHotkey(other.ref, shortcut: nil) }
+                        } else {
+                            model.update { $0.commandPaletteShortcut = nil }
+                        }
                     }
                     apply(shortcut)
                 }

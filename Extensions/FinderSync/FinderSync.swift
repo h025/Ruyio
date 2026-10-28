@@ -8,6 +8,8 @@ final class FinderSync: FIFinderSync {
     private var snapshot: FinderMenuSnapshot?
     private var lastSnapshotDate: Date?
     private var pending: [Int: (group: FinderMenuSnapshot.Group, item: FinderMenuSnapshot.Item, childID: String?)] = [:]
+    /// Tags carry the menu build they belong to, so a click on an older menu never maps to a newer item.
+    private var menuBuild = 0
 
     override init() {
         super.init()
@@ -45,6 +47,7 @@ final class FinderSync: FIFinderSync {
         let selection = menuKind == .contextualMenuForItems ? (controller.selectedItemURLs() ?? []) : []
         let menu = NSMenu(title: "")
         pending.removeAll()
+        menuBuild = (menuBuild + 1) % 1_000
 
         guard let snapshot else {
             let item = NSMenuItem(title: "Ruyio › Open Ruyio to Load", action: #selector(openHost(_:)), keyEquivalent: "")
@@ -59,7 +62,7 @@ final class FinderSync: FIFinderSync {
             selectionHasFiles: directories.count < selection.count, clipboardKinds: snapshot.clipboardKinds)
 
         let root = NSMenu(title: snapshot.rootTitle)
-        var tag = 1
+        var tag = menuBuild * 10_000 + 1
         for group in snapshot.groups {
             let submenu = NSMenu(title: group.title)
             for item in group.items where FinderContextMatcher.applies(item, to: context) {
@@ -105,7 +108,7 @@ final class FinderSync: FIFinderSync {
 
     /// Freezes the click (target, selection, action, snapshot version) and hands it to the host.
     @objc private func runMenuItem(_ sender: NSMenuItem) {
-        guard let entry = pending[sender.tag], let snapshot else { return }
+        guard sender.tag / 10_000 == menuBuild, let entry = pending[sender.tag], let snapshot else { return }
         let controller = FIFinderSyncController.default()
         let request = FinderRequest(pluginID: entry.group.pluginID, actionID: entry.item.actionID, dynamicItemID: entry.childID,
                                     targetDirectory: controller.targetedURL()?.path,

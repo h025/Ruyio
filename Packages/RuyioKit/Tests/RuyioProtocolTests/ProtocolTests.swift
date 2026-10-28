@@ -28,6 +28,14 @@ struct FramingTests {
         #expect(throws: RuyioError.self) { _ = try decoder.next() }
     }
 
+    @Test func deeplyNestedJSONIsRejectedWithoutExhaustingTheStack() throws {
+        // ~2 KB of nesting used to overflow the reader thread's stack and crash the host.
+        let deep = String(repeating: "{\"a\":", count: 2_000) + "1" + String(repeating: "}", count: 2_000)
+        #expect(throws: (any Error).self) { _ = try JSONDecoder().decode(JSONValue.self, from: Data(deep.utf8)) }
+        let ok = String(repeating: "[", count: 20) + "1" + String(repeating: "]", count: 20)
+        #expect((try? JSONDecoder().decode(JSONValue.self, from: Data(ok.utf8))) != nil)
+    }
+
     @Test func rejectsGarbage() {
         var decoder = FrameDecoder()
         var length = UInt32(3).bigEndian

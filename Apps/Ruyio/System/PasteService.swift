@@ -11,7 +11,8 @@ final class PasteService {
     private(set) var previousApp: NSRunningApplication?
     /// When Ruyio itself was in front (onboarding practice field), the host inserts the text directly:
     /// no ⌘V simulation and no Accessibility request (PRD §19.1).
-    var inAppPasteTarget: ((String) -> Bool)?
+    /// Receives the pasted text, or nil for non-text content such as an image.
+    var inAppPasteTarget: ((String?) -> Bool)?
 
     func rememberFrontmostApp() {
         let front = NSWorkspace.shared.frontmostApplication
@@ -20,9 +21,8 @@ final class PasteService {
 
     /// Returns true when the content was delivered to an in-app target.
     func deliverInApp() -> Bool {
-        guard previousApp == nil, let target = inAppPasteTarget,
-              let text = NSPasteboard.general.string(forType: .string) else { return false }
-        return target(text)
+        guard previousApp == nil, let target = inAppPasteTarget else { return false }
+        return target(NSPasteboard.general.string(forType: .string))
     }
 
     enum Outcome { case pasted, copiedOnly(reason: String) }

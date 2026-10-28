@@ -28,6 +28,7 @@ public final class InvocationContexts: @unchecked Sendable {
 
     private let lock = NSLock()
     private var grants: [String: Grant] = [:]
+    private var ended: [ExecutionID: Date] = [:]
     public var lifetime: TimeInterval = 600
     public var uses: Int = 64
 
@@ -66,8 +67,30 @@ public final class InvocationContexts: @unchecked Sendable {
         }
     }
 
+    /// Re-checks a reference already resolved in this request without consuming a use, so one batched
+    /// write of N items costs one use, not N + 1.
+    public func isStillValid(_ fileRef: FileRef, for pluginID: PluginID) -> Bool {
+        lock.withLock {
+            guard let grant = grants[fileRef.ref], grant.pluginID == pluginID, grant.expiresAt > Date() else { return false }
+            if let identity = grant.fileIdentity, FileIdentity.of(grant.url) != identity { return false }
+            return true
+        }
+    }
+
     public func revokeAll(for execution: ExecutionID) {
-        lock.withLock { grants = grants.filter { $0.value.executionID != execution } }
+        lock.withLock {
+            grants = grants.filter { $0.value.executionID != execution }
+            let cutoff = Date().addingTimeInterval(-3600)
+            ended = ended.filter { $0.value > cutoff }
+            ended[execution] = Date()
+        }
+    }
+
+    /// True once the execution finished, timed out or was cancelled. Work that waited on the user
+    /// (a chooser, a confirmation) checks this before acting, so a timed-out request never acts late.
+    public func hasEnded(_ execution: ExecutionID?) -> Bool {
+        guard let execution else { return false }
+        return lock.withLock { ended[execution] != nil }
     }
 
     public func revokeAll(pluginID: PluginID) {

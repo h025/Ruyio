@@ -94,6 +94,7 @@ public final class FinderEssentialsPlugin: RuyioPlugin, @unchecked Sendable {
     func validate(_ name: String) -> String? {
         if name.isEmpty || name == "." || name == ".." { return t("请输入文件名", "Enter a file name") }
         if name.contains("/") || name.contains(":") { return t("文件名不能包含 / 或 :", "File names cannot contain / or :") }
+        if name.hasPrefix(".") { return t("不能创建以“.”开头的隐藏文件", "Hidden files starting with “.” cannot be created here") }
         if name.utf8.count > 255 { return t("文件名过长", "File name is too long") }
         return nil
     }

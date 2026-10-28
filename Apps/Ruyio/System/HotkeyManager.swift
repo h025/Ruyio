@@ -79,10 +79,30 @@ final class HotkeyManager {
         ]
         if let code = fixed[key] { return code }
         guard key.count == 1, let character = key.first else { return nil }
-        // Hotkeys follow the physical layout of the current input source for letters and digits.
+        // Hotkeys follow the physical layout of the current input source for letters and digits; layouts
+        // without Latin letters (Cyrillic, Greek…) fall back to the ANSI position, as paste does.
         if let code = KeyboardLayout.keyCode(for: character) { return Int(code) }
-        return nil
+        return ansi[key]
     }
+
+    static let ansi: [String: Int] = [
+        "a": kVK_ANSI_A, "b": kVK_ANSI_B, "c": kVK_ANSI_C, "d": kVK_ANSI_D, "e": kVK_ANSI_E, "f": kVK_ANSI_F, "g": kVK_ANSI_G,
+        "h": kVK_ANSI_H, "i": kVK_ANSI_I, "j": kVK_ANSI_J, "k": kVK_ANSI_K, "l": kVK_ANSI_L, "m": kVK_ANSI_M, "n": kVK_ANSI_N,
+        "o": kVK_ANSI_O, "p": kVK_ANSI_P, "q": kVK_ANSI_Q, "r": kVK_ANSI_R, "s": kVK_ANSI_S, "t": kVK_ANSI_T, "u": kVK_ANSI_U,
+        "v": kVK_ANSI_V, "w": kVK_ANSI_W, "x": kVK_ANSI_X, "y": kVK_ANSI_Y, "z": kVK_ANSI_Z,
+        "0": kVK_ANSI_0, "1": kVK_ANSI_1, "2": kVK_ANSI_2, "3": kVK_ANSI_3, "4": kVK_ANSI_4, "5": kVK_ANSI_5, "6": kVK_ANSI_6,
+        "7": kVK_ANSI_7, "8": kVK_ANSI_8, "9": kVK_ANSI_9,
+    ]
+
+    /// Named keys by key code (punctuation, arrows, function keys), so ⇧⌘1 or ⌘, record as written.
+    static let namedKeys: [Int: String] = [
+        kVK_Space: "space", kVK_Return: "return", kVK_Tab: "tab", kVK_UpArrow: "up", kVK_DownArrow: "down",
+        kVK_LeftArrow: "left", kVK_RightArrow: "right", kVK_ANSI_Comma: "comma", kVK_ANSI_Period: "period", kVK_ANSI_Slash: "slash",
+        kVK_ANSI_Semicolon: "semicolon", kVK_ANSI_Quote: "quote", kVK_ANSI_LeftBracket: "leftbracket", kVK_ANSI_RightBracket: "rightbracket",
+        kVK_ANSI_Backslash: "backslash", kVK_ANSI_Minus: "minus", kVK_ANSI_Equal: "equal", kVK_ANSI_Grave: "grave",
+        kVK_F1: "f1", kVK_F2: "f2", kVK_F3: "f3", kVK_F4: "f4", kVK_F5: "f5", kVK_F6: "f6", kVK_F7: "f7", kVK_F8: "f8",
+        kVK_F9: "f9", kVK_F10: "f10", kVK_F11: "f11", kVK_F12: "f12",
+    ]
 
     /// Translates a key-down event into a shortcut for the recorder (PRD §19.12).
     static func shortcut(from event: NSEvent) -> KeyShortcut? {
@@ -92,10 +112,11 @@ final class HotkeyManager {
         if flags.contains(.shift) { modifiers.insert(.shift) }
         if flags.contains(.option) { modifiers.insert(.option) }
         if flags.contains(.control) { modifiers.insert(.control) }
-        let special: [UInt16: String] = [UInt16(kVK_Space): "space", UInt16(kVK_Return): "return", UInt16(kVK_Tab): "tab"]
-        if let name = special[event.keyCode] { return KeyShortcut(key: name, modifiers: modifiers) }
-        for n in 1...12 where Int(event.keyCode) == keyCode("f\(n)") { return KeyShortcut(key: "f\(n)", modifiers: modifiers) }
-        guard let chars = event.charactersIgnoringModifiers?.lowercased(), chars.count == 1, KeyShortcut.knownKeys.contains(chars) else { return nil }
-        return KeyShortcut(key: chars, modifiers: modifiers)
+        if let name = namedKeys[Int(event.keyCode)], KeyShortcut.knownKeys.contains(name) { return KeyShortcut(key: name, modifiers: modifiers) }
+        // The character the key produces with no modifiers on the current layout: ⇧1 records as "1", not "!".
+        let base = event.characters(byApplyingModifiers: [])?.lowercased()
+        if let chars = base, chars.count == 1, KeyShortcut.knownKeys.contains(chars) { return KeyShortcut(key: chars, modifiers: modifiers) }
+        if let letter = ansi.first(where: { $0.value == Int(event.keyCode) })?.key { return KeyShortcut(key: letter, modifiers: modifiers) }
+        return nil
     }
 }

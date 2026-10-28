@@ -23,6 +23,8 @@ public final class StoreProvider: @unchecked Sendable {
     private let paths: AppPaths
     private let lock = NSLock()
     private var stores: [String: PluginStore] = [:]
+    private var maintenance: [ObjectIdentifier: DispatchWorkItem] = [:]
+    private let maintenanceQueue = DispatchQueue(label: "ruyio.store.maintenance", qos: .utility)
     private let identity: @Sendable (PluginID) -> String
     public var excludeFromBackup: @Sendable (PluginID) -> Bool
 
@@ -41,8 +43,29 @@ public final class StoreProvider: @unchecked Sendable {
             let root = directory.deletingLastPathComponent()
             try? BackupPolicy.setExcludedFromBackup(excludeFromBackup(pluginID), at: root)
             stores[key] = store
+            // Leftovers from earlier runs (deletes just before quit, abandoned uploads) are reclaimed on open.
+            if !readOnly { scheduleMaintenanceLocked(store, delay: 30) }
             return store
         }
+    }
+
+    /// Deleted content must really leave the disk and the quota (plan §11.4): orphaned blobs are removed,
+    /// FTS segments optimised and the WAL truncated. Debounced, off the request path.
+    public func scheduleMaintenance(_ store: PluginStore, delay: TimeInterval = 5) {
+        lock.withLock { scheduleMaintenanceLocked(store, delay: delay) }
+    }
+
+    private func scheduleMaintenanceLocked(_ store: PluginStore, delay: TimeInterval) {
+        let id = ObjectIdentifier(store)
+        maintenance[id]?.cancel()
+        let work = DispatchWorkItem { [weak self, weak store] in
+            guard let store else { return }
+            _ = try? store.collectGarbage()
+            try? store.compact(vacuum: false)
+            self?.lock.withLock { _ = self?.maintenance.removeValue(forKey: id) }
+        }
+        maintenance[id] = work
+        maintenanceQueue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     public func store(for session: SessionInfo) throws -> PluginStore {
@@ -131,6 +154,7 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
             case StorageMethod.delete:
                 let key = try JSONCoding.decode(StorageKey.self, from: envelope.payload)
                 try store.delete(collection: key.collection, id: key.id)
+                stores.scheduleMaintenance(store)
                 return .null
             case StorageMethod.query:
                 return try JSONCoding.value(try store.query(try JSONCoding.decode(StorageQuery.self, from: envelope.payload)))
@@ -138,6 +162,7 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
                 return .number(Double(try store.count(try JSONCoding.decode(StorageQuery.self, from: envelope.payload))))
             case StorageMethod.batch:
                 try store.batch(try JSONCoding.decode(StorageBatch.self, from: envelope.payload).operations)
+                stores.scheduleMaintenance(store)
                 return .null
             case StorageMethod.blobPut:
                 return try JSONCoding.value(try store.appendUpload(try JSONCoding.decode(BlobPutRequest.self, from: envelope.payload)))
@@ -192,6 +217,7 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
             if unique.count > 1, !(await bridge.confirmBatch(title: "terminal", count: unique.count)) {
                 throw RuyioError(.cancelled)
             }
+            guard !contexts.hasEnded(envelope.executionID) else { throw RuyioError(.cancelled) }
             try await bridge.openTerminal(at: unique)
             return .null
 
@@ -206,12 +232,14 @@ public final class HostServices: PluginServiceHandler, @unchecked Sendable {
                 if let chosen = bundleID { try database.setPluginSetting(pluginID, key: key, value: .string(chosen)) }
             }
             guard let bundleID else { throw RuyioError(.cancelled, recovery: .chooseApplication) }
+            guard !contexts.hasEnded(envelope.executionID) else { throw RuyioError(.cancelled) }
             do {
                 try await bridge.open(urls, withApplicationBundleID: bundleID)
             } catch {
                 // The configured app was removed: ask again and continue the same task (PRD §19.18).
                 guard let chosen = await bridge.chooseApplication(role: request.role) else { throw RuyioError(.cancelled, recovery: .chooseApplication) }
                 try database.setPluginSetting(pluginID, key: key, value: .string(chosen))
+                guard !contexts.hasEnded(envelope.executionID) else { throw RuyioError(.cancelled) }
                 try await bridge.open(urls, withApplicationBundleID: chosen)
             }
             return .null

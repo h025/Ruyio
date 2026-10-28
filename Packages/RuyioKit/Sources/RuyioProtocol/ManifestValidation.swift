@@ -30,8 +30,10 @@ public enum ManifestValidator {
         if manifest.runtime != "native-isolated" { issues.append(.init(field: "runtime", reason: "unsupported runtime")) }
         if !manifest.architectures.contains("arm64") { issues.append(.init(field: "architectures", reason: "arm64 required")) }
         if manifest.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { issues.append(.init(field: "name", reason: "empty")) }
-        if !isSafeRelativePath(manifest.bundlePath) || !manifest.bundlePath.hasSuffix(".app") {
-            issues.append(.init(field: "bundlePath", reason: "must be a relative .app path inside the package"))
+        // One level only: the installer moves the package root, so a nested bundle path would point the record
+        // at a different bundle than the one verified.
+        if !isSafeRelativePath(manifest.bundlePath) || !manifest.bundlePath.hasSuffix(".app") || manifest.bundlePath.contains("/") {
+            issues.append(.init(field: "bundlePath", reason: "must be a .app at the top of the package"))
         }
         let expectedPrefix = manifest.bundlePath + "/Contents/MacOS/"
         if !isSafeRelativePath(manifest.executable) || !manifest.executable.hasPrefix(expectedPrefix) {

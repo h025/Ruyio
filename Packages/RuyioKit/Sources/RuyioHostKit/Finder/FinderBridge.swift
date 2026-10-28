@@ -18,6 +18,7 @@ public final class FinderBridge: @unchecked Sendable {
     private var handler: (@Sendable (FinderRequest, InvocationRequest) async -> Void)?
     private var rejectHandler: (@Sendable (FinderRequest, RuyioError) -> Void)?
     private var writeScheduled = false
+    private var ready = true
 
     public init(containerURL: URL) {
         self.containerURL = containerURL
@@ -46,10 +47,16 @@ public final class FinderBridge: @unchecked Sendable {
         scheduleWrite()
     }
 
+    /// Decoded reports bypass the initializer's limits, so they are clamped again here.
     public func update(dynamicItems report: DynamicItemsReport, pluginID: PluginID) {
+        var clamped = report
+        clamped.items = report.items.prefix(FinderWire.maxDynamicItems).map {
+            DynamicItemsReport.Item(id: String($0.id.prefix(64)), title: String($0.title.prefix(80)), kind: String($0.kind.prefix(16)))
+        }
+        clamped.clipboardKinds = Array(report.clipboardKinds.prefix(8).map { String($0.prefix(16)) })
         lock.withLock {
-            dynamicItems["\(pluginID.rawValue)#\(report.provider)"] = (report, Date())
-            if !report.clipboardKinds.isEmpty || report.provider == "recentItems" { clipboardKinds = report.clipboardKinds }
+            dynamicItems["\(pluginID.rawValue)#\(report.provider)"] = (clamped, Date())
+            if !clamped.clipboardKinds.isEmpty || report.provider == "recentItems" { clipboardKinds = clamped.clipboardKinds }
         }
         scheduleWrite()
     }
@@ -136,6 +143,17 @@ public final class FinderBridge: @unchecked Sendable {
         queue.async { [weak self] in self?.drainQueue() }
     }
 
+    /// While the host is still starting, clicks wait in the queue instead of being judged against an
+    /// empty registry (a cold-start click would otherwise always be rejected). Their TTL still applies.
+    public func holdUntilReady() {
+        lock.withLock { ready = false }
+    }
+
+    public func markReady() {
+        lock.withLock { ready = true }
+        queue.async { [weak self] in self?.drainQueue() }
+    }
+
     public func stopListening() {
         lock.withLock { source?.cancel(); source = nil }
         CFNotificationCenterRemoveEveryObserver(CFNotificationCenterGetDarwinNotifyCenter(), Unmanaged.passUnretained(self).toOpaque())
@@ -143,6 +161,7 @@ public final class FinderBridge: @unchecked Sendable {
 
     /// Reads, validates and consumes every pending request exactly once.
     public func drainQueue(now: Date = Date()) {
+        guard lock.withLock({ ready }) else { return }
         let files = (try? FileManager.default.contentsOfDirectory(at: requestsURL, includingPropertiesForKeys: [.fileSizeKey])) ?? []
         for file in files where file.pathExtension == "json" {
             let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0

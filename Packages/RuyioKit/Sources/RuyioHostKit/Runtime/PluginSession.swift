@@ -90,15 +90,14 @@ public final class PluginSession: @unchecked Sendable {
                 case .request: return method.hasPrefix(Method.storagePrefix) || method.hasPrefix(Method.capabilityPrefix)
                 }
             },
+            // Only host-initiated work counts as activity: a plugin cannot keep itself alive past the idle
+            // timeout without the background permission by sending its own traffic.
             onRequest: { [weak self] envelope in
                 guard let self, let services = self.services else { throw RuyioError(.internalError) }
-                self.touch()
                 return try await services.handleRequest(envelope, session: info)
             },
             onEvent: { [weak self] envelope in
-                guard let self else { return }
-                self.touch()
-                self.services?.handleEvent(envelope, session: info)
+                self?.services?.handleEvent(envelope, session: info)
             },
             onClose: { [weak self] reason in
                 self?.channelClosed(reason)

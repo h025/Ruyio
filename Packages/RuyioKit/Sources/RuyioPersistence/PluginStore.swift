@@ -31,6 +31,8 @@ public final class PluginStore: Sendable {
         var config = Configuration()
         config.readonly = readOnly
         config.prepareDatabase { db in
+            // Unicode case folding for search confirmation; SQLite's lower() only folds ASCII.
+            db.add(function: PluginStore.foldFunction)
             // Deleted content must not linger in free pages (plan §11.4).
             try db.execute(sql: "PRAGMA secure_delete = ON")
         }
@@ -144,8 +146,8 @@ public final class PluginStore: Sendable {
                     arguments += [Self.ftsPhrase(search), query.collection]
                 }
                 // Confirmation (and the whole match for 1–2 characters) on the stored text.
-                clauses.append("instr(lower(d.search_text), lower(?)) > 0")
-                arguments += [search]
+                clauses.append("instr(ruyio_fold(d.search_text), ?) > 0")
+                arguments += [Self.fold(search)]
             }
             if let cursor = query.cursor.flatMap(Cursor.decode) {
                 if query.ascending {
@@ -177,8 +179,8 @@ public final class PluginStore: Sendable {
             var arguments: StatementArguments = [query.collection]
             Self.appendFilters(query.filters, to: &clauses, arguments: &arguments)
             if let search = query.search?.trimmingCharacters(in: .whitespacesAndNewlines), !search.isEmpty {
-                clauses.append("instr(lower(d.search_text), lower(?)) > 0")
-                arguments += [search]
+                clauses.append("instr(ruyio_fold(d.search_text), ?) > 0")
+                arguments += [Self.fold(search)]
             }
             return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM document d WHERE \(clauses.joined(separator: " AND "))", arguments: arguments) ?? 0
         }
@@ -273,6 +275,14 @@ public final class PluginStore: Sendable {
             if vacuum { try db.execute(sql: "VACUUM") }
             try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
         }
+    }
+
+    static func fold(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .widthInsensitive], locale: nil)
+    }
+
+    static let foldFunction = DatabaseFunction("ruyio_fold", argumentCount: 1, pure: true) { values in
+        String.fromDatabaseValue(values[0]).map(fold)
     }
 
     /// Consistent copy for update backups; never copies a live db/WAL pair (plan §15.2).

@@ -32,6 +32,9 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     private var pendingSettings: Settings?
     private var capturesSinceCleanup = 0
     private var monitor: CaptureMonitor?
+    private var maintenanceTask: Task<Void, Never>?
+    /// Textual representations above this size are stored as blobs: an inline body must fit one IPC frame.
+    static let inlineTextLimit = 256 * 1024
 
     static let historyView = "history"
     static let settingsView = "settings"
@@ -54,10 +57,31 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         await applyRetention()
         await MainActor.run { self.setUpMonitor() }
         await publishDynamicItems()
+        // Retention is a promise about the past, not about the next copy: enforce it on a clock too.
+        let task = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3600))
+                guard let self, !Task.isCancelled else { return }
+                await self.purgeExpiredSoftDeletes()
+                await self.applyRetention()
+                await self.publishDynamicItems()
+                self.refreshOpenView()
+            }
+        }
+        lock.withLock { maintenanceTask = task }
     }
 
     public func shutdown() async {
+        lock.withLock { maintenanceTask }?.cancel()
         await MainActor.run { monitor?.stop() }
+    }
+
+    /// Status text, Finder item titles and an open view are all re-rendered in the new language.
+    public func localeChanged(_ locale: String) async {
+        let (state, detail) = lock.withLock { (captureState, captureDetail) }
+        captureStateChanged(state, detail)
+        await publishDynamicItems()
+        refreshOpenView()
     }
 
     @MainActor
@@ -115,8 +139,11 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
                 try await context.storage.put(try record.document())
             }
         } catch {
-            context.publishStatus(PluginStatusReport(captureState: .failed, statusText: strings.t("记录失败", "Recording failed"),
-                                                     detail: (error as? RuyioError)?.code.rawValue))
+            // A full store stops every later capture, so it becomes the capture state (and "Recheck" re-probes);
+            // a single item that could not be saved does not.
+            if (error as? RuyioError)?.code == .storageQuotaExceeded {
+                captureStateChanged(.failed, ErrorCode.storageQuotaExceeded.rawValue)
+            }
             return
         }
         capturesSinceCleanup += 1
@@ -136,13 +163,20 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         var fileNames: [String] = []
         var filePaths: [String] = []
         var searchParts: [String] = []
+        var titleSource: String?
         for item in clip.items {
             var representations: [ClipRecord.Representation] = []
             for type in item.keys.sorted() {
                 guard let data = item[type] else { continue }
                 let isTextual = [PasteboardRules.text, PasteboardRules.url, PasteboardRules.fileURL, PasteboardRules.html].contains(type)
                 if isTextual, let string = String(data: data, encoding: .utf8) {
-                    representations.append(.init(type: type, text: string, blobID: nil, byteCount: data.count))
+                    if data.count <= Self.inlineTextLimit {
+                        representations.append(.init(type: type, text: string, blobID: nil, byteCount: data.count))
+                    } else {
+                        // Large text keeps its full bytes in a blob; title and search still use the text.
+                        representations.append(.init(type: type, text: nil, blobID: try await context.storage.putBlob(data), byteCount: data.count))
+                    }
+                    if type == PasteboardRules.text { titleSource = string } else if type == PasteboardRules.url && titleSource == nil { titleSource = string }
                     if type == PasteboardRules.text || type == PasteboardRules.url { searchParts.append(ClipText.searchText(for: string)) }
                     if type == PasteboardRules.fileURL, let url = URL(string: string) {
                         fileNames.append(url.lastPathComponent)
@@ -168,9 +202,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         case .file: title = s.filesTitle(fileNames.first ?? s.kindName(.file), fileNames.count)
         case .image: title = imageSize.map { s.imageTitle($0[0], $0[1]) } ?? s.kindName(.image)
         default:
-            let text = items.lazy.compactMap { $0.representations.first(where: { $0.type == PasteboardRules.text })?.text }.first
-                ?? items.lazy.compactMap { $0.representations.first(where: { $0.type == PasteboardRules.url })?.text }.first ?? ""
-            title = ClipText.title(for: text)
+            title = ClipText.title(for: titleSource ?? "")
         }
         searchParts.append(contentsOf: fileNames)
         if let app = clip.sourceApp { searchParts.append(app) }
@@ -328,7 +360,10 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             }
             throw RuyioError(.fileWriteFailed, diagnostic: "image data missing")
         case .text, .richText:
-            return FileWriteItem(fileName: Self.savedFileName(record.kind, stamp: stamp, ext: "txt", strings: strings), source: .text(record.plainText() ?? record.title))
+            let name = Self.savedFileName(record.kind, stamp: stamp, ext: "txt", strings: strings)
+            // Large text lives in a blob (see `inlineTextLimit`); save the full bytes, not the title.
+            if let blob = reps.first(where: { $0.type == PasteboardRules.text })?.blobID { return FileWriteItem(fileName: name, source: .blob(blob)) }
+            return FileWriteItem(fileName: name, source: .text(record.plainText() ?? record.title))
         case .file:
             throw RuyioError(.invalidRequest, diagnostic: "file records are pasted from the history panel")
         }

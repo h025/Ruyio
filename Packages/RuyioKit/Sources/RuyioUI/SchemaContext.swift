@@ -16,6 +16,8 @@ public final class SchemaContext: ObservableObject {
     @Published public var localSelection: String?
     /// Host-owned close for floating presentations (close button); plugins cannot trigger it.
     public var dismiss: (() -> Void)?
+    /// Host-drawn provenance line for third-party plugins ("From the plugin …, Team …").
+    public var source: String?
 
     private let sendEvent: (ViewEvent, Int) async -> Void
     private let loadBlob: (String) async -> NSImage?
