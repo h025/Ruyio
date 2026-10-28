@@ -21,9 +21,15 @@ jobs:
     # Liquid Glass code needs the macOS 26 SDK; macos-15 images default to Xcode 16.
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+      # Watchdog: a run with no test starting or ending for two minutes (or past 15 minutes) is stopped;
+      # hung or failing tests and stuck stacks are written as check annotations, readable without signing
+      # in (job logs are not).
       - name: Package tests
-        run: swift test --package-path Packages/RuyioKit
+        run: Scripts/ci-test.sh
+        env:
+          # Build plus tests take about four minutes here.
+          RUYIO_TEST_LIMIT: 900
       - name: Generate project
         run: brew install xcodegen && xcodegen generate
       - name: Build app (ad-hoc, arm64)
