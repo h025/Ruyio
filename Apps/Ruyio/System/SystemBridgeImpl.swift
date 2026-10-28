@@ -102,7 +102,8 @@ final class SystemBridgeImpl: SystemBridge, @unchecked Sendable {
     }
 
     func place(_ urls: [URL], at location: CGPoint) async {
-        await DesktopPlacement.place(urls, at: location)
+        let log = await MainActor.run { model?.engine.log }
+        await DesktopPlacement.place(urls, at: location) { fields in log?.record(.desktopPlacement, fields) }
     }
 
     func pinImage(_ data: Data, scale: Double, pluginID: PluginID) async throws {

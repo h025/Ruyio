@@ -9,7 +9,7 @@ public final class DiagnosticLog: @unchecked Sendable {
 
     public enum Event: String, Sendable {
         case hostStarted, pluginInstalled, pluginEnabled, pluginDisabled, pluginUninstalled, pluginCrashed
-        case actionCompleted, updateCompleted, updateRolledBack, marketRefreshed, finderRequest, permissionChanged
+        case actionCompleted, updateCompleted, updateRolledBack, marketRefreshed, finderRequest, permissionChanged, desktopPlacement
     }
 
     private let directory: URL
