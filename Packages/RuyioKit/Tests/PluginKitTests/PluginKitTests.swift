@@ -82,4 +82,12 @@ struct PasteboardRulesTests {
         #expect(ClipText.title(for: "\n\n  项目会议纪要\n第二行") == "项目会议纪要")
         #expect(ClipText.title(for: String(repeating: "a", count: 300)).count == 201)
     }
+
+    @Test func savedFileNamesFollowUILanguage() {
+        let stamp = "2026-10-27 22.30.43"
+        let zh = Strings(locale: "zh-Hans"), en = Strings(locale: "en")
+        #expect(ClipboardHistoryPlugin.savedFileName(.richText, stamp: stamp, ext: "txt", strings: zh) == "文本 2026-10-27 22.30.43.txt")
+        #expect(ClipboardHistoryPlugin.savedFileName(.image, stamp: stamp, ext: "png", strings: zh) == "图片 2026-10-27 22.30.43.png")
+        #expect(ClipboardHistoryPlugin.savedFileName(.url, stamp: stamp, ext: "webloc", strings: en) == "Link 2026-10-27 22.30.43.webloc")
+    }
 }

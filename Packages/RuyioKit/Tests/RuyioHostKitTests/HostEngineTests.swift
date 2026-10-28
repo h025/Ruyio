@@ -149,6 +149,36 @@ struct HostEngineTests {
         await engine2.shutdown()
     }
 
+    @Test func devBuildReplacesRebuiltDefaultWithSameVersionAndKeepsDataAndPreference() async throws {
+        let zip = try PackageFixture.build()
+        let (engine, paths) = try makeEngine()
+        try await engine.start(bundledPackages: [zip])
+        #expect(await engine.invoke(InvocationRequest(ref: ref("storage"), entry: .commandPalette)).output == .notice("中文内容"))
+        await engine.disable(id)
+        let firstDigest = await engine.registry.record(id)?.artifactSHA256
+        await engine.shutdown()
+
+        // Same version, different build (e.g. a plugin code change during development).
+        let rebuilt = try PackageFixture.build(infoOverrides: ["CFBundleVersion": "2"])
+        let engine2 = try HostEngine(paths: paths, locale: "en")
+        engine2.setBridge(TestBridge())
+        try await engine2.start(bundledPackages: [rebuilt])
+        let record = try #require(await engine2.registry.record(id))
+        #expect(record.artifactSHA256 == HostEngine.sha256(of: rebuilt))
+        #expect(record.artifactSHA256 != firstDigest)
+        #expect(await engine2.registry.status(id)?.activation == .disabled)
+        #expect(await engine2.enable(id) == nil)
+        #expect(await engine2.invoke(InvocationRequest(ref: ref("storage-read"), entry: .commandPalette)).output == .notice("中文内容"))
+
+        // An unchanged package is left alone.
+        await engine2.shutdown()
+        let engine3 = try HostEngine(paths: paths, locale: "en")
+        engine3.setBridge(TestBridge())
+        try await engine3.start(bundledPackages: [rebuilt])
+        #expect(await engine3.registry.record(id)?.installedAt == record.installedAt)
+        await engine3.shutdown()
+    }
+
     @Test func installerRejectsUnsandboxedAndForbiddenPlist() throws {
         let (engine, _) = try makeEngine()
         let unsandboxed = try PackageFixture.build(sandbox: false)

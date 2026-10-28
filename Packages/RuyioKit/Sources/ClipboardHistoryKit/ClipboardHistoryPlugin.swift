@@ -317,21 +317,26 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
             <plist version="1.0"><dict><key>URL</key><string>\(Self.xmlEscape(link.trimmingCharacters(in: .whitespacesAndNewlines)))</string></dict></plist>
             """
-            return FileWriteItem(fileName: "Link \(stamp).webloc", source: .text(plist))
+            return FileWriteItem(fileName: Self.savedFileName(.url, stamp: stamp, ext: "webloc", strings: strings), source: .text(plist))
         case .image:
             let ordered = [PasteboardRules.png, PasteboardRules.jpeg, PasteboardRules.heic, PasteboardRules.tiff]
             for type in ordered {
                 if let rep = reps.first(where: { $0.type == type }), let blob = rep.blobID {
                     let ext = type == PasteboardRules.jpeg ? "jpg" : (type == PasteboardRules.heic ? "heic" : (type == PasteboardRules.tiff ? "tiff" : "png"))
-                    return FileWriteItem(fileName: "Image \(stamp).\(ext)", source: .blob(blob))
+                    return FileWriteItem(fileName: Self.savedFileName(.image, stamp: stamp, ext: ext, strings: strings), source: .blob(blob))
                 }
             }
             throw RuyioError(.fileWriteFailed, diagnostic: "image data missing")
         case .text, .richText:
-            return FileWriteItem(fileName: "Text \(stamp).txt", source: .text(record.plainText() ?? record.title))
+            return FileWriteItem(fileName: Self.savedFileName(record.kind, stamp: stamp, ext: "txt", strings: strings), source: .text(record.plainText() ?? record.title))
         case .file:
             throw RuyioError(.invalidRequest, diagnostic: "file records are pasted from the history panel")
         }
+    }
+
+    /// Default name from content type and time, in the UI language (PRD §19.17). Rich text is saved as plain text.
+    static func savedFileName(_ kind: PasteboardRules.Kind, stamp: String, ext: String, strings: Strings) -> String {
+        "\(strings.kindName(kind == .richText ? .text : kind)) \(stamp).\(ext)"
     }
 
     static func fileStamp(_ date: Date) -> String {

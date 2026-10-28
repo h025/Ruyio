@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import RuyioCore
 import RuyioPersistence
@@ -111,6 +112,12 @@ public final class HostEngine: @unchecked Sendable {
                    preview.isInstallable {
                     _ = await updater.update(with: preview)
                 }
+            } else if let installed, installed.isDefault, installed.updateChannel == .bundledWithHost, HostInfo.officialTeamID.isEmpty,
+                      installed.version == package.manifest.version.description, let digest = Self.sha256(of: package.url),
+                      installed.artifactSHA256 != digest {
+                // Development builds only (decided A22): a rebuilt default plugin keeps its version, so the stale
+                // installed copy is replaced in place. Same version means same data schema; data is untouched.
+                _ = try? await install(bundled: package, enable: installed.enabledPreference)
             }
         }
 
@@ -122,6 +129,12 @@ public final class HostEngine: @unchecked Sendable {
                 try? await registry.setActivation(id, .disabled)
             }
         }
+    }
+
+    /// Same digest format as `PluginInstaller.inspect`; unpacked directory packages have none.
+    static func sha256(of url: URL) -> String? {
+        guard !url.hasDirectoryPath, let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     static func readBundledPackage(_ url: URL) -> BundledPackage? {

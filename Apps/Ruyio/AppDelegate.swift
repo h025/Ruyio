@@ -260,9 +260,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 Task { self.handle(await self.model.engine.invoke(invocation), request: invocation) }
             }
-        }, rejected: { [weak self] _, error in
+        }, rejected: { [weak self] request, error in
             Task { @MainActor in
                 guard let self else { return }
+                // Identifiers and the result code only; never the selection or target paths (PRD §21).
+                self.model.engine.log.record(.finderRequest, ["plugin": request.pluginID, "action": request.actionID, "result": error.code.rawValue])
                 self.model.show(error.code == .contextExpired ? self.model.l.requestExpired : self.model.l.errorText(error))
             }
         })
