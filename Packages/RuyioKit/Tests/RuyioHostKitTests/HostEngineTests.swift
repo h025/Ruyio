@@ -186,26 +186,26 @@ struct HostEngineTests {
         await engine3.shutdown()
     }
 
-    @Test func installerRejectsUnsandboxedAndForbiddenPlist() throws {
+    @Test func installerRejectsUnsandboxedAndForbiddenPlist() async throws {
         let (engine, _) = try makeEngine()
         let unsandboxed = try PackageFixture.build(sandbox: false)
-        let preview = try engine.installer.inspect(package: unsandboxed, trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: unsandboxed, trust: .bundledDefault)
         #expect(!preview.isInstallable)
         #expect(preview.checks.contains { $0.name == "entitlements" && $0.outcome == .failed })
 
         let withScheme = try PackageFixture.build(infoOverrides: ["CFBundleURLTypes": [["CFBundleURLSchemes": ["ruyio"]]]])
-        let preview2 = try engine.installer.inspect(package: withScheme, trust: .bundledDefault)
+        let preview2 = try await engine.installer.inspect(package: withScheme, trust: .bundledDefault)
         #expect(preview2.checks.contains { $0.name == "bundle" && $0.outcome == .failed })
 
         let withJIT = try PackageFixture.build(extraEntitlements: ["com.apple.security.cs.allow-jit": true])
-        let preview3 = try engine.installer.inspect(package: withJIT, trust: .bundledDefault)
+        let preview3 = try await engine.installer.inspect(package: withJIT, trust: .bundledDefault)
         #expect(!preview3.isInstallable)
     }
 
-    @Test func remoteTrustRequiresDeveloperIDAndNotarization() throws {
+    @Test func remoteTrustRequiresDeveloperIDAndNotarization() async throws {
         let (engine, _) = try makeEngine()
         let zip = try PackageFixture.build()
-        let preview = try engine.installer.inspect(package: zip, trust: .remote)
+        let preview = try await engine.installer.inspect(package: zip, trust: .remote)
         #expect(!preview.isInstallable)
         #expect(preview.checks.contains { $0.name == "developerID" && $0.outcome == .failed })
         #expect(preview.checks.contains { $0.name == "notarization" && $0.outcome == .failed })

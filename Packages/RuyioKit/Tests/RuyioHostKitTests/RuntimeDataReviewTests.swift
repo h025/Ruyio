@@ -57,7 +57,7 @@ struct RuntimeDataReviewTests {
         try await engine.uninstall(id, deleteData: false)
 
         let package = try PackageFixture.build(infoOverrides: ["CFBundleIdentifier": "org.ruyio.plugin.different-identity"])
-        let preview = try engine.installer.inspect(package: package, trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: package, trust: .bundledDefault)
         _ = try await engine.commitInstall(preview, updateChannel: .bundledWithHost, source: nil)
         #expect(engine.services.stores.dataRoot(pluginID: id, development: false) != oldRoot)
         #expect(await invoke("storage-read", on: engine).output == .notice("missing"))
@@ -115,7 +115,7 @@ struct RuntimeDataReviewTests {
         let engine = try UpdateTests().engine()
         try await engine.start(bundledPackages: [try PackageFixture.build()])
         #expect(await invoke("storage", on: engine).state == .succeeded)
-        let upgrade = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", schema: 2), trust: .bundledDefault)
+        let upgrade = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", schema: 2), trust: .bundledDefault)
         #expect(await engine.updater.update(with: upgrade) == .completed(version: SemanticVersion("1.1.0")!))
         let root = engine.services.stores.dataRoot(pluginID: id, development: false)
         let candidate = try engine.services.stores.store(pluginID: id, generation: 2, development: false).get(collection: "notes", id: "n1")
@@ -145,7 +145,7 @@ struct RuntimeDataReviewTests {
         let record = try #require(await engine.registry.record(id))
         try await engine.uninstall(id, deleteData: false)
         try engine.database.setSetting(HostEngine.keptGenerationKey(record), HostEngine.RetainedData?.none)
-        let preview = try engine.installer.inspect(package: package, trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: package, trust: .bundledDefault)
         #expect(try engine.requiresFreshData(for: preview))
         #expect(try engine.requiresFreshData(for: preview), "cancelling the data decision can safely retry the same preview")
         #expect(FileManager.default.fileExists(atPath: preview.stagingRoot.path), "preflight must keep the verified staging copy")
@@ -157,7 +157,7 @@ struct RuntimeDataReviewTests {
             #expect(error.code == .retainedDataIncompatible)
         }
         #expect(await engine.registry.record(id) == nil)
-        let fresh = try engine.installer.inspect(package: package, trust: .bundledDefault)
+        let fresh = try await engine.installer.inspect(package: package, trust: .bundledDefault)
         #expect(try engine.requiresFreshData(for: fresh))
         _ = try await engine.commitInstall(fresh, updateChannel: .bundledWithHost, source: nil, dataChoice: .fresh)
         #expect(await engine.registry.record(id)?.dataGeneration == 2)
@@ -171,7 +171,7 @@ struct RuntimeDataReviewTests {
         #expect(await invoke("storage", on: engine).state == .succeeded)
         for (schema, failHealth) in [(2, true), (3, false)] {
             let package = try PackageFixture.build(version: "1.1.0", failHealth: failHealth, schema: schema)
-            let preview = try engine.installer.inspect(package: package, trust: .bundledDefault)
+            let preview = try await engine.installer.inspect(package: package, trust: .bundledDefault)
             guard case .rolledBack = await engine.updater.update(with: preview) else {
                 Issue.record("failed preparation unexpectedly committed"); continue
             }

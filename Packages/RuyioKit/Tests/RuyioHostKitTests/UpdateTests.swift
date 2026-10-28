@@ -25,7 +25,7 @@ struct UpdateTests {
         _ = await engine.invoke(InvocationRequest(ref: ref("storage"), entry: .commandPalette))
         let oldPath = try #require(await engine.registry.record(id)?.installPath)
 
-        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
         let outcome = await engine.updater.update(with: preview)
         #expect(outcome == .completed(version: SemanticVersion("1.1.0")!))
         let record = try #require(await engine.registry.record(id))
@@ -42,7 +42,7 @@ struct UpdateTests {
         let engine = try engine()
         try await engine.start(bundledPackages: [try PackageFixture.build(version: "1.0.0")])
         _ = await engine.invoke(InvocationRequest(ref: ref("storage"), entry: .commandPalette))
-        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", failMigration: true), trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", failMigration: true), trust: .bundledDefault)
         let outcome = await engine.updater.update(with: preview)
         guard case .rolledBack(let still, _) = outcome else { Issue.record("expected rollback, got \(outcome)"); return }
         #expect(still == SemanticVersion("1.0.0"))
@@ -61,7 +61,7 @@ struct UpdateTests {
     @Test func signerChangeIsNeverANormalUpdate() async throws {
         let engine = try engine()
         try await engine.start(bundledPackages: [try PackageFixture.build(version: "1.0.0")])
-        var preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
+        var preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
         preview.signing.teamID = "OTHERTEAM1"
         guard case .rolledBack = await engine.updater.update(with: preview) else { Issue.record("signer change accepted"); return }
         #expect(await engine.registry.record(id)?.version == "1.0.0")
@@ -120,7 +120,7 @@ struct ReviewRegressionTests {
         let id = PluginID("org.ruyio.test-plugin")
         try await engine.start(bundledPackages: [try PackageFixture.build(version: "1.0.0")])
         let old = try #require(await engine.registry.record(id))
-        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
         _ = await engine.updater.update(with: preview)
         let committed = try #require(await engine.registry.record(id))
         #expect(committed.version == "1.1.0")
@@ -165,7 +165,7 @@ struct DowngradeTests {
 
     @Test func sameSchemaCanKeepCurrentData() async throws {
         let engine = try await engine(starting: "1.1.0")
-        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0"), trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0"), trust: .bundledDefault)
         let choices = await engine.updater.downgradeChoices(for: preview)
         #expect(choices.contains(.keepCurrent))
         #expect(await engine.updater.downgrade(with: preview, data: .keepCurrent) == .completed(version: SemanticVersion("1.0.0")!))
@@ -176,11 +176,11 @@ struct DowngradeTests {
 
     @Test func incompatibleSchemaOnlyOffersFreshDataAndKeepsCurrentOnDisk() async throws {
         let engine = try await engine(starting: "1.1.0", schema: 2)
-        let preview = try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault)
         let choices = await engine.updater.downgradeChoices(for: preview)
         #expect(choices == [.fresh])
         // Confirming a risk is not enough: keeping incompatible data is refused (R16).
-        guard case .rolledBack = await engine.updater.downgrade(with: try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault), data: .keepCurrent) else {
+        guard case .rolledBack = await engine.updater.downgrade(with: try await engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault), data: .keepCurrent) else {
             Issue.record("incompatible keepCurrent accepted"); return
         }
         #expect(await engine.updater.downgrade(with: preview, data: .fresh) == .completed(version: SemanticVersion("1.0.0")!))
@@ -192,9 +192,9 @@ struct DowngradeTests {
 
     @Test func retainedGenerationIsOfferedAsSnapshot() async throws {
         let engine = try await engine(starting: "1.0.0")
-        let upgrade = try engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", schema: 2), trust: .bundledDefault)
+        let upgrade = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", schema: 2), trust: .bundledDefault)
         #expect(await engine.updater.update(with: upgrade) == .completed(version: SemanticVersion("1.1.0")!))
-        let back = try engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault)
+        let back = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", schema: 1), trust: .bundledDefault)
         let choices = await engine.updater.downgradeChoices(for: back)
         guard let snapshot = choices.first(where: { if case .snapshot = $0 { return true }; return false }) else {
             Issue.record("snapshot not offered: \(choices)"); return

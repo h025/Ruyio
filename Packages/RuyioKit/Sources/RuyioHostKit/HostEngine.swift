@@ -115,7 +115,7 @@ public final class HostEngine: @unchecked Sendable {
             } else if let installed, installed.isDefault, let current = SemanticVersion(installed.version),
                       current < package.manifest.version, installed.updateChannel == .bundledWithHost {
                 // PRD §23 #12 (decided A12): defaults update with the host through the normal transaction.
-                if let preview = try? installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
+                if let preview = try? await installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
                     if preview.isInstallable { _ = await updater.update(with: preview) } else { installer.discard(preview) }
                 }
             } else if let installed, installed.isDefault, installed.updateChannel == .bundledWithHost, HostInfo.officialTeamID.isEmpty,
@@ -124,7 +124,7 @@ public final class HostEngine: @unchecked Sendable {
                 // Development builds only (decided A22): a rebuilt default plugin keeps its version, so the stale
                 // installed copy is replaced in place. Same version means same data schema; data is untouched.
                 // Only for the same signing identity: a team change would move code and data to another identity.
-                if let preview = try? installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
+                if let preview = try? await installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
                     let sameIdentity = preview.signing.teamID == installed.teamID && preview.signing.identifier == installed.signingIdentifier
                     installer.discard(preview)
                     if sameIdentity { _ = try? await install(bundled: package, enable: installed.enabledPreference) }
@@ -251,7 +251,7 @@ public final class HostEngine: @unchecked Sendable {
 
     @discardableResult
     public func install(bundled package: BundledPackage, enable: Bool, dataChoice: RestoreDataChoice = .keepCompatible) async throws -> PluginID {
-        let preview = try installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256)
+        let preview = try await installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256)
         guard preview.isInstallable else {
             installer.discard(preview)
             throw RuyioError(.sourceInvalid, objectID: package.manifest.id.rawValue, diagnostic: preview.failureSummary)
@@ -298,7 +298,7 @@ public final class HostEngine: @unchecked Sendable {
     public func installDevelopmentPackage(at url: URL) async throws -> InstallPreview {
         guard developerMode else { throw RuyioError(.permissionDenied, diagnostic: "developer mode is off") }
         let installed = Set(await registry.installedIDs())
-        return try installer.inspect(package: url, trust: .development, installedIDs: installed)
+        return try await installer.inspect(package: url, trust: .development, installedIDs: installed)
     }
 
     /// New installs only. An installed ID changes only through the update transaction or the two-step
@@ -548,7 +548,7 @@ public final class HostEngine: @unchecked Sendable {
     public func prepareUpdate(_ update: AvailableUpdate, progress: (@Sendable (Int64, Int64?) -> Void)? = nil) async throws -> InstallPreview {
         try await validateUpdateSource(update.pluginID)
         if let bundled = update.bundled {
-            return try installer.inspect(package: bundled.url, trust: .bundledDefault, expectedSHA256: bundled.expectedSHA256)
+            return try await installer.inspect(package: bundled.url, trust: .bundledDefault, expectedSHA256: bundled.expectedSHA256)
         }
         guard let descriptor = update.descriptor, let url = update.descriptorURL, let release = update.release else {
             throw RuyioError(.sourceInvalid, diagnostic: "no update source")

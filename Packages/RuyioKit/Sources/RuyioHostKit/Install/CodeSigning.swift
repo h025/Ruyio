@@ -26,8 +26,24 @@ public struct SigningInfo: Sendable, Hashable {
 }
 
 public enum CodeSigning {
+    /// Security validates code by fanning work out to dispatch queues and waiting for it. Run on a Swift
+    /// concurrency thread, that wait starved: with the few cooperative threads of a three-core machine all
+    /// blocked, the fanned-out work never ran and validation hung. Validation therefore runs here, one at a
+    /// time, at its own QoS, while callers suspend instead of blocking a cooperative thread.
+    private static let worker = DispatchQueue(label: "ruyio.codesigning", qos: .userInitiated)
+
+    private static func onWorker<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            worker.async { continuation.resume(returning: body()) }
+        }
+    }
+
     /// Strict validation: nested code, all architectures, resources; revocation checks when online.
-    public static func inspect(bundle: URL, checkRevocation: Bool = false) -> SigningInfo {
+    public static func inspect(bundle: URL, checkRevocation: Bool = false) async -> SigningInfo {
+        await onWorker { inspectNow(bundle: bundle, checkRevocation: checkRevocation) }
+    }
+
+    private static func inspectNow(bundle: URL, checkRevocation: Bool) -> SigningInfo {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &staticCode) == errSecSuccess, let code = staticCode else {
             return SigningInfo(identifier: nil, teamID: nil, isAdHoc: false, hasHardenedRuntime: false, entitlements: [:],
@@ -67,7 +83,11 @@ public enum CodeSigning {
     public static let developerIDNotarizedRequirement =
         "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and notarized"
 
-    public static func satisfies(bundle: URL, requirement text: String) -> (passed: Bool, detail: String?) {
+    public static func satisfies(bundle: URL, requirement text: String) async -> (passed: Bool, detail: String?) {
+        await onWorker { satisfiesNow(bundle: bundle, requirement: text) }
+    }
+
+    private static func satisfiesNow(bundle: URL, requirement text: String) -> (passed: Bool, detail: String?) {
         var staticCode: SecStaticCode?
         var requirement: SecRequirement?
         guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &staticCode) == errSecSuccess, let code = staticCode,
@@ -80,8 +100,8 @@ public enum CodeSigning {
         return (false, cfError?.takeRetainedValue().localizedDescription ?? "status \(status)")
     }
 
-    public static func assessExecution(bundle: URL) -> (passed: Bool, detail: String?) {
-        satisfies(bundle: bundle, requirement: developerIDNotarizedRequirement)
+    public static func assessExecution(bundle: URL) async -> (passed: Bool, detail: String?) {
+        await satisfies(bundle: bundle, requirement: developerIDNotarizedRequirement)
     }
 }
 

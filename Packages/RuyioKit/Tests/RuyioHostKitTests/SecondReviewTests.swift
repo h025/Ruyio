@@ -127,7 +127,7 @@ struct SecondReviewTests {
         engine.setBridge(TestBridge())
         let zip = try PackageFixture.build()
         try await engine.start(bundledPackages: [zip])
-        let preview = try engine.installer.inspect(package: try PackageFixture.build(), trust: .bundledDefault)
+        let preview = try await engine.installer.inspect(package: try PackageFixture.build(), trust: .bundledDefault)
         await #expect(throws: RuyioError.self) { _ = try await engine.commitInstall(preview, updateChannel: .descriptor, source: nil) }
         await engine.shutdown()
     }

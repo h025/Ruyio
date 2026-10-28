@@ -54,7 +54,7 @@ public final class PluginInstaller: Sendable {
     }
 
     /// Extracts a `.ruyioplugin.zip` (or copies an unpacked `.ruyioplugin` directory) to staging and verifies it.
-    public func inspect(package: URL, trust: TrustMode, expectedSHA256: String? = nil, installedIDs: Set<PluginID> = []) throws -> InstallPreview {
+    public func inspect(package: URL, trust: TrustMode, expectedSHA256: String? = nil, installedIDs: Set<PluginID> = []) async throws -> InstallPreview {
         let stagingRoot = paths.downloads.appendingPathComponent("staging-\(UUID().uuidString)", isDirectory: true)
         let packageRoot = stagingRoot.appendingPathComponent("package", isDirectory: true)
         let digest: String
@@ -74,7 +74,7 @@ public final class PluginInstaller: Sendable {
                 try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
                 try ZipArchive(data: data).extract(to: packageRoot)
             }
-            return try verify(packageRoot: try Self.locatePackageRoot(packageRoot), stagingRoot: stagingRoot, trust: trust,
+            return try await verify(packageRoot: try Self.locatePackageRoot(packageRoot), stagingRoot: stagingRoot, trust: trust,
                               sha256: digest, expectedSHA256: expectedSHA256, installedIDs: installedIDs)
         } catch {
             try? FileManager.default.removeItem(at: stagingRoot)
@@ -121,7 +121,7 @@ public final class PluginInstaller: Sendable {
 
     // MARK: Verification
 
-    func verify(packageRoot: URL, stagingRoot: URL, trust: TrustMode, sha256: String, expectedSHA256: String?, installedIDs: Set<PluginID>) throws -> InstallPreview {
+    func verify(packageRoot: URL, stagingRoot: URL, trust: TrustMode, sha256: String, expectedSHA256: String?, installedIDs: Set<PluginID>) async throws -> InstallPreview {
         var checks: [VerificationCheck] = []
         func check(_ name: String, _ passed: Bool, _ detail: String? = nil) {
             checks.append(VerificationCheck(name: name, outcome: passed ? .passed : .failed, detail: passed ? nil : detail))
@@ -151,7 +151,7 @@ public final class PluginInstaller: Sendable {
         let nestedProblems = Self.nestedCodeViolations(bundle: bundle, mainExecutable: executable)
         check("nestedCode", nestedProblems.isEmpty, nestedProblems.prefix(5).joined(separator: ", "))
 
-        let signing = CodeSigning.inspect(bundle: bundle, checkRevocation: trust == .remote)
+        let signing = await CodeSigning.inspect(bundle: bundle, checkRevocation: trust == .remote)
         check("signature", signing.isValid, signing.validationError ?? "invalid signature")
         if let identifier = signing.identifier, let bundleID = infoPlist["CFBundleIdentifier"] as? String {
             check("signingIdentity", identifier == bundleID, "signing identifier differs from CFBundleIdentifier")
@@ -163,7 +163,7 @@ public final class PluginInstaller: Sendable {
         case .remote:
             check("developerID", !signing.isAdHoc && signing.teamID?.isEmpty == false, "Developer ID signature required")
             check("hardenedRuntime", signing.hasHardenedRuntime, "Hardened Runtime required")
-            let assessment = CodeSigning.assessExecution(bundle: bundle)
+            let assessment = await CodeSigning.assessExecution(bundle: bundle)
             check("notarization", assessment.passed, assessment.detail ?? "Gatekeeper assessment failed")
             if manifest.id.isOfficialNamespace {
                 check("officialNamespace", !officialTeamID.isEmpty && signing.teamID == officialTeamID, "app.ruyio. IDs are reserved for the official team")

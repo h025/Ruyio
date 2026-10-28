@@ -310,7 +310,7 @@ public actor MarketService {
         try await fetcher.download(artifact, to: file, maxBytes: 200 << 20, progress: progress)
         if let marketID, let revision { try requireCurrent(marketID, revision: revision) }
         try Task.checkCancellation()
-        var preview = try inspectRemote(file, expectedSHA256: release.sha256)
+        var preview = try await inspectRemote(file, expectedSHA256: release.sha256)
         // External description and signed manifest must agree (PRD §7.6.5).
         let matches = preview.manifest.id == descriptor.id && preview.manifest.version == release.version
         preview.checks.append(VerificationCheck(name: "descriptor", outcome: matches ? .passed : .failed,
@@ -323,7 +323,7 @@ public actor MarketService {
         let file = paths.downloads.appendingPathComponent("\(UUID().uuidString).ruyioplugin.zip")
         defer { try? FileManager.default.removeItem(at: file) }
         try await fetcher.download(packageURL, to: file, maxBytes: 200 << 20, progress: progress)
-        return try inspectRemote(file, expectedSHA256: nil)
+        return try await inspectRemote(file, expectedSHA256: nil)
     }
 
     /// Checks marking a formal remote package, which developer mode may waive.
@@ -331,12 +331,12 @@ public actor MarketService {
 
     /// Formal verification first. In developer mode a package that fails only for lacking Developer ID or
     /// notarization is verified again as a development plugin, with a visible marker (A34).
-    private func inspectRemote(_ file: URL, expectedSHA256: String?) throws -> InstallPreview {
-        let formal = try installer.inspect(package: file, trust: .remote, expectedSHA256: expectedSHA256)
+    private func inspectRemote(_ file: URL, expectedSHA256: String?) async throws -> InstallPreview {
+        let formal = try await installer.inspect(package: file, trust: .remote, expectedSHA256: expectedSHA256)
         let failed = Set(formal.checks.filter { $0.outcome == .failed }.map(\.name))
         guard developerMode, !failed.isEmpty, failed.isSubset(of: Self.notarizationChecks) else { return formal }
         installer.discard(formal)
-        var preview = try installer.inspect(package: file, trust: .remoteDevelopment, expectedSHA256: expectedSHA256)
+        var preview = try await installer.inspect(package: file, trust: .remoteDevelopment, expectedSHA256: expectedSHA256)
         preview.checks.append(VerificationCheck(name: "developerMode", outcome: .notChecked,
                                                 detail: "not notarized by Apple; installs as a developer plugin"))
         return preview
