@@ -98,15 +98,16 @@ enum DesktopPlacement {
     /// A point comes back as a list of integers, or as a QuickDraw point (vertical, then horizontal).
     private static func numbers(in descriptor: NSAppleEventDescriptor?) -> [Int32] {
         guard let descriptor else { return [] }
-        let list = descriptor.numberOfItems > 0 ? descriptor : descriptor.coerce(toDescriptorType: DescType(typeAEList))
-        if let list, list.numberOfItems > 0 {
-            return (1...list.numberOfItems).map { list.atIndex($0)?.int32Value ?? 0 }
-        }
+        // Finder answers desktop position with a QuickDraw point; check it before any list coercion.
         let data = descriptor.data
         if descriptor.descriptorType == DescType(typeQDPoint), data.count == 4 {
             let v = data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: Int16.self) }
             let h = data.withUnsafeBytes { $0.load(fromByteOffset: 2, as: Int16.self) }
             return [Int32(h), Int32(v)]
+        }
+        let list = descriptor.numberOfItems > 0 ? descriptor : descriptor.coerce(toDescriptorType: DescType(typeAEList))
+        if let list, list.numberOfItems > 0 {
+            return (1...list.numberOfItems).map { list.atIndex($0)?.int32Value ?? 0 }
         }
         return []
     }
