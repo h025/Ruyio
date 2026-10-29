@@ -233,7 +233,7 @@ struct L10n {
     var includeInBackup: String { t("插件数据包含在 Time Machine 备份中", "Include plugin data in Time Machine backups") }
     var advanced: String { t("高级", "Advanced") }
     var developerMode: String { t("开发者模式", "Developer Mode") }
-    var developerModeWarning: String { t("开发者插件可以访问你的数据，且未经 Apple 公证。开启后，本地插件包和市场中未公证的插件都会作为开发者插件安装；关闭后它们会被停用。仅安装你信任的插件。", "Developer plugins can access your data and are not notarized by Apple. While this is on, local packages and un-notarized market plugins install as developer plugins; turning it off disables them. Only install plugins you trust.") }
+    var developerModeWarning: String { t("开启后可以安装本地插件包，它们作为开发者插件单独存放数据；关闭后它们会被停用。开发者插件可以访问你交给它的数据，仅安装你信任的插件。", "While this is on, you can install local plugin packages. They install as developer plugins with separate data, and turning this off disables them. Developer plugins can access the data you give them; only install plugins you trust.") }
     var loadDevelopmentPlugin: String { t("选择本地开发插件…", "Choose Local Development Plugin…") }
     var help: String { t("帮助", "Help") }
     var rerunOnboarding: String { t("重新运行首次引导", "Run Onboarding Again") }

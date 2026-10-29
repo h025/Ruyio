@@ -34,7 +34,7 @@
 	<string>$(RUYIO_APP_GROUP)</string>
 	<key>RuyioFinderChannel</key>
 	<string>$(RUYIO_FINDER_CHANNEL)</string>
-	<key>RuyioOfficialTeamID</key>
-	<string></string>
+	<key>RuyioOfficialPublisher</key>
+	<string>$(RUYIO_OFFICIAL_PUBLISHER)</string>
 </dict>
 </plist>

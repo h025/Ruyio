@@ -4,20 +4,17 @@ import RuyioCore
 import RuyioPersistence
 import RuyioProtocol
 
-/// How much trust a package needs (PRD §13, plan §7.2).
+/// How much trust a package needs (PRD §13, plan §7.2, A39).
 public enum TrustMode: String, Sendable, Hashable {
-    /// Shipped inside the verified host. Ad-hoc allowed only when no official Team ID is configured (dev builds).
+    /// Shipped inside the verified host. Ad-hoc allowed only when no official publisher is configured (dev builds).
     case bundledDefault
-    /// Remote formal package: Developer ID, hardened runtime, sandbox, notarized.
+    /// Market, descriptor or package URL: sandbox and a certificate signature that names its publisher. Apple
+    /// notarization is shown when present but not required (A39).
     case remote
     /// Developer mode: relaxed signing, sandbox still required, never official IDs.
     case development
-    /// A market package installed in developer mode without Developer ID or notarization. Same checks as
-    /// `development` except that the ID may update itself; it is kept apart as a development plugin (own
-    /// data root, disabled when developer mode is turned off).
-    case remoteDevelopment
 
-    public var isDevelopment: Bool { self == .development || self == .remoteDevelopment }
+    public var isDevelopment: Bool { self == .development }
 }
 
 public struct VerificationCheck: Sendable, Hashable {
@@ -46,11 +43,11 @@ public struct InstallPreview: Sendable {
 /// remote installs and updates (plan §15.3: one Installer, no special business path).
 public final class PluginInstaller: Sendable {
     private let paths: AppPaths
-    private let officialTeamID: String
+    private let officialPublisherID: String
 
-    public init(paths: AppPaths, officialTeamID: String = HostInfo.officialTeamID) {
+    public init(paths: AppPaths, officialPublisherID: String = HostInfo.officialPublisherID) {
         self.paths = paths
-        self.officialTeamID = officialTeamID
+        self.officialPublisherID = officialPublisherID
     }
 
     /// Extracts a `.ruyioplugin.zip` (or copies an unpacked `.ruyioplugin` directory) to staging and verifies it.
@@ -85,7 +82,7 @@ public final class PluginInstaller: Sendable {
     /// Moves the verified bundle into Plugins/<identity>/<version>/ atomically and returns the record.
     public func commit(_ preview: InstallPreview, isDefault: Bool, updateChannel: UpdateChannel, source: String? = nil) throws -> InstalledPluginRecord {
         guard preview.isInstallable else { throw RuyioError(.sourceInvalid, diagnostic: preview.failureSummary) }
-        let identity = AppPaths.identityDirectoryName(pluginID: preview.manifest.id, teamID: preview.signing.teamID)
+        let identity = AppPaths.identityDirectoryName(pluginID: preview.manifest.id, publisherID: preview.signing.publisherID)
         let versionDir = paths.pluginsRoot.appendingPathComponent(identity, isDirectory: true)
             .appendingPathComponent(preview.manifest.version.description, isDirectory: true)
         let fm = FileManager.default
@@ -104,7 +101,7 @@ public final class PluginInstaller: Sendable {
         let bundle = versionDir.appendingPathComponent(preview.manifest.bundlePath)
         let executable = versionDir.appendingPathComponent(preview.manifest.executable)
         return try InstalledPluginRecord(manifest: preview.manifest, installPath: bundle, executablePath: executable,
-                                         teamID: preview.signing.teamID, signingIdentifier: preview.signing.identifier,
+                                         publisherID: preview.signing.publisherID, signingIdentifier: preview.signing.identifier,
                                          isDevelopment: preview.trust.isDevelopment, isDefault: isDefault,
                                          updateChannel: updateChannel, source: source, artifactSHA256: preview.sha256.isEmpty ? nil : preview.sha256)
     }
@@ -114,8 +111,8 @@ public final class PluginInstaller: Sendable {
     }
 
     /// Removes installed code for a plugin. Data is handled separately.
-    public func removeCode(pluginID: PluginID, teamID: String?) throws {
-        let dir = paths.pluginsRoot.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: pluginID, teamID: teamID))
+    public func removeCode(pluginID: PluginID, publisherID: String?) throws {
+        let dir = paths.pluginsRoot.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: pluginID, publisherID: publisherID))
         if FileManager.default.fileExists(atPath: dir.path) { try FileManager.default.removeItem(at: dir) }
     }
 
@@ -161,22 +158,24 @@ public final class PluginInstaller: Sendable {
 
         switch trust {
         case .remote:
-            check("developerID", !signing.isAdHoc && signing.teamID?.isEmpty == false, "Developer ID signature required")
-            check("hardenedRuntime", signing.hasHardenedRuntime, "Hardened Runtime required")
-            let assessment = await CodeSigning.assessExecution(bundle: bundle)
-            check("notarization", assessment.passed, assessment.detail ?? "Gatekeeper assessment failed")
+            // What a plugin can do is bounded by the sandbox, the entitlement allowlist and its declared
+            // permissions, not by notarization (A39). The certificate binds updates and data to whoever
+            // published the plugin first; an ad-hoc signature would let anyone claim the ID.
+            check("publisher", signing.publisherID != nil, "ad-hoc signature; sign with a certificate (a self-signed one is enough)")
+            let notarized = signing.teamID?.isEmpty == false ? await CodeSigning.assessExecution(bundle: bundle).passed : false
+            checks.append(VerificationCheck(name: "notarization", outcome: notarized ? .passed : .notChecked,
+                                            detail: notarized ? nil : "not notarized by Apple"))
             if manifest.id.isOfficialNamespace {
-                check("officialNamespace", !officialTeamID.isEmpty && signing.teamID == officialTeamID, "app.ruyio. IDs are reserved for the official team")
+                check("officialNamespace", !officialPublisherID.isEmpty && signing.publisherID == officialPublisherID,
+                      "app.ruyio. IDs are reserved for the official publisher")
             }
         case .bundledDefault:
-            if !officialTeamID.isEmpty {
-                check("officialTeam", signing.teamID == officialTeamID, "default plugin not signed by the official team")
+            if !officialPublisherID.isEmpty {
+                check("officialPublisher", signing.publisherID == officialPublisherID, "default plugin not signed by the official publisher")
             }
         case .development:
             check("developmentID", !manifest.id.isOfficialNamespace, "development plugins may not use app.ruyio. IDs")
             check("developmentConflict", !installedIDs.contains(manifest.id), "ID already used by an installed plugin")
-        case .remoteDevelopment:
-            check("developmentID", !manifest.id.isOfficialNamespace, "development plugins may not use app.ruyio. IDs")
         }
         if let expectedSHA256 {
             check("sha256", expectedSHA256.lowercased() == sha256, "SHA-256 mismatch")

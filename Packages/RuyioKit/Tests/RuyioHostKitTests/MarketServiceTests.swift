@@ -211,7 +211,7 @@ struct MarketServiceTests {
         let manifest = PackageFixture.manifest()
         let source = "https://example.com/plugin.json"
         let record = try InstalledPluginRecord(manifest: manifest, installPath: engine.paths.downloads, executablePath: engine.paths.downloads,
-                                               teamID: nil, signingIdentifier: nil, isDevelopment: false, isDefault: false, updateChannel: .descriptor, source: source)
+                                               publisherID: nil, signingIdentifier: nil, isDevelopment: false, isDefault: false, updateChannel: .descriptor, source: source)
         try await engine.registry.insert(record)
         fetcher.files[source] = descriptor(id: manifest.id.rawValue, versions: ["1.1.0"])
         guard case .available = await engine.checkForUpdateResult(manifest.id) else { Issue.record("update missing"); return }
@@ -272,32 +272,34 @@ struct MarketServiceTests {
         await #expect(throws: RuyioError.self) {
             _ = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
         }
-        // Direct package: digest is self-computed (no expected value) but remote trust still requires Developer ID.
+        // Direct package: digest is self-computed (no expected value) but remote trust still requires a publisher certificate.
         let preview = try await engine.markets.prepareInstall(packageURL: URL(string: "https://example.com/plugins/test/releases/1.0.0/T.ruyioplugin.zip")!)
         #expect(preview.expectedSHA256 == nil)
         #expect(!preview.isInstallable)
-        #expect(preview.checks.contains { $0.name == "developerID" && $0.outcome == .failed })
+        #expect(preview.checks.contains { $0.name == "publisher" && $0.outcome == .failed })
     }
 
-    @Test func developerModeInstallsUnnotarizedMarketPackagesOnlyAsDevelopmentPlugins() async throws {
+    @Test func selfSignedMarketPackagesInstallAsOrdinaryPluginsWithoutDeveloperMode() async throws {
         let fetcher = FakeFetcher()
-        let data = try Data(contentsOf: try PackageFixture.build())
+        let publisher = try SigningFixture.first.get()
+        let data = try Data(contentsOf: try PackageFixture.build(signer: publisher))
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         fetcher.files["https://example.com/plugins/test/releases/1.0.0/T.ruyioplugin.zip"] = data
         let engine = try engine(fetcher)
+        #expect(!engine.developerMode)
         let descriptor = try PluginDescriptor.decode(Data("{\"schemaVersion\":1,\"kind\":\"plugin\",\"id\":\"org.ruyio.test-plugin\",\"name\":\"T\",\"releases\":[{\"version\":\"1.0.0\",\"minimumHostVersion\":\"1.0.0\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/1.0.0/T.ruyioplugin.zip\",\"sha256\":\"\(digest)\"}]}".utf8))
         let url = URL(string: "https://example.com/plugins/test/ruyio-plugin.json")!
 
-        let strict = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
-        #expect(!strict.isInstallable && strict.trust == .remote)
-        engine.installer.discard(strict)
-
-        await engine.markets.setDeveloperMode(true)
-        let relaxed = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
-        #expect(relaxed.isInstallable)
-        #expect(relaxed.trust == .remoteDevelopment && relaxed.trust.isDevelopment)
-        #expect(relaxed.checks.contains { $0.name == "developerMode" && $0.outcome == .notChecked })
-        #expect(relaxed.checks.contains { $0.name == "sha256" && $0.outcome == .passed })
-        engine.installer.discard(relaxed)
+        let preview = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
+        #expect(preview.isInstallable, "\(preview.failureSummary)")
+        #expect(preview.trust == .remote && !preview.trust.isDevelopment)
+        #expect(preview.checks.contains { $0.name == "sha256" && $0.outcome == .passed })
+        #expect(preview.checks.contains { $0.name == "notarization" && $0.outcome == .notChecked })
+        let id = try await engine.commitInstall(preview, updateChannel: .descriptor, source: url.absoluteString)
+        let record = try #require(await engine.registry.record(id))
+        #expect(!record.isDevelopment)
+        #expect(record.publisherID == publisher.publisherID)
+        #expect(await engine.registry.status(id)?.activation == .enabled)
+        await engine.shutdown()
     }
 }

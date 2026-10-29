@@ -134,7 +134,7 @@ final class UIGallery {
             manifests.append(manifest)
             let nonexistent = root.appendingPathComponent("Fixtures/\(manifest.id)/not-an-executable")
             var record = try InstalledPluginRecord(manifest: manifest, installPath: nonexistent.deletingLastPathComponent(), executablePath: nonexistent,
-                                                   teamID: nil, signingIdentifier: manifest.id.rawValue, isDevelopment: false, isDefault: true, updateChannel: .bundledWithHost)
+                                                   publisherID: nil, signingIdentifier: manifest.id.rawValue, isDevelopment: false, isDefault: true, updateChannel: .bundledWithHost)
             record.activationState = .enabled
             try await model.engine.registry.insert(record)
         }

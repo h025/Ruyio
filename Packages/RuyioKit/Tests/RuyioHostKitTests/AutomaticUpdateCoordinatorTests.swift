@@ -17,7 +17,7 @@ struct AutomaticUpdateCoordinatorTests {
         let engine = try fixture.engine(fetcher)
         _ = try await engine.markets.addMarket(try await engine.markets.resolve(marketAddress))
         let record = try InstalledPluginRecord(manifest: manifest, installPath: engine.paths.downloads, executablePath: engine.paths.downloads,
-                                               teamID: nil, signingIdentifier: nil, isDevelopment: false, isDefault: false,
+                                               publisherID: nil, signingIdentifier: nil, isDevelopment: false, isDefault: false,
                                                updateChannel: .descriptor, source: pluginAddress)
         try await engine.registry.insert(record)
         return engine

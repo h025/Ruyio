@@ -347,16 +347,20 @@ struct PluginInstallPreviewView: View {
                     switch check.outcome {
                     case .passed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                     case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                    // Notarization is optional (A39): its absence is information, not a warning.
+                    case .notChecked where check.name == "notarization": Image(systemName: "info.circle").foregroundStyle(.secondary)
                     case .notChecked: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     }
-                    if check.name == "developerMode" {
-                        Text(l.developerModeInstall).foregroundStyle(.orange)
+                    if check.name == "notarization" {
+                        Text(check.outcome == .passed ? l.notarizedByApple : l.notNotarizedByApple)
+                            .foregroundStyle(check.outcome == .passed ? .primary : .secondary)
                     } else {
-                        Text(check.name)
+                        Text(l.checkName(check.name))
                         if let detail = check.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             }
+            Text(l.publisherPrefix + l.publisher(preview.signing.publisherID)).font(.caption)
             // No expected digest for direct packages: never claim a "match" (R21).
             Text(preview.expectedSHA256 == nil
                  ? l.t("摘要已计算（无外部预期值）：", "Digest computed (no expected value): ") + String(preview.sha256.prefix(16))

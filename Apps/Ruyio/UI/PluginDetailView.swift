@@ -54,7 +54,7 @@ struct PluginDetailView: View {
                         Text(source + " " + l.sourceUnverified).textSelection(.enabled).multilineTextAlignment(.trailing)
                     }
                 }
-                LabeledContent(l.signature, value: summary.teamID.map { "Team \($0)" } ?? l.t("ad-hoc（开发构建）", "ad-hoc (development build)"))
+                LabeledContent(l.signature, value: l.publisher(summary.publisherID))
                 if let error = summary.lastError {
                     LabeledContent(l.lastError) { Text(l.errorText(error)).foregroundStyle(.orange).multilineTextAlignment(.trailing) }
                 }
@@ -245,7 +245,7 @@ struct UpdateSection: View {
             let second = NSAlert()
             second.messageText = l.t("第 2 步：按新身份安装？", "Step 2: Install the new identity?")
             second.informativeText = l.t("权限：", "Permissions: ") + preview.manifest.permissions.map { l.permissionName($0) }.joined(separator: "、")
-                + "\nTeam: " + (preview.signing.teamID ?? "—")
+                + "\n" + l.publisherPrefix + l.publisher(preview.signing.publisherID)
             second.addButton(withTitle: l.cancel)
             second.addButton(withTitle: l.t("安装", "Install"))
             guard second.runModal() == .alertSecondButtonReturn else {

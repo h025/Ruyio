@@ -72,7 +72,7 @@ struct RuntimeDataReviewTests {
         #expect(await invoke("storage", on: engine).state == .succeeded)
         let record = try #require(await engine.registry.record(id))
         let fullRoot = engine.services.stores.dataRoot(pluginID: id, development: false)
-        let legacyRoot = engine.paths.dataRoot.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: id, teamID: record.teamID))
+        let legacyRoot = engine.paths.dataRoot.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: id, publisherID: record.publisherID))
         await engine.shutdown()
         engine.services.stores.close(pluginID: id)
         try FileManager.default.moveItem(at: fullRoot, to: legacyRoot)
@@ -91,7 +91,7 @@ struct RuntimeDataReviewTests {
         #expect(await invoke("storage", on: engine).state == .succeeded)
         let record = try #require(await engine.registry.record(id))
         let fullRoot = engine.services.stores.dataRoot(pluginID: id, development: false)
-        let legacyRoot = engine.paths.dataRoot.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: id, teamID: record.teamID))
+        let legacyRoot = engine.paths.dataRoot.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: id, publisherID: record.publisherID))
         await engine.shutdown()
         engine.services.stores.close(pluginID: id)
         try FileManager.default.moveItem(at: fullRoot, to: legacyRoot)
@@ -215,7 +215,7 @@ struct RuntimeDataReviewTests {
 
     @Test func orphanedLegacyDataIsNotClaimedByANewInstall() async throws {
         let engine = try UpdateTests().engine()
-        let legacyIdentity = AppPaths.identityDirectoryName(pluginID: id, teamID: nil)
+        let legacyIdentity = AppPaths.identityDirectoryName(pluginID: id, publisherID: nil)
         let legacyDirectory = engine.paths.dataDirectory(identity: legacyIdentity, generation: 4, development: false)
         let oldStore = try PluginStore(directory: legacyDirectory)
         try oldStore.put(StoredDocument(collection: "notes", id: "n1", body: ["v": "private legacy data"]))

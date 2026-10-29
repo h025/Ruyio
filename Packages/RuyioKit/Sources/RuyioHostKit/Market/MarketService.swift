@@ -71,10 +71,6 @@ public actor MarketService {
         }
     }
 
-    private var developerMode = false
-
-    public func setDeveloperMode(_ enabled: Bool) { developerMode = enabled }
-
     public init(database: HostDatabase, fetcher: any RemoteFetching, installer: PluginInstaller, paths: AppPaths, registry: PluginRegistry) {
         self.database = database
         self.fetcher = fetcher
@@ -326,20 +322,9 @@ public actor MarketService {
         return try await inspectRemote(file, expectedSHA256: nil)
     }
 
-    /// Checks marking a formal remote package, which developer mode may waive.
-    static let notarizationChecks: Set<String> = ["developerID", "hardenedRuntime", "notarization"]
-
-    /// Formal verification first. In developer mode a package that fails only for lacking Developer ID or
-    /// notarization is verified again as a development plugin, with a visible marker (A34).
+    /// Remote packages install as ordinary plugins in every mode; developer mode only adds local packages (A39).
     private func inspectRemote(_ file: URL, expectedSHA256: String?) async throws -> InstallPreview {
-        let formal = try await installer.inspect(package: file, trust: .remote, expectedSHA256: expectedSHA256)
-        let failed = Set(formal.checks.filter { $0.outcome == .failed }.map(\.name))
-        guard developerMode, !failed.isEmpty, failed.isSubset(of: Self.notarizationChecks) else { return formal }
-        installer.discard(formal)
-        var preview = try await installer.inspect(package: file, trust: .remoteDevelopment, expectedSHA256: expectedSHA256)
-        preview.checks.append(VerificationCheck(name: "developerMode", outcome: .notChecked,
-                                                detail: "not notarized by Apple; installs as a developer plugin"))
-        return preview
+        try await installer.inspect(package: file, trust: .remote, expectedSHA256: expectedSHA256)
     }
 
     // MARK: Index storage

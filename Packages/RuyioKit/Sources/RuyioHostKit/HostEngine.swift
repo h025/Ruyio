@@ -49,7 +49,7 @@ public final class HostEngine: @unchecked Sendable {
         let db = database
         let identity: @Sendable (PluginID) -> String = { id in
             let record = try? db.installedPlugin(id)
-            return AppPaths.dataIdentityDirectoryName(pluginID: id, teamID: record?.teamID, signingIdentifier: record?.signingIdentifier)
+            return AppPaths.dataIdentityDirectoryName(pluginID: id, publisherID: record?.publisherID, signingIdentifier: record?.signingIdentifier)
         }
         let stores = StoreProvider(paths: paths, identity: identity)
         let storeLookup: @Sendable (PluginID, String) throws -> Data = { id, blobID in
@@ -118,14 +118,14 @@ public final class HostEngine: @unchecked Sendable {
                 if let preview = try? await installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
                     if preview.isInstallable { _ = await updater.update(with: preview) } else { installer.discard(preview) }
                 }
-            } else if let installed, installed.isDefault, installed.updateChannel == .bundledWithHost, HostInfo.officialTeamID.isEmpty,
+            } else if let installed, installed.isDefault, installed.updateChannel == .bundledWithHost, HostInfo.officialPublisherID.isEmpty,
                       installed.version == package.manifest.version.description, let digest = Self.sha256(of: package.url),
                       installed.artifactSHA256 != digest {
                 // Development builds only (decided A22): a rebuilt default plugin keeps its version, so the stale
                 // installed copy is replaced in place. Same version means same data schema; data is untouched.
-                // Only for the same signing identity: a team change would move code and data to another identity.
+                // Only for the same signing identity: a publisher change would move code and data to another identity.
                 if let preview = try? await installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
-                    let sameIdentity = preview.signing.teamID == installed.teamID && preview.signing.identifier == installed.signingIdentifier
+                    let sameIdentity = preview.signing.publisherID == installed.publisherID && preview.signing.identifier == installed.signingIdentifier
                     installer.discard(preview)
                     if sameIdentity { _ = try? await install(bundled: package, enable: installed.enabledPreference) }
                 }
@@ -150,7 +150,7 @@ public final class HostEngine: @unchecked Sendable {
     }
 
     static func dataIdentity(_ record: InstalledPluginRecord) -> String {
-        AppPaths.dataIdentityDirectoryName(pluginID: PluginID(record.pluginID), teamID: record.teamID, signingIdentifier: record.signingIdentifier)
+        AppPaths.dataIdentityDirectoryName(pluginID: PluginID(record.pluginID), publisherID: record.publisherID, signingIdentifier: record.signingIdentifier)
     }
 
     struct RetainedData: Codable, Sendable {
@@ -166,7 +166,7 @@ public final class HostEngine: @unchecked Sendable {
     /// verified preview stays usable; commitInstall still repeats the check at the actual commit.
     public func requiresFreshData(for preview: InstallPreview) throws -> Bool {
         let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
-                                                 executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
+                                                 executablePath: preview.stagingBundle, publisherID: preview.signing.publisherID,
                                                  signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust.isDevelopment,
                                                  isDefault: false, updateChannel: .none)
         do {
@@ -199,7 +199,7 @@ public final class HostEngine: @unchecked Sendable {
         return kept.generation
     }
 
-    /// Moves each installed plugin's ID/Team data directory to its full-identity name. One plugin that
+    /// Moves each installed plugin's ID/publisher data directory to its full-identity name. One plugin that
     /// cannot be moved stays disabled with an error; it never blocks the host or the other plugins.
     private func migrateInstalledDataIdentities() async -> Set<PluginID> {
         var failed: Set<PluginID> = []
@@ -213,13 +213,13 @@ public final class HostEngine: @unchecked Sendable {
         return failed
     }
 
-    /// The installed record is the only identity that ever used its ID/Team directory, so it alone claims
+    /// The installed record is the only identity that ever used its ID/publisher directory, so it alone claims
     /// it. Orphaned legacy data (no installed record) is kept for manual recovery, never reassigned. Runs
     /// before any store opens so a plugin never starts on an empty partition beside its old data.
     private func claimLegacyData(_ record: InstalledPluginRecord) throws {
         guard let identifier = record.signingIdentifier, !identifier.isEmpty else { return }
         let root = record.isDevelopment ? paths.developmentDataRoot : paths.dataRoot
-        let old = root.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: PluginID(record.pluginID), teamID: record.teamID))
+        let old = root.appendingPathComponent(AppPaths.identityDirectoryName(pluginID: PluginID(record.pluginID), publisherID: record.publisherID))
         let target = root.appendingPathComponent(Self.dataIdentity(record))
         guard FileManager.default.fileExists(atPath: old.path), !FileManager.default.fileExists(atPath: target.path) else { return }
         do { try FileManager.default.moveItem(at: old, to: target) } catch {
@@ -258,7 +258,7 @@ public final class HostEngine: @unchecked Sendable {
         }
         let id = preview.manifest.id
         let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
-                                                 executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
+                                                 executablePath: preview.stagingBundle, publisherID: preview.signing.publisherID,
                                                  signingIdentifier: preview.signing.identifier, isDevelopment: false,
                                                  isDefault: true, updateChannel: .bundledWithHost)
         let previous = await registry.record(id)
@@ -311,7 +311,7 @@ public final class HostEngine: @unchecked Sendable {
             throw RuyioError(.pluginAlreadyInstalled, objectID: preview.manifest.id.rawValue)
         }
         let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
-                                                 executablePath: preview.stagingBundle, teamID: preview.signing.teamID,
+                                                 executablePath: preview.stagingBundle, publisherID: preview.signing.publisherID,
                                                  signingIdentifier: preview.signing.identifier, isDevelopment: preview.trust.isDevelopment,
                                                  isDefault: false, updateChannel: updateChannel)
         let kept: Int?
@@ -329,7 +329,6 @@ public final class HostEngine: @unchecked Sendable {
         get { lock.withLock { _developerMode } }
         set {
             lock.withLock { _developerMode = newValue }
-            Task { [markets] in await markets.setDeveloperMode(newValue) }
             if !newValue {
                 // Turning developer mode off disables every development plugin (PRD §13).
                 Task {
@@ -435,7 +434,7 @@ public final class HostEngine: @unchecked Sendable {
                     try UpdateCoordinator.writeGenerationInfo(.init(storageSchemaVersion: schema, pluginVersion: record.version, createdAt: Date()), to: root)
                 }
             }
-            try installer.removeCode(pluginID: id, teamID: record.teamID)
+            try installer.removeCode(pluginID: id, publisherID: record.publisherID)
             try await registry.remove(id, asUninstalledDefault: record.isDefault, keptData: !deleteData)
         } catch {
             // Keep a disabled, retryable record until both code and requested data cleanup have succeeded.
@@ -611,7 +610,7 @@ public final class HostEngine: @unchecked Sendable {
         }
         defer { installer.discard(preview) }
         guard preview.isInstallable, preview.manifest.id == id,
-              preview.signing.teamID == record.teamID, preview.signing.identifier == record.signingIdentifier else {
+              preview.signing.publisherID == record.publisherID, preview.signing.identifier == record.signingIdentifier else {
             throw RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "new source is not the same publisher identity")
         }
         try await registry.update(id) {

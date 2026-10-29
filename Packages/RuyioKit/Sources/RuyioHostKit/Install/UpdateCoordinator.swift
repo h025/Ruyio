@@ -56,7 +56,7 @@ public actor UpdateCoordinator {
     public func diff(for preview: InstallPreview) async -> Diff? {
         guard let record = await engine.registry.record(preview.manifest.id), let current = try? record.decodedManifest() else { return nil }
         let added = Set(preview.manifest.permissions).subtracting(current.permissions).sorted()
-        let signerChanged = record.teamID != preview.signing.teamID || record.signingIdentifier != preview.signing.identifier
+        let signerChanged = record.publisherID != preview.signing.publisherID || record.signingIdentifier != preview.signing.identifier
         return Diff(fromVersion: current.version, toVersion: preview.manifest.version, addedPermissions: added,
                     signerChanged: signerChanged, isDowngrade: preview.manifest.version < current.version)
     }
@@ -124,7 +124,7 @@ public actor UpdateCoordinator {
             return .rolledBack(stillUsing: preview.manifest.version, error: RuyioError(.pluginNotFound, objectID: id.rawValue))
         }
         // Publisher changes are never a normal update (PRD §19.11, R08).
-        if record.teamID != preview.signing.teamID || record.signingIdentifier != preview.signing.identifier {
+        if record.publisherID != preview.signing.publisherID || record.signingIdentifier != preview.signing.identifier {
             engine.installer.discard(preview)
             return .rolledBack(stillUsing: oldVersion, error: RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "signer changed; reinstall required"))
         }

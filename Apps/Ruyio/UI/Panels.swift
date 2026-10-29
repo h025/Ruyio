@@ -189,7 +189,9 @@ final class OverlayController {
             loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) })
         context.dismiss = { [weak self] in if self?.presentationID == ticket { self?.close() } }
         if let summary = model.summary(pluginID), !summary.isDefault {
-            context.source = l.fromPlugin(summary.displayName) + (summary.teamID.map { " · Team \($0)" } ?? "")
+            // Apple Team IDs are short enough to show; a certificate fingerprint would only be noise here.
+            let team = summary.publisherID.flatMap { PublisherID.certificateSHA256($0) == nil ? " · Team \($0)" : nil }
+            context.source = l.fromPlugin(summary.displayName) + (team ?? "")
         }
         self.context = context
         current = (pluginID, document.viewID)

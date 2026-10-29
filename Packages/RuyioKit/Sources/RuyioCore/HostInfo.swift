@@ -8,9 +8,22 @@ public enum HostInfo {
     public static let minimumOS = OSVersion(major: 15)
     public static let architecture = "arm64"
 
-    /// Official signing Team ID. Empty in development builds; `app.ruyio.` IDs then require developer mode.
-    public static var officialTeamID: String {
-        Bundle.main.object(forInfoDictionaryKey: "RuyioOfficialTeamID") as? String ?? ""
+    /// Publisher ID (see `PublisherID`) of official builds, set by `Scripts/release.sh`. Empty in development
+    /// builds; `app.ruyio.` IDs then require developer mode.
+    public static var officialPublisherID: String {
+        Bundle.main.object(forInfoDictionaryKey: "RuyioOfficialPublisher") as? String ?? ""
+    }
+}
+
+/// A plugin publisher's identity (A39): an Apple Team ID, or `cert:` followed by the SHA-256 of a
+/// self-signed signing certificate. Ruyio does not require Apple's paid Developer Program.
+public enum PublisherID {
+    public static let certificatePrefix = "cert:"
+
+    /// The certificate fingerprint of a `cert:` publisher, nil for a Team ID or no publisher.
+    public static func certificateSHA256(_ publisherID: String?) -> String? {
+        guard let publisherID, publisherID.hasPrefix(certificatePrefix) else { return nil }
+        return String(publisherID.dropFirst(certificatePrefix.count))
     }
 }
 

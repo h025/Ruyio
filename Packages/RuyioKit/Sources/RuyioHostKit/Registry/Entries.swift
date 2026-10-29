@@ -12,7 +12,8 @@ public struct PluginSummary: Sendable, Hashable, Identifiable {
     public var processState: ProcessState
     public var report: PluginStatusReport?
     public var isDefault: Bool
-    public var teamID: String?
+    /// Team ID or `cert:` certificate fingerprint (`PublisherID`).
+    public var publisherID: String?
     public var installPath: String
     public var dataGeneration: Int
     public var lastError: RuyioError?

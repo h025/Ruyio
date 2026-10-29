@@ -68,6 +68,28 @@ struct UpdateTests {
         await engine.shutdown()
     }
 
+    @Test func updatesKeepTheSelfSignedPublisherCertificate() async throws {
+        let engine = try engine()
+        let publisher = try SigningFixture.first.get()
+        let installed = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", signer: publisher), trust: .remote)
+        _ = try await engine.commitInstall(installed, updateChannel: .none, source: nil)
+        #expect(await engine.registry.record(id)?.publisherID == publisher.publisherID)
+
+        // Same identifier, another certificate: someone else's build, never a normal update (A39).
+        let impostor = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", signer: try SigningFixture.second.get()), trust: .remote)
+        #expect(impostor.isInstallable)
+        #expect(await engine.updater.diff(for: impostor)?.signerChanged == true)
+        guard case .rolledBack = await engine.updater.update(with: impostor) else { Issue.record("certificate change accepted"); return }
+        // Nor may an ad-hoc build replace it.
+        let adHoc = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .development)
+        guard case .rolledBack = await engine.updater.update(with: adHoc) else { Issue.record("ad-hoc build accepted"); return }
+
+        let genuine = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", signer: publisher), trust: .remote)
+        #expect(await engine.updater.update(with: genuine) == .completed(version: SemanticVersion("1.1.0")!))
+        #expect(await engine.registry.record(id)?.publisherID == publisher.publisherID)
+        await engine.shutdown()
+    }
+
     @Test func crashRecoveryRollsBackUncommittedTransaction() async throws {
         let engine = try engine()
         try await engine.start(bundledPackages: [try PackageFixture.build(version: "1.0.0")])

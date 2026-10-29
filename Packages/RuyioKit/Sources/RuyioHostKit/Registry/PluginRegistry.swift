@@ -250,7 +250,7 @@ public actor PluginRegistry {
                 id: id, manifest: manifest, displayName: manifest.displayName(locale: locale).text,
                 displayDescription: manifest.description.map { manifest.localized("description", locale: locale, fallback: $0).text },
                 status: status, processState: processStates[id] ?? .stopped, report: reports[id],
-                isDefault: record.isDefault, teamID: record.teamID, installPath: record.installPath,
+                isDefault: record.isDefault, publisherID: record.publisherID, installPath: record.installPath,
                 dataGeneration: record.dataGeneration, lastError: errors[id])
         }
     }

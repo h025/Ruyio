@@ -47,15 +47,16 @@ public struct AppPaths: Sendable {
     }
 
     /// Stable directory name derived from a verified identity, not from untrusted manifest strings.
-    public static func identityDirectoryName(pluginID: PluginID, teamID: String?) -> String {
-        let team = (teamID?.isEmpty == false) ? teamID! : "unsigned"
-        let safeTeam = team.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
-        return "\(pluginID.rawValue)~\(safeTeam)"
+    /// `publisherID` is a Team ID or a `cert:` certificate fingerprint (`PublisherID`).
+    public static func identityDirectoryName(pluginID: PluginID, publisherID: String?) -> String {
+        let publisher = (publisherID?.isEmpty == false) ? publisherID! : "unsigned"
+        let safePublisher = publisher.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
+        return "\(pluginID.rawValue)~\(safePublisher)"
     }
 
     /// Persistent data belongs to the complete signing identity, including its designated identifier.
-    public static func dataIdentityDirectoryName(pluginID: PluginID, teamID: String?, signingIdentifier: String?) -> String {
-        let components = [teamID ?? "", signingIdentifier ?? ""]
+    public static func dataIdentityDirectoryName(pluginID: PluginID, publisherID: String?, signingIdentifier: String?) -> String {
+        let components = [publisherID ?? "", signingIdentifier ?? ""]
         let identity = components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
         let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         return "\(pluginID.rawValue)~\(digest)"

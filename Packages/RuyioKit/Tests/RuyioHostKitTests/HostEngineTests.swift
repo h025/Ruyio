@@ -9,9 +9,9 @@ import RuyioCore
 enum PackageFixture {
     static let actions = ["echo", "slow", "crash", "block-main", "storage", "undeclared-capability", "sandbox-probe", "read-path", "network-probe", "storage-read", "version"]
 
-    static func manifest(version: String = "1.0.0", permissions: [Permission] = [.clipboardWrite], schema: Int = 1) -> PluginManifest {
+    static func manifest(id: String = "org.ruyio.test-plugin", version: String = "1.0.0", permissions: [Permission] = [.clipboardWrite], schema: Int = 1) -> PluginManifest {
         var manifest = PluginManifest(
-            id: PluginID("org.ruyio.test-plugin"), name: "Test Plugin", version: SemanticVersion(version)!,
+            id: PluginID(id), name: "Test Plugin", version: SemanticVersion(version)!,
             bundlePath: "Test.app", executable: "Test.app/Contents/MacOS/RuyioTestPlugin",
             permissions: permissions,
             actions: actions.map { ActionDeclaration(id: ActionID($0), title: $0, presentations: [Presentation(type: .commandPalette, title: $0)]) })
@@ -19,8 +19,10 @@ enum PackageFixture {
         return manifest
     }
 
+    /// `signer` nil signs ad-hoc; otherwise with that self-signed publisher certificate.
     static func build(sandbox: Bool = true, extraEntitlements: [String: Any] = [:], infoOverrides: [String: Any] = [:],
-                      version: String = "1.0.0", failMigration: Bool = false, failHealth: Bool = false, schema: Int = 1) throws -> URL {
+                      id: String = "org.ruyio.test-plugin", version: String = "1.0.0", failMigration: Bool = false, failHealth: Bool = false,
+                      schema: Int = 1, signer: SigningFixture.Identity? = nil) throws -> URL {
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("pkg-\(UUID().uuidString)")
         let root = work.appendingPathComponent("Test.ruyioplugin")
         let contents = root.appendingPathComponent("Test.app/Contents")
@@ -34,7 +36,7 @@ enum PackageFixture {
         ]
         info.merge(infoOverrides) { $1 }
         try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
-        let manifestData = try JSONCoding.encoder().encode(manifest(version: version, schema: schema))
+        let manifestData = try JSONCoding.encoder().encode(manifest(id: id, version: version, schema: schema))
         if failMigration { try Data().write(to: contents.appendingPathComponent("Resources/fail-migration")) }
         if failHealth { try Data().write(to: contents.appendingPathComponent("Resources/fail-health")) }
         try manifestData.write(to: root.appendingPathComponent("manifest.json"))
@@ -43,7 +45,8 @@ enum PackageFixture {
         entitlements.merge(extraEntitlements) { $1 }
         let entURL = work.appendingPathComponent("ent.plist")
         try PropertyListSerialization.data(fromPropertyList: entitlements, format: .xml, options: 0).write(to: entURL)
-        try ZipFixture.run("/usr/bin/codesign", ["--force", "--sign", "-", "--entitlements", entURL.path, root.appendingPathComponent("Test.app").path], cwd: work)
+        let identity = signer.map { ["--sign", $0.hash, "--keychain", $0.keychain.path] } ?? ["--sign", "-"]
+        try ZipFixture.run("/usr/bin/codesign", ["--force"] + identity + ["--entitlements", entURL.path, root.appendingPathComponent("Test.app").path], cwd: work)
         let zip = work.appendingPathComponent("Test.ruyioplugin.zip")
         try ZipFixture.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", "Test.ruyioplugin", zip.path], cwd: work)
         return zip
@@ -202,14 +205,39 @@ struct HostEngineTests {
         #expect(!preview3.isInstallable)
     }
 
-    @Test func remoteTrustRequiresDeveloperIDAndNotarization() async throws {
+    @Test func remoteTrustRequiresAPublisherCertificateButNotNotarization() async throws {
         let (engine, _) = try makeEngine()
-        let zip = try PackageFixture.build()
-        let preview = try await engine.installer.inspect(package: zip, trust: .remote)
-        #expect(!preview.isInstallable)
-        #expect(preview.checks.contains { $0.name == "developerID" && $0.outcome == .failed })
-        #expect(preview.checks.contains { $0.name == "notarization" && $0.outcome == .failed })
-        engine.installer.discard(preview)
+        let adHoc = try await engine.installer.inspect(package: try PackageFixture.build(), trust: .remote)
+        #expect(!adHoc.isInstallable)
+        #expect(adHoc.checks.contains { $0.name == "publisher" && $0.outcome == .failed })
+        engine.installer.discard(adHoc)
+
+        // A free self-signed certificate is enough (A39); notarization is only reported.
+        let publisher = try SigningFixture.first.get()
+        let signed = try await engine.installer.inspect(package: try PackageFixture.build(signer: publisher), trust: .remote)
+        #expect(signed.isInstallable, "\(signed.failureSummary)")
+        #expect(signed.signing.teamID == nil)
+        #expect(signed.signing.publisherID == publisher.publisherID)
+        #expect(signed.checks.contains { $0.name == "notarization" && $0.outcome == .notChecked })
+        #expect(!signed.trust.isDevelopment)
+        engine.installer.discard(signed)
+    }
+
+    @Test func officialNamespaceRequiresTheOfficialPublisherCertificate() async throws {
+        let (engine, paths) = try makeEngine()
+        let publisher = try SigningFixture.first.get()
+        let other = try SigningFixture.second.get()
+        let official = PluginInstaller(paths: paths, officialPublisherID: publisher.publisherID)
+        let genuine = try await official.inspect(package: try PackageFixture.build(id: "app.ruyio.test-official", signer: publisher), trust: .remote)
+        #expect(genuine.isInstallable, "\(genuine.failureSummary)")
+        official.discard(genuine)
+        let impostor = try await official.inspect(package: try PackageFixture.build(id: "app.ruyio.test-official", signer: other), trust: .remote)
+        #expect(impostor.checks.contains { $0.name == "officialNamespace" && $0.outcome == .failed })
+        official.discard(impostor)
+        // Development builds have no official publisher, so nobody may claim the namespace remotely.
+        let unconfigured = try await engine.installer.inspect(package: try PackageFixture.build(id: "app.ruyio.test-official", signer: publisher), trust: .remote)
+        #expect(unconfigured.checks.contains { $0.name == "officialNamespace" && $0.outcome == .failed })
+        engine.installer.discard(unconfigured)
     }
 
     @Test func crashOfOnDemandPluginKeepsHostWorking() async throws {

@@ -144,7 +144,7 @@ public final class HostDatabase: Sendable {
             // Raw columns, not the record type, so later schema changes cannot break this migration.
             for row in try Row.fetchAll(db, sql: "SELECT pluginID, teamID, signingIdentifier, isDevelopment FROM installed_plugin") {
                 let pluginID: String = row["pluginID"]
-                let identity = Self.settingsIdentity(pluginID: pluginID, teamID: row["teamID"], signingIdentifier: row["signingIdentifier"],
+                let identity = Self.settingsIdentity(pluginID: pluginID, publisherID: row["teamID"], signingIdentifier: row["signingIdentifier"],
                                                      isDevelopment: row["isDevelopment"])
                 try db.execute(sql: "UPDATE plugin_setting SET pluginID = ? WHERE pluginID = ?", arguments: [identity, pluginID])
             }
@@ -173,7 +173,8 @@ public struct InstalledPluginRecord: Codable, Sendable, Hashable, FetchableRecor
     public var installPath: String
     public var executablePath: String
     public var version: String
-    public var teamID: String?
+    /// Team ID or `cert:` fingerprint (`PublisherID`, A39), stored in the `teamID` column.
+    public var publisherID: String?
     public var signingIdentifier: String?
     public var isDevelopment: Bool
     public var isDefault: Bool
@@ -190,14 +191,20 @@ public struct InstalledPluginRecord: Codable, Sendable, Hashable, FetchableRecor
     public var installedAt: Date
     public var updatedAt: Date
 
-    public init(manifest: PluginManifest, installPath: URL, executablePath: URL, teamID: String?, signingIdentifier: String?,
+    enum CodingKeys: String, CodingKey {
+        case pluginID, manifest, installPath, executablePath, version, publisherID = "teamID", signingIdentifier, isDevelopment, isDefault
+        case installationState, activationState, updateState, sourceState, updateChannel, source, artifactSHA256, dataGeneration
+        case enabledPreference, lastErrorCode, installedAt, updatedAt
+    }
+
+    public init(manifest: PluginManifest, installPath: URL, executablePath: URL, publisherID: String?, signingIdentifier: String?,
                 isDevelopment: Bool, isDefault: Bool, updateChannel: UpdateChannel, source: String? = nil, artifactSHA256: String? = nil) throws {
         pluginID = manifest.id.rawValue
         self.manifest = String(decoding: try JSONCoding.encoder().encode(manifest), as: UTF8.self)
         self.installPath = installPath.path
         self.executablePath = executablePath.path
         version = manifest.version.description
-        self.teamID = teamID
+        self.publisherID = publisherID
         self.signingIdentifier = signingIdentifier
         self.isDevelopment = isDevelopment
         self.isDefault = isDefault
@@ -485,12 +492,12 @@ public extension HostDatabase {
     }
 
     private static func settingsIdentity(_ record: InstalledPluginRecord) -> String {
-        settingsIdentity(pluginID: record.pluginID, teamID: record.teamID, signingIdentifier: record.signingIdentifier, isDevelopment: record.isDevelopment)
+        settingsIdentity(pluginID: record.pluginID, publisherID: record.publisherID, signingIdentifier: record.signingIdentifier, isDevelopment: record.isDevelopment)
     }
 
-    fileprivate static func settingsIdentity(pluginID: String, teamID: String?, signingIdentifier: String?, isDevelopment: Bool) -> String {
+    fileprivate static func settingsIdentity(pluginID: String, publisherID: String?, signingIdentifier: String?, isDevelopment: Bool) -> String {
         (isDevelopment ? "dev:" : "release:") + AppPaths.dataIdentityDirectoryName(
-            pluginID: PluginID(pluginID), teamID: teamID, signingIdentifier: signingIdentifier)
+            pluginID: PluginID(pluginID), publisherID: publisherID, signingIdentifier: signingIdentifier)
     }
 
     // Operations (plan §13.3)

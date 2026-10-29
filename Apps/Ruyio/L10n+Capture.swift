@@ -21,5 +21,4 @@ extension L10n {
     var close: String { t("关闭", "Close") }
     var closeAllPins: String { t("关闭所有钉图", "Close All Pinned Images") }
     var screenshotFileName: String { t("截图", "Screenshot") }
-    var developerModeInstall: String { t("未经 Apple 公证，将作为开发者插件安装", "Not notarized by Apple; installs as a developer plugin") }
 }

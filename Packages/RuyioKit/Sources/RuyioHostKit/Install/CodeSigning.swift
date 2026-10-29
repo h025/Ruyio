@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import RuyioCore
 import Security
@@ -6,6 +7,8 @@ import Security
 public struct SigningInfo: Sendable, Hashable {
     public var identifier: String?
     public var teamID: String?
+    /// SHA-256 of the leaf signing certificate, lowercase hex; nil for ad-hoc signatures.
+    public var leafCertificateSHA256: String? = nil
     public var isAdHoc: Bool
     public var hasHardenedRuntime: Bool
     public var entitlements: [String: EntitlementValue]
@@ -22,6 +25,14 @@ public struct SigningInfo: Sendable, Hashable {
     public func boolEntitlement(_ key: String) -> Bool {
         if case .bool(let value) = entitlements[key] { return value }
         return false
+    }
+
+    /// Who stands behind the code (A39): the Apple Team ID of an Apple-issued certificate, otherwise the
+    /// signing certificate itself, which a free self-signed certificate provides. Only its private key can
+    /// produce a valid signature with it. Nil for ad-hoc signatures, which anyone can make for any identifier.
+    public var publisherID: String? {
+        if let teamID, !teamID.isEmpty { return teamID }
+        return leafCertificateSHA256.map { PublisherID.certificatePrefix + $0 }
     }
 }
 
@@ -58,6 +69,8 @@ public enum CodeSigning {
         var infoRef: CFDictionary?
         SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation | kSecCSRequirementInformation), &infoRef)
         let info = (infoRef as? [String: Any]) ?? [:]
+        let leaf = (info[kSecCodeInfoCertificates as String] as? [SecCertificate])?.first
+            .map { SHA256.hash(data: SecCertificateCopyData($0) as Data).map { String(format: "%02x", $0) }.joined() }
         let codeFlags = (info[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
         var entitlements: [String: SigningInfo.EntitlementValue] = [:]
         if let dict = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any] {
@@ -73,13 +86,15 @@ public enum CodeSigning {
         return SigningInfo(
             identifier: info[kSecCodeInfoIdentifier as String] as? String,
             teamID: info[kSecCodeInfoTeamIdentifier as String] as? String,
+            leafCertificateSHA256: leaf,
             isAdHoc: codeFlags & SecCodeSignatureFlags.adhoc.rawValue != 0,
             hasHardenedRuntime: codeFlags & SecCodeSignatureFlags.runtime.rawValue != 0,
             entitlements: entitlements, isValid: status == errSecSuccess, validationError: validationError)
     }
 
-    /// Developer ID + notarization check through the public requirement language (plan §7.2).
-    /// `notarized` accepts a stapled ticket offline or an online lookup.
+    /// Developer ID + notarization check through the public requirement language (plan §7.2). Since A39 it
+    /// only labels a package as notarized; it is not required. `notarized` accepts a stapled ticket offline
+    /// or an online lookup.
     public static let developerIDNotarizedRequirement =
         "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and notarized"
 
