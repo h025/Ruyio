@@ -63,6 +63,8 @@ final class AppModel: ObservableObject {
     /// Nil when this build cannot update itself (A41): local and development builds.
     @Published var appUpdates: AppUpdateService?
     @Published var appUpdatePhase: AppUpdatePhase = .idle
+    /// A plugin whose settings sheet its detail page should open once shown.
+    @Published var settingsRequest: PluginID?
     #if DEBUG
     /// Visual fixtures use synthetic permission states and never inspect the system pasteboard.
     var isGallery = false

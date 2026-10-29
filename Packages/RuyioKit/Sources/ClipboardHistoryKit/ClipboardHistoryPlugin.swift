@@ -8,9 +8,27 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         public var recording = true
         public var retentionDays = CaptureLimits.defaultRetentionDays
         public var maxRecords = CaptureLimits.defaultMaxRecords
+        /// Disk space for the whole history, favourites included; the oldest unfavourited items go first.
+        public var maxMegabytes = CaptureLimits.defaultMaxMegabytes
         public var pastePlain = false
         public var autoPaste = true
         public var ignoredApps: [String] = []
+
+        public init() {}
+
+        /// Keys a newer version added keep their defaults: settings saved by an older one must survive, not
+        /// fail to decode and silently fall back to defaults altogether.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let defaults = Settings()
+            recording = try c.decodeIfPresent(Bool.self, forKey: .recording) ?? defaults.recording
+            retentionDays = try c.decodeIfPresent(Int.self, forKey: .retentionDays) ?? defaults.retentionDays
+            maxRecords = try c.decodeIfPresent(Int.self, forKey: .maxRecords) ?? defaults.maxRecords
+            maxMegabytes = try c.decodeIfPresent(Int.self, forKey: .maxMegabytes) ?? defaults.maxMegabytes
+            pastePlain = try c.decodeIfPresent(Bool.self, forKey: .pastePlain) ?? defaults.pastePlain
+            autoPaste = try c.decodeIfPresent(Bool.self, forKey: .autoPaste) ?? defaults.autoPaste
+            ignoredApps = try c.decodeIfPresent([String].self, forKey: .ignoredApps) ?? defaults.ignoredApps
+        }
     }
 
     struct ViewState {
@@ -195,9 +213,10 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
                 }
             }
         } catch {
-            // A full store stops every later capture, so it becomes the capture state (and "Recheck" re-probes);
+            // A full store first makes room from the oldest unfavourited records: this item is lost, the next
+            // one fits. Only when favourites alone fill it does recording stop (and "Recheck" re-probes);
             // a single item that could not be saved does not.
-            if (error as? RuyioError)?.code == .storageQuotaExceeded {
+            if (error as? RuyioError)?.code == .storageQuotaExceeded, await !makeRoom() {
                 captureStateChanged(.failed, ErrorCode.storageQuotaExceeded.rawValue)
             }
             return
@@ -318,8 +337,17 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
 
     // MARK: Retention (PRD §8.4, §19.16)
 
-    func recordsToPrune(_ settings: Settings, now: Date = Date()) async throws -> [String] {
+    /// Unfavourited records past the retention days, beyond the record limit, or, oldest first, beyond the
+    /// disk space (A45). `byteLimit` overrides the setting, to make room when the store is full.
+    func recordsToPrune(_ settings: Settings, byteLimit: Int64? = nil, now: Date = Date()) async throws -> [String] {
         var ids: [String] = []
+        var chosen: Set<String> = []
+        var freed: Int64 = 0
+        func choose(_ document: StoredDocument) {
+            guard chosen.insert(document.id).inserted else { return }
+            ids.append(document.id)
+            freed += (try? ClipRecord(from: document)).map { Int64($0.byteCount) } ?? 0
+        }
         let cutoff = now.addingTimeInterval(-Double(settings.retentionDays) * 86_400).timeIntervalSince1970
         let base = [StorageFilter(field: "favorite", value: false)]
         var cursor: String?
@@ -327,25 +355,27 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             let page = try await context.storage.query(StorageQuery(collection: ClipRecord.collection,
                                                                     filters: base + [StorageFilter(field: "lastCopiedAt", op: .lessThan, value: .number(cutoff))],
                                                                     limit: 200, cursor: cursor))
-            ids += page.documents.map(\.id)
+            page.documents.forEach(choose)
             cursor = page.nextCursor
         } while cursor != nil && ids.count < 50_000
         let total = try await context.storage.count(StorageQuery(collection: ClipRecord.collection, filters: base))
-        let remaining = total - ids.count
-        if remaining > settings.maxRecords {
-            var excess = remaining - settings.maxRecords
-            var oldestCursor: String?
-            let pruned = Set(ids)
-            while excess > 0 {
-                let page = try await context.storage.query(StorageQuery(collection: ClipRecord.collection, filters: base, limit: 200,
-                                                                        cursor: oldestCursor, ascending: true))
-                for doc in page.documents where !pruned.contains(doc.id) && excess > 0 {
-                    ids.append(doc.id)
-                    excess -= 1
-                }
-                oldestCursor = page.nextCursor
-                if oldestCursor == nil { break }
+        var excess = total - ids.count - settings.maxRecords
+        // Over the space limit, the oldest go down to 90 % of it, so the next captures do not prune again at once.
+        let limit = byteLimit ?? (Int64(settings.maxMegabytes) << 20)
+        let used = try await context.storage.usage().bytes
+        var overSpace = used - freed > limit ? used - freed - limit * 9 / 10 : 0
+        var oldestCursor: String?
+        while excess > 0 || overSpace > 0 {
+            let page = try await context.storage.query(StorageQuery(collection: ClipRecord.collection, filters: base, limit: 200,
+                                                                    cursor: oldestCursor, ascending: true))
+            for document in page.documents where !chosen.contains(document.id) && (excess > 0 || overSpace > 0) {
+                let before = freed
+                choose(document)
+                excess -= 1
+                overSpace -= freed - before
             }
+            oldestCursor = page.nextCursor
+            if oldestCursor == nil { break }
         }
         return ids
     }
@@ -356,8 +386,23 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     }
 
     /// Chooses and deletes in one mutation, so a record favourited or copied again meanwhile is never pruned.
-    func prune(_ settings: Settings) async throws {
-        try await mutations.run { try await self.deleteBatch(try await self.recordsToPrune(settings)) }
+    /// Returns how many records went.
+    @discardableResult
+    func prune(_ settings: Settings, byteLimit: Int64? = nil) async throws -> Int {
+        try await mutations.run {
+            let ids = try await self.recordsToPrune(settings, byteLimit: byteLimit)
+            try await self.deleteBatch(ids)
+            return ids.count
+        }
+    }
+
+    /// The store refused a capture as full: the oldest unfavourited records make room, down to three
+    /// quarters of the quota or the space setting, whichever is lower. False when nothing could go.
+    func makeRoom() async -> Bool {
+        let current = lock.withLock { settings }
+        guard let quota = try? await context.storage.usage().quotaBytes else { return false }
+        let limit = min(Int64(current.maxMegabytes) << 20, quota * 3 / 4)
+        return ((try? await prune(current, byteLimit: limit)) ?? 0) > 0
     }
 
     /// Call inside `mutations`.
@@ -563,7 +608,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
                 throw error
             }
         case Self.settingsView:
-            return settingsDocument()
+            return await settingsDocument()
         default:
             throw RuyioError(.invalidRequest, diagnostic: "unknown view \(request.viewID)")
         }
@@ -925,6 +970,8 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             footerActions.append(ItemAction(id: "previous-page", title: s.t("显示更新的记录", "Show Newer Items"), symbol: "chevron.up"))
             footerActions.append(ItemAction(id: "newest", title: s.t("回到最新", "Back to Newest"), symbol: "arrow.up.to.line"))
         }
+        // Handled by the host: opens this plugin's settings in Ruyio's window.
+        footerActions.append(ItemAction(id: "host.open-plugin-settings", title: s.openSettings, symbol: "gearshape"))
         footerActions.append(ItemAction(id: "clear-unfavorited", title: s.clearUnfavorited, isDestructive: true))
         var banner: BannerSpec?
         switch state {
@@ -1002,20 +1049,25 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
 
     // MARK: Settings view
 
-    func settingsDocument(error: String? = nil) -> ViewDocument {
+    func settingsDocument(error: String? = nil) async -> ViewDocument {
         let s = strings
         let current = lock.withLock { settings }
+        let records = (try? await context.storage.count(StorageQuery(collection: ClipRecord.collection,
+                                                                     filters: [StorageFilter(field: "deleted", value: false)]))) ?? 0
+        let used = (try? await context.storage.usage().bytes) ?? 0
         return ViewDocument(viewID: Self.settingsView, revision: Int(Date().timeIntervalSince1970), title: nil, root: .form(FormSpec(fields: [
             FieldSpec(id: "recording", label: s.settingsRecording, kind: .toggle, value: .bool(current.recording)),
             FieldSpec(id: "retentionDays", label: s.settingsRetentionDays, kind: .stepper, value: .number(Double(current.retentionDays)), minimum: 1, maximum: 3650, step: 1),
             FieldSpec(id: "maxRecords", label: s.settingsMaxRecords, kind: .stepper, value: .number(Double(current.maxRecords)), minimum: 100, maximum: 50_000, step: 100),
+            FieldSpec(id: "maxMegabytes", label: s.settingsMaxMegabytes, kind: .stepper, value: .number(Double(current.maxMegabytes)),
+                      minimum: Double(CaptureLimits.maxMegabytesRange.lowerBound), maximum: Double(CaptureLimits.maxMegabytesRange.upperBound), step: 100),
             FieldSpec(id: "pastePlain", label: s.settingsPasteMode, kind: .picker, value: .string(current.pastePlain ? "plain" : "original"),
                       options: [.init(id: "original", title: s.settingsOriginal), .init(id: "plain", title: s.settingsPlain)]),
             FieldSpec(id: "autoPaste", label: s.settingsAfterPaste, kind: .picker, value: .string(current.autoPaste ? "auto" : "copy"),
                       options: [.init(id: "auto", title: s.settingsAutoPaste), .init(id: "copy", title: s.settingsCopyOnly)]),
             FieldSpec(id: "ignoredApps", label: s.settingsIgnoredApps, kind: .textEditor, value: .string(current.ignoredApps.joined(separator: "\n")),
                       placeholder: "com.agilebits.onepassword7", error: error),
-        ], submitTitle: s.settingsSave)))
+        ], submitTitle: s.settingsSave, footnote: s.usageFootnote(records: records, bytes: used, limitMegabytes: current.maxMegabytes))))
     }
 
     func handleSettingsEvent(_ event: ViewEvent) async throws -> ViewEventReply {
@@ -1026,6 +1078,8 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
             updated.recording = values["recording"]?.boolValue ?? updated.recording
             updated.retentionDays = max(1, values["retentionDays"]?.intValue ?? updated.retentionDays)
             updated.maxRecords = max(100, values["maxRecords"]?.intValue ?? updated.maxRecords)
+            updated.maxMegabytes = min(max(values["maxMegabytes"]?.intValue ?? updated.maxMegabytes, CaptureLimits.maxMegabytesRange.lowerBound),
+                                       CaptureLimits.maxMegabytesRange.upperBound)
             updated.pastePlain = values["pastePlain"]?.stringValue == "plain"
             updated.autoPaste = values["autoPaste"]?.stringValue != "copy"
             if let apps = values["ignoredApps"]?.stringValue {
@@ -1039,13 +1093,13 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
                                                                                    confirmTitle: s.clear, confirmActionID: "apply-settings", isDestructive: true)))
             }
             try await apply(updated)
-            return ViewEventReply(document: settingsDocument(), effect: .notice(s.settingsSaved))
+            return ViewEventReply(document: await settingsDocument(), effect: .notice(s.settingsSaved))
         case .invoke("apply-settings", _):
             guard let pending = lock.withLock({ () -> Settings? in defer { pendingSettings = nil }; return pendingSettings }) else {
-                return ViewEventReply(document: settingsDocument())
+                return ViewEventReply(document: await settingsDocument())
             }
             try await apply(pending)
-            return ViewEventReply(document: settingsDocument(), effect: .notice(s.settingsSaved))
+            return ViewEventReply(document: await settingsDocument(), effect: .notice(s.settingsSaved))
         default:
             return ViewEventReply(document: nil)
         }

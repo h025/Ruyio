@@ -68,6 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         palette = CommandPaletteController(model: model)
         palette.overlay = overlay
         overlay.palette = palette
+        overlay.openPluginSettings = { [weak self] id in
+            self?.model.settingsRequest = id
+            self?.showPlugin(id)
+        }
         palette.openPluginDetail = { [weak self] id in self?.showPlugin(id) }
         menuBar = MenuBarController(model: model)
         menuBar.openPalette = { [weak self] in self?.palette.toggle() }

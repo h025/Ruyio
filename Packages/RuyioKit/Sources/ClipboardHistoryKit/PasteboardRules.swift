@@ -121,5 +121,8 @@ public enum CaptureLimits {
     public static let pollInterval: TimeInterval = 0.35
     public static let defaultRetentionDays = 30
     public static let defaultMaxRecords = 5_000
+    /// Disk space for the history (A45), below the host's 1.25 GiB per-plugin quota so captures never hit it.
+    public static let defaultMaxMegabytes = 1_000
+    public static let maxMegabytesRange = 100...1_200
     public static let undoWindow: TimeInterval = 6
 }

@@ -143,6 +143,8 @@ final class OverlayController {
     private var presentationID = UUID()
     private var lifecycleTask: Task<Void, Never>?
     weak var palette: CommandPaletteController?
+    /// `host.open-plugin-settings`: the plugin's settings in the main window.
+    var openPluginSettings: ((PluginID) -> Void)?
 
     init(model: AppModel) {
         self.model = model
@@ -322,6 +324,10 @@ final class OverlayController {
         guard presentationID == ticket, let (pluginID, viewID) = current else { return }
         if case .invoke(let action, _) = event, action.hasPrefix("host.") {
             if action == "host.open-privacy-settings" { SystemSettings.openPasteboardPrivacy() }
+            if action == "host.open-plugin-settings" {
+                close()
+                openPluginSettings?(pluginID)
+            }
             return
         }
         if case .submit(let values) = event { pendingSubmission = values }

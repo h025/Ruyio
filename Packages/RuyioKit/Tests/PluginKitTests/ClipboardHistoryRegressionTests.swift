@@ -30,13 +30,23 @@ private final class ClipboardFixture: @unchecked Sendable {
                      sourceBundleID: "example.source", changeCount: 1, skippedOversize: false)
     }
 
-    func seed(_ count: Int) async throws {
+    /// Records 0…count-1, oldest first, copied recently enough to stay within the retention days.
+    func seed(_ count: Int, megabytesEach: Int? = nil, favorites: Set<Int> = []) async throws {
         let template = try await plugin.makeRecord(clip(), kind: .text, fingerprint: "template", date: Date())
+        let recent = Date().timeIntervalSince1970 - 3600
         for i in 0..<count {
             var record = template
             record.id = "record-\(i)"
-            record.lastCopiedAt = Date(timeIntervalSince1970: Double(i))
+            record.lastCopiedAt = Date(timeIntervalSince1970: megabytesEach == nil ? Double(i) : recent + Double(i))
+            if let megabytesEach { record.items[0].representations[0].byteCount = megabytesEach << 20 }
+            record.favorite = favorites.contains(i)
             try host.insert(record.document())
+        }
+    }
+
+    func remaining() -> [String] {
+        host.lock.withLock { host.docs.values.filter { $0.collection == ClipRecord.collection }.map(\.id) }.sorted {
+            Int($0.dropFirst(7))! < Int($1.dropFirst(7))!
         }
     }
 }
@@ -66,6 +76,8 @@ private final class ClipboardMemoryHost: @unchecked Sendable {
     var reports: [DynamicItemsReport] = []
     var writes: [ClipboardWriteRequest] = []
     var failSettings = false
+    /// Quota reported by `storage.usage`; usage itself is the sum of the records' sizes, as on disk.
+    var quotaBytes: Int64 = 1_342_177_280
     var denyFileURLs = false
     var delayedSearch: String?
     let queryBarrier = QueryBarrier()
@@ -129,6 +141,10 @@ private final class ClipboardMemoryHost: @unchecked Sendable {
             case StorageMethod.count:
                 let query = try JSONCoding.decode(StorageQuery.self, from: envelope.payload)
                 return .number(Double(docs.values.filter { matches($0, query: query) }.count))
+            case StorageMethod.usage:
+                let clips = docs.values.filter { $0.collection == ClipRecord.collection }
+                let bytes = clips.compactMap { try? ClipRecord(from: $0) }.reduce(Int64(0)) { $0 + Int64($1.byteCount) }
+                return try JSONCoding.value(StorageUsage(documentCount: clips.count, bytes: bytes, quotaBytes: quotaBytes))
             case CapabilityMethod.clipboardWrite:
                 let request = try JSONCoding.decode(ClipboardWriteRequest.self, from: envelope.payload)
                 if denyFileURLs && request.items.contains(where: { $0.representations.contains { $0.type == PasteboardRules.fileURL } }) {
@@ -218,11 +234,53 @@ struct ClipboardHistoryRegressionTests {
             try await fixture.plugin.apply(updated)
             Issue.record("The failed settings write must reach the caller")
         } catch let error as RuyioError { #expect(error.code == .storageFailure) }
-        let document = fixture.plugin.settingsDocument()
+        let document = await fixture.plugin.settingsDocument()
         guard case .form(let form) = document.root else { Issue.record("Expected settings form"); return }
         #expect(form.fields.first { $0.id == "recording" }?.value == .bool(true))
         #expect(form.fields.first { $0.id == "ignoredApps" }?.value == .string(""))
         #expect(try await fixture.plugin.record("record-0") != nil)
+    }
+
+    @Test func settingsFromBeforeASettingExistedKeepTheirValues() throws {
+        let saved = Data(#"{"recording":false,"retentionDays":60,"maxRecords":800,"pastePlain":true,"autoPaste":false,"ignoredApps":["a.b"]}"#.utf8)
+        let settings = try JSONCoding.decoder().decode(ClipboardHistoryPlugin.Settings.self, from: saved)
+        #expect(settings.retentionDays == 60 && settings.maxRecords == 800 && !settings.recording && settings.pastePlain)
+        #expect(settings.ignoredApps == ["a.b"])
+        #expect(settings.maxMegabytes == CaptureLimits.defaultMaxMegabytes)
+    }
+
+    @Test func overTheSpaceLimitTheOldestRegularItemsGo() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        // 20 items of 10 MB, the oldest a favourite: 200 MB against a 100 MB limit.
+        try await fixture.seed(20, megabytesEach: 10, favorites: [0])
+        var settings = ClipboardHistoryPlugin.Settings()
+        settings.maxMegabytes = 100
+        #expect(try await fixture.plugin.prune(settings) == 11)
+        // Down to 90 MB: the favourite and the 8 newest stay.
+        #expect(fixture.remaining() == ["record-0"] + (12..<20).map { "record-\($0)" })
+
+        // The settings form shows what is left.
+        guard case .form(let form) = await fixture.plugin.settingsDocument().root else { Issue.record("Expected settings form"); return }
+        #expect(form.footnote?.contains("9") == true)
+        #expect(form.fields.contains { $0.id == "maxMegabytes" })
+    }
+
+    @Test func aFullStoreMakesRoomInsteadOfStoppingUnlessOnlyFavouritesRemain() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        try await fixture.seed(20, megabytesEach: 10)
+        // The store holds 200 MB and its quota is 100 MB: room down to 90 % of three quarters of it.
+        fixture.host.lock.withLock { fixture.host.quotaBytes = 100 << 20 }
+        #expect(await fixture.plugin.makeRoom())
+        #expect(fixture.remaining().count == 6)
+
+        let favourites = try ClipboardFixture()
+        defer { favourites.close() }
+        try await favourites.seed(5, megabytesEach: 30, favorites: Set(0..<5))
+        favourites.host.lock.withLock { favourites.host.quotaBytes = 100 << 20 }
+        #expect(await !favourites.plugin.makeRoom(), "favourites are never removed to make room")
+        #expect(favourites.remaining().count == 5)
     }
 
     @Test func scrollingReachesAllHistoryWithinSchemaLimitAndKeepsSelection() async throws {

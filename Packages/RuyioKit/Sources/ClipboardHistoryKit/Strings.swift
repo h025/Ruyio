@@ -72,6 +72,13 @@ struct Strings {
     var settingsRecording: String { t("记录剪贴板", "Record Clipboard") }
     var settingsRetentionDays: String { t("保留天数", "Keep for (days)") }
     var settingsMaxRecords: String { t("最多保留条数", "Maximum items") }
+    var settingsMaxMegabytes: String { t("最多占用空间（MB）", "Maximum disk space (MB)") }
+    var openSettings: String { t("设置…", "Settings…") }
+    func usageFootnote(records: Int, bytes: Int64, limitMegabytes: Int) -> String {
+        let used = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return t("现有 \(records) 条，占用 \(used)，上限 \(limitMegabytes) MB。超出天数、条数或空间时，最旧的普通记录会被自动删除；收藏的条目不会被删除，但计入占用。",
+                 "\(records) items using \(used) of \(limitMegabytes) MB. Past the days, items or space set here, the oldest regular items are removed; favorites are never removed but count toward the space.")
+    }
     var settingsPasteMode: String { t("默认粘贴方式", "Default paste") }
     var settingsOriginal: String { t("原样粘贴", "Keep formatting") }
     var settingsPlain: String { t("纯文本粘贴", "Plain text") }

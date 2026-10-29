@@ -107,6 +107,17 @@ struct PluginDetailView: View {
         .sheet(isPresented: $showUninstall) { UninstallSheet(model: model, summary: summary, isPresented: $showUninstall) }
         .sheet(isPresented: $showFinderMenu) { FinderMenuSheet(model: model, isPresented: $showFinderMenu) }
         .sheet(isPresented: $showSettings) { PluginSettingsSheet(model: model, summary: summary, isPresented: $showSettings) }
+        // The page may be reused for another plugin rather than appear anew.
+        .onAppear { openRequestedSettings() }
+        .onChange(of: summary.id) { _, _ in openRequestedSettings() }
+        .onChange(of: model.settingsRequest) { _, _ in openRequestedSettings() }
+    }
+
+    /// A plugin panel's "Settings…" (`host.open-plugin-settings`) landed on this page: open the sheet once.
+    private func openRequestedSettings() {
+        guard model.settingsRequest == summary.id else { return }
+        model.settingsRequest = nil
+        if summary.status.isInvocable, summary.manifest.views.contains(where: { $0.placement == .settings }) { showSettings = true }
     }
 }
 
