@@ -224,9 +224,14 @@ struct AppUpdateStatus: View {
             case .available(let item):
                 Text(l.updateAvailable(item.version.description))
                 if let notes = item.releaseNotesURL { Link(l.releaseNotes, destination: notes) }
-                Button(l.downloadAndInstall) { model.installAppUpdate(item) }
-            case .downloading(let fraction):
+                Button(l.downloadUpdate) { model.downloadAppUpdate(item) }
+            case .downloading(_, let fraction):
                 ProgressView(value: fraction).frame(width: 140)
+            case .ready(let item, _):
+                Text(l.updateReady(item.version.description))
+                Button(l.installAndRelaunch) { model.installAppUpdate() }
+                    .keyboardShortcut(.defaultAction)
+                    .help(l.installUpdateHelp)
             case .failed(let message):
                 Text(message).foregroundStyle(.orange).lineLimit(2).multilineTextAlignment(.trailing)
                 Button(l.checkNow) { model.checkForAppUpdate() }

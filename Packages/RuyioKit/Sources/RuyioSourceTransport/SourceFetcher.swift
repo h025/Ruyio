@@ -47,7 +47,11 @@ public final class SourceFetcher: NSObject, URLSessionTaskDelegate, RemoteFetchi
     private var redirectCounts: [Int: Int] = [:]
     public var hostCheck: @Sendable (String) throws -> Void = NetworkPolicy.checkHost
 
-    public override init() {
+    public override convenience init() { self.init(usesSystemProxy: false) }
+
+    /// `usesSystemProxy` is for content verified by signature after download (Ruyio's own updates): many
+    /// users reach GitHub only through the proxy set in System Settings.
+    public init(usesSystemProxy: Bool) {
         super.init()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
@@ -55,7 +59,7 @@ public final class SourceFetcher: NSObject, URLSessionTaskDelegate, RemoteFetchi
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.connectionProxyDictionary = [:] // PRD §23 #14 pending; see P0-07.
+        if !usesSystemProxy { configuration.connectionProxyDictionary = [:] } // PRD §23 #14 pending; see P0-07.
         configuration.timeoutIntervalForRequest = Self.connectTimeout
         configuration.timeoutIntervalForResource = Self.totalTimeout
         configuration.httpAdditionalHeaders = ["User-Agent": "Ruyio/\(HostInfo.version)"]

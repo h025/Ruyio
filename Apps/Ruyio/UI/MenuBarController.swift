@@ -86,9 +86,16 @@ final class MenuBarController: NSObject {
             menu.addItem(entry)
         }
         if model.appUpdates != nil {
-            let title = model.appUpdatePhase.available.map { l.installUpdateMenu($0.version.description) } ?? l.checkForUpdates
+            let title: String
+            switch model.appUpdatePhase {
+            case .available(let item): title = l.downloadUpdateMenu(item.version.description)
+            case .downloading(let item, _): title = l.downloadingUpdateMenu(item.version.description)
+            case .ready(let item, _): title = l.installUpdateMenu(item.version.description)
+            default: title = l.checkForUpdates
+            }
             let update = NSMenuItem(title: title, action: #selector(appUpdateAction), keyEquivalent: "")
             update.target = self
+            if case .downloading = model.appUpdatePhase { update.action = nil }
             menu.addItem(update)
         }
         let quit = NSMenuItem(title: l.quit("Ruyio"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -123,9 +130,10 @@ final class MenuBarController: NSObject {
     @objc private func openPaletteAction() { openPalette?() }
 
     @objc private func appUpdateAction() {
-        if let item = model.appUpdatePhase.available {
-            model.installAppUpdate(item)
-        } else {
+        switch model.appUpdatePhase {
+        case .available(let item): model.downloadAppUpdate(item)
+        case .ready: model.installAppUpdate()
+        default:
             openPage?(.general)
             model.checkForAppUpdate()
         }

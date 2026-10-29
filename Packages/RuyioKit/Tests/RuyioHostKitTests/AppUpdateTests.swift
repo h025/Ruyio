@@ -137,28 +137,64 @@ struct AppUpdateTests {
         await #expect(throws: RuyioError.self) { _ = try await updates.prepare(mislabeledItem) }
     }
 
-    @Test func installSwapsAtomicallyAndKeepsThePreviousVersionAside() async throws {
+    @Test func installSwapsAtomicallyAfterVerifyingTheCopyAgain() async throws {
         let publisher = try SigningFixture.first.get()
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("appupd-install-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let installed = folder.appendingPathComponent("Ruyio.app")
-        try FileManager.default.copyItem(at: try Self.makeApp(version: "1.1.0", signer: publisher, marker: "old").app, to: installed)
+        let current = try Self.makeApp(version: "1.1.0", signer: publisher, marker: "old").app
+        try FileManager.default.copyItem(at: current, to: installed)
         let staged = try Self.makeApp(version: "1.2.0", signer: publisher, marker: "new").app
-        let updates = service(FakeFetcher(), key: Curve25519.Signing.PrivateKey(), requirement: "", installed: installed)
+        let updates = service(FakeFetcher(), key: Curve25519.Signing.PrivateKey(), requirement: try Self.designatedRequirement(of: current), installed: installed)
         #expect(updates.installProblem == nil)
+        let item = try #require(try Appcast.parse(appcast(version: "1.2.0")).first)
 
-        let previous = try await updates.install(staged: staged)
+        // Something replaced the staged copy after it was verified: it is checked again and refused.
+        let tampered = try Self.makeApp(version: "1.2.0", signer: try SigningFixture.second.get(), marker: "evil").app
+        await #expect(throws: RuyioError.self) { _ = try await updates.install(staged: tampered, item: item) }
+        #expect(try String(contentsOf: installed.appendingPathComponent("Contents/Resources/marker"), encoding: .utf8) == "old")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["Ruyio.app"], "nothing left beside the app")
+
+        let previous = try await updates.install(staged: staged, item: item)
         #expect(try String(contentsOf: installed.appendingPathComponent("Contents/Resources/marker"), encoding: .utf8) == "new")
-        #expect(try String(contentsOf: previous.appendingPathComponent("Contents/Resources/marker"), encoding: .utf8) == "old")
-        #expect(previous.deletingLastPathComponent() == installed.deletingLastPathComponent())
-
-        AppUpdateService.removeLeftovers(beside: installed)
-        #expect(!FileManager.default.fileExists(atPath: previous.path))
-        #expect(FileManager.default.fileExists(atPath: installed.path))
+        #expect(try String(contentsOf: previous.appendingPathComponent("Ruyio.app/Contents/Resources/marker"), encoding: .utf8) == "old")
+        // The previous version waits outside the app's folder, where LaunchServices does not look.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["Ruyio.app"])
         #expect(AppUpdateService.installProblem(for: URL(fileURLWithPath: "/private/var/folders/x/AppTranslocation/ABC/d/Ruyio.app")) == .translocated)
     }
 
-    @Test func relauncherWaitsForTheOldProcessThenRemovesLeftovers() async throws {
+    @Test func leftoversOfOlderUpdatersAreRemoved() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("appupd-leftover-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".ruyio-update-1234.app"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("Ruyio.app"), withIntermediateDirectories: true)
+        AppUpdateService.removeLeftovers(beside: folder.appendingPathComponent("Ruyio.app"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["Ruyio.app"])
+    }
+
+    @Test func appcastIgnoresDeltaEnclosuresAndChannels() throws {
+        let feed = Data("""
+        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>
+          <item>
+            <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+            <enclosure url="https://example.com/Ruyio-1.2.0.zip" length="10" sparkle:edSignature="full"/>
+            <sparkle:deltas>
+              <enclosure url="https://example.com/1.1.0-1.2.0.delta" sparkle:deltaFrom="1.1.0" length="2" sparkle:edSignature="delta"/>
+            </sparkle:deltas>
+          </item>
+          <item>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:channel>beta</sparkle:channel>
+            <enclosure url="https://example.com/Ruyio-1.3.0.zip" length="10" sparkle:edSignature="beta"/>
+          </item>
+        </channel></rss>
+        """.utf8)
+        let items = try Appcast.parse(feed)
+        #expect(items.count == 1)
+        #expect(items.first?.edSignature == "full")
+        #expect(items.first?.url.lastPathComponent == "Ruyio-1.2.0.zip")
+    }
+
+    @Test func relauncherKeepsThePreviousVersionWhenTheNewOneCannotOpen() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("appupd-relaunch-\(UUID().uuidString)")
         let leftover = folder.appendingPathComponent("previous.app")
         try FileManager.default.createDirectory(at: leftover, withIntermediateDirectories: true)
@@ -170,10 +206,10 @@ struct AppUpdateTests {
         old.arguments = ["1"]
         try old.run()
         try updates.relaunch(after: old.processIdentifier, removing: [leftover])
-        #expect(FileManager.default.fileExists(atPath: leftover.path), "must wait for the old process")
         old.waitUntilExit()
-        for _ in 0..<50 where FileManager.default.fileExists(atPath: leftover.path) { try await Task.sleep(for: .milliseconds(100)) }
-        #expect(!FileManager.default.fileExists(atPath: leftover.path))
+        // Both attempts to open fail within about three seconds; the fallback must still be there.
+        try await Task.sleep(for: .seconds(4))
+        #expect(FileManager.default.fileExists(atPath: leftover.path))
     }
 }
 

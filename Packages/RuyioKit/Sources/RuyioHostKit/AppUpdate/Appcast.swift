@@ -38,31 +38,38 @@ public enum Appcast {
         var items: [AppcastItem] = []
         private var fields: [String: String]?
         private var enclosure: [String: String] = [:]
+        private var path: [String] = []
         private var text = ""
 
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
             text = ""
             switch name {
             case "item": fields = [:]; enclosure = [:]
-            case "enclosure" where fields != nil: enclosure = attributes
+            // Only the item's own enclosure: the ones inside <sparkle:deltas> are patches, not the archive.
+            case "enclosure" where fields != nil && path.last == "item": enclosure = attributes
             default: break
             }
+            path.append(name)
         }
 
         func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
 
+        func parser(_ parser: XMLParser, foundCDATA data: Data) { text += String(decoding: data, as: UTF8.self) }
+
         func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            path.removeLast()
             guard fields != nil else { return }
             if name == "item" {
                 if let item = makeItem() { items.append(item) }
                 fields = nil
-            } else {
+            } else if path.last == "item" {
                 fields?[name] = text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
 
         private func makeItem() -> AppcastItem? {
-            guard let fields else { return nil }
+            // Items on a named channel (beta and the like) are for clients that opted in; Ruyio has none.
+            guard let fields, fields["sparkle:channel"] == nil else { return nil }
             // Sparkle accepts the versions as elements or, in older feeds, as enclosure attributes.
             let short = fields["sparkle:shortVersionString"] ?? enclosure["sparkle:shortVersionString"]
             guard let short, let version = SemanticVersion(short),

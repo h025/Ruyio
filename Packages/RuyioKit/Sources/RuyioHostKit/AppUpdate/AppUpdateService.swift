@@ -44,7 +44,7 @@ public actor AppUpdateService {
     private var observer: (@Sendable (AppcastItem?) -> Void)?
 
     /// `staging` must be a folder the host cleans at startup (`AppPaths.downloads`).
-    public init(configuration: Configuration, fetcher: any RemoteFetching = SourceFetcher(), staging: URL) {
+    public init(configuration: Configuration, fetcher: any RemoteFetching = SourceFetcher(usesSystemProxy: true), staging: URL) {
         self.configuration = configuration
         self.fetcher = fetcher
         self.staging = staging
@@ -104,6 +104,12 @@ public actor AppUpdateService {
               values.isSymbolicLink == false, values.isDirectory == true else {
             throw RuyioError(.sourceInvalid, diagnostic: "update archive must hold one app folder")
         }
+        try await verify(app: app, item: item)
+        return app
+    }
+
+    /// The same publisher (designated requirement), a valid signature and the promised version.
+    private func verify(app: URL, item: AppcastItem) async throws {
         let signing = await CodeSigning.inspect(bundle: app)
         guard signing.isValid else { throw RuyioError(.sourceInvalid, diagnostic: "update signature invalid: \(signing.validationError ?? "")") }
         let continuity = await CodeSigning.satisfies(bundle: app, requirement: configuration.designatedRequirement)
@@ -112,7 +118,6 @@ public actor AppUpdateService {
         guard (info?["CFBundleShortVersionString"] as? String).flatMap(SemanticVersion.init) == item.version else {
             throw RuyioError(.sourceInvalid, diagnostic: "update version differs from the appcast")
         }
-        return app
     }
 
     /// The download folder `prepare` created for a staged app.
@@ -130,34 +135,50 @@ public actor AppUpdateService {
     }
 
     /// Puts the verified app in place of the running one with one atomic swap, so the app's path never
-    /// goes missing. Returns where the previous version now is: a hidden sibling that the relauncher
-    /// removes once this process has exited.
-    public func install(staged: URL) throws -> URL {
+    /// goes missing. The copy waits in a temporary folder on the app's volume, outside the Applications
+    /// folder, where LaunchServices could register it and its Finder extension; it is verified again
+    /// there, since time passes between download and install. Returns that folder, which now holds the
+    /// previous version, for the relauncher to remove once the new version is running.
+    public func install(staged: URL, item: AppcastItem) async throws -> URL {
         if let problem = installProblem { throw RuyioError(.fileAccessDenied, diagnostic: "cannot replace the app: \(problem.rawValue)") }
         let installed = configuration.installedApp
-        let incoming = installed.deletingLastPathComponent().appendingPathComponent(".ruyio-update-\(UUID().uuidString).app")
-        try FileManager.default.copyItem(at: staged, to: incoming)
-        guard renamex_np(installed.path, incoming.path, UInt32(RENAME_SWAP)) == 0 else {
-            let code = errno
-            try? FileManager.default.removeItem(at: incoming)
-            throw RuyioError(.fileWriteFailed, diagnostic: "swap failed: \(String(cString: strerror(code)))")
+        let folder = try FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: installed, create: true)
+        let incoming = folder.appendingPathComponent(installed.lastPathComponent)
+        do {
+            try FileManager.default.copyItem(at: staged, to: incoming)
+            try await verify(app: incoming, item: item)
+            guard renamex_np(installed.path, incoming.path, UInt32(RENAME_SWAP)) == 0 else {
+                throw RuyioError(.fileWriteFailed, diagnostic: "swap failed: \(String(cString: strerror(errno)))")
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
         }
-        return incoming
+        return folder
     }
 
-    /// Waits in a detached process for `pid` to exit, removes `leftovers` and opens the updated app.
-    /// Arguments travel as positional parameters, never inside the script text.
+    /// Waits in a detached process for `pid` to exit, opens the updated app and then removes `leftovers`,
+    /// which stay as a fallback when the app cannot be opened. Arguments travel as positional parameters,
+    /// never inside the script text.
     public nonisolated func relaunch(after pid: pid_t, removing leftovers: [URL]) throws {
         let script = """
         while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done
         app=$2; shift 2
-        /bin/rm -rf "$@"
-        /usr/bin/open "$app"
+        # LaunchServices may list the old process for a moment after it exits; try again before giving up.
+        /bin/sleep 0.5
+        { /usr/bin/open "$app" || { /bin/sleep 2; /usr/bin/open "$app"; }; } && /bin/rm -rf "$@"
         """
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID))
+        // Its own session, no inherited descriptors besides the three below, default signal handling.
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+        var allSignals = sigset_t()
+        sigfillset(&allSignals)
+        posix_spawnattr_setsigdefault(&attributes, &allSignals)
+        var noSignals = sigset_t()
+        sigemptyset(&noSignals)
+        posix_spawnattr_setsigmask(&attributes, &noSignals)
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
@@ -170,7 +191,8 @@ public actor AppUpdateService {
         guard status == 0 else { throw RuyioError(.internalError, diagnostic: "relauncher: \(String(cString: strerror(status)))") }
     }
 
-    /// Removes swap leftovers beside the app that an interrupted update could not clean up.
+    /// Removes swap leftovers beside the app that an interrupted update could not clean up (versions up to
+    /// 0.0.1 swapped through a hidden sibling in the app's folder).
     public nonisolated static func removeLeftovers(beside app: URL) {
         let folder = app.deletingLastPathComponent()
         for name in (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [] where name.hasPrefix(".ruyio-update-") && name.hasSuffix(".app") {

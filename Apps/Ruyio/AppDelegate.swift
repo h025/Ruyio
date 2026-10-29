@@ -90,21 +90,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Task { await observeRegistry() }
 
+        // Ruyio's own updater comes first and does not depend on the engine starting: a release whose
+        // startup fails must still be able to fetch the release that fixes it.
+        let appUpdates = AppUpdateService.Configuration.mainBundle().map {
+            AppUpdateService(configuration: $0, staging: model.engine.paths.downloads)
+        }
+        if let appUpdates {
+            AppUpdateService.removeLeftovers(beside: appUpdates.configuration.installedApp)
+            model.appUpdates = appUpdates
+            appUpdateObservation = model.$appUpdatePhase.map(\.menuKey).removeDuplicates().sink { [weak self] _ in
+                DispatchQueue.main.async { self?.menuBar.rebuild() }
+            }
+            Task { [weak self] in
+                await appUpdates.observe { item in Task { @MainActor in self?.model.appUpdateFound(item) } }
+                // One small request per launch, so an update found before a restart is not forgotten until
+                // the next scheduled check.
+                if self?.model.settings.autoCheckAppUpdates == true { _ = try? await appUpdates.check() }
+            }
+        }
+
         Task {
             do {
                 await model.engine.setLocale(model.language)
                 try await model.engine.start(bundledPackages: Self.bundledPackages())
-                let appUpdates = AppUpdateService.Configuration.mainBundle().map {
-                    AppUpdateService(configuration: $0, staging: model.engine.paths.downloads)
-                }
-                if let appUpdates {
-                    AppUpdateService.removeLeftovers(beside: appUpdates.configuration.installedApp)
-                    await appUpdates.observe { [weak self] item in Task { @MainActor in self?.model.appUpdateFound(item) } }
-                    model.appUpdates = appUpdates
-                    appUpdateObservation = model.$appUpdatePhase.removeDuplicates().sink { [weak self] _ in
-                        DispatchQueue.main.async { self?.menuBar.rebuild() }
-                    }
-                }
                 let updates = AutomaticUpdateCoordinator(engine: model.engine, appUpdates: appUpdates)
                 automaticUpdates = updates
                 await updates.configure(refreshMarkets: model.settings.autoRefreshMarkets, checkPluginUpdates: model.settings.autoCheckPluginUpdates,
