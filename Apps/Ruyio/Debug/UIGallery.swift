@@ -87,6 +87,7 @@ final class UIGallery {
                 if only == nil || only == "palette" { await commandPalette(name) }
                 if only == nil || only == "onboarding" { await onboarding(name) }
                 if only == nil || only == "sheets" { await sheets(name) }
+                if only == nil || only == "pin" { await pinnedImage(name) }
                 if only == nil || only == "hud" {
                     HUD.shared.show(model.l.t("已复制 1 条路径", "Copied 1 path"), duration: 1)
                     await settle()
@@ -223,6 +224,24 @@ final class UIGallery {
             overlay.close()
             await settle(0.1)
         }
+    }
+
+    private func pinnedImage(_ name: String) async {
+        let image = NSImage(size: NSSize(width: 360, height: 200), flipped: false) { rect in
+            NSColor.systemTeal.setFill()
+            rect.fill()
+            ("钉图示例" as NSString).draw(at: NSPoint(x: 120, y: 86), withAttributes: [.font: NSFont.systemFont(ofSize: 26, weight: .bold),
+                                                                                  .foregroundColor: NSColor.white])
+            return true
+        }
+        PinnedImages.shared.pin(image, scale: 1, pluginName: "截图", l: model.l)
+        await settle(0.3)
+        guard let panel = PinnedImages.shared.galleryLastPanel else { return }
+        panel.revealCloseButtonForGallery()
+        await settle(0.4)
+        await shoot(panel, "pin-\(name)", title: "Pinned image · close button")
+        PinnedImages.shared.closeAll()
+        await settle(0.1)
     }
 
     private func commandPalette(_ name: String) async {

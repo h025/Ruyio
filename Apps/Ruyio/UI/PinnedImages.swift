@@ -11,6 +11,9 @@ final class PinnedImages {
     static let shared = PinnedImages()
     static let limit = 32
     private var panels: [PinPanel] = []
+    #if DEBUG
+    var galleryLastPanel: PinPanel? { panels.last }
+    #endif
 
     func pin(_ image: NSImage, scale: Double, pluginName: String, l: L10n) {
         if panels.count >= Self.limit { panels.first?.close() }
@@ -74,6 +77,11 @@ final class PinPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
+
+    #if DEBUG
+    /// The close button normally appears on hover.
+    func revealCloseButtonForGallery() { (contentView as? PinContentView)?.closeButton.alphaValue = 1 }
+    #endif
 
     override func close() {
         super.close()
@@ -195,16 +203,20 @@ private final class PinContentView: NSView {
 
     init(frame: NSRect, image: NSImage, l: L10n) {
         cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        closeButton = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: l.close) ?? NSImage(),
-                               target: nil, action: nil)
+        let symbol = NSImage(systemSymbolName: "xmark", accessibilityDescription: l.close)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold)) ?? NSImage()
+        closeButton = NSButton(image: symbol, target: nil, action: nil)
         super.init(frame: frame)
         autoresizingMask = [.width, .height]
         wantsLayer = true
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
 
+        // A round close button, as macOS 26 and later draw it on glass; earlier systems get their own
+        // round button. The glass style alone would be a capsule.
         if #available(macOS 26.0, *) {
             closeButton.bezelStyle = .glass
+            closeButton.borderShape = .circle
         } else {
             closeButton.bezelStyle = .circular
         }
