@@ -490,7 +490,7 @@ private struct GalleryFetcher: RemoteFetching {
             default: ("org.example.quick-notes", "Quick Notes", "Save a thought without leaving your work")
             }
             payload = ["schemaVersion": 1, "kind": "plugin", "id": details.0, "name": details.1, "description": details.2,
-                       "releases": [["version": "1.0.0", "minimumHostVersion": "1.0.0", "minimumMacOSVersion": "15.0", "architectures": ["arm64"],
+                       "releases": [["version": "1.0.0", "minimumHostVersion": "0.0.1", "minimumMacOSVersion": "15.0", "architectures": ["arm64"],
                                      "artifact": "sample.ruyioplugin.zip", "sha256": String(repeating: "a", count: 64)]]]
         }
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])

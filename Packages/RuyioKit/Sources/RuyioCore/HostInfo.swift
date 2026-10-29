@@ -2,7 +2,7 @@ import Foundation
 
 /// Static facts about this host build used for compatibility decisions.
 public enum HostInfo {
-    public static let version = SemanticVersion(major: 1, minor: 1, patch: 0, prerelease: ["dev"])
+    public static let version = SemanticVersion(major: 0, minor: 0, patch: 1)
     public static let supportedIPCVersions: [Int] = [1]
     public static let supportedUISchemaVersions: [Int] = [1]
     public static let minimumOS = OSVersion(major: 15)

@@ -209,7 +209,7 @@
       "name": "Finder 基础工具"
     }
   },
-  "minimumHostVersion": "1.0.0",
+  "minimumHostVersion": "0.0.1",
   "minimumMacOSVersion": "15.0",
   "name": "Finder Essentials",
   "permissions": [

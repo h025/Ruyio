@@ -126,7 +126,7 @@
       "name": "历史剪贴板"
     }
   },
-  "minimumHostVersion": "1.0.0",
+  "minimumHostVersion": "0.0.1",
   "minimumMacOSVersion": "15.0",
   "name": "Clipboard History",
   "permissions": [

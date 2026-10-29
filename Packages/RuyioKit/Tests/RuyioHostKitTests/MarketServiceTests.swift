@@ -72,7 +72,7 @@ struct MarketServiceTests {
     }
 
     func descriptor(id: String, versions: [String]) -> Data {
-        let releases = versions.map { "{\"version\":\"\($0)\",\"minimumHostVersion\":\"1.0.0\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/\($0)/T.ruyioplugin.zip\",\"sha256\":\"\(sha)\"}" }
+        let releases = versions.map { "{\"version\":\"\($0)\",\"minimumHostVersion\":\"0.0.1\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/\($0)/T.ruyioplugin.zip\",\"sha256\":\"\(sha)\"}" }
         return Data("{\"schemaVersion\":1,\"kind\":\"plugin\",\"id\":\"\(id)\",\"name\":\"Tool\",\"releases\":[\(releases.joined(separator: ","))]}".utf8)
     }
 
@@ -267,7 +267,7 @@ struct MarketServiceTests {
         let data = try Data(contentsOf: zip)
         fetcher.files["https://example.com/plugins/test/releases/1.0.0/T.ruyioplugin.zip"] = data
         let engine = try engine(fetcher)
-        let descriptor = try PluginDescriptor.decode(Data("{\"schemaVersion\":1,\"kind\":\"plugin\",\"id\":\"org.ruyio.test-plugin\",\"name\":\"T\",\"releases\":[{\"version\":\"1.0.0\",\"minimumHostVersion\":\"1.0.0\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/1.0.0/T.ruyioplugin.zip\",\"sha256\":\"\(sha)\"}]}".utf8))
+        let descriptor = try PluginDescriptor.decode(Data("{\"schemaVersion\":1,\"kind\":\"plugin\",\"id\":\"org.ruyio.test-plugin\",\"name\":\"T\",\"releases\":[{\"version\":\"1.0.0\",\"minimumHostVersion\":\"0.0.1\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/1.0.0/T.ruyioplugin.zip\",\"sha256\":\"\(sha)\"}]}".utf8))
         let url = URL(string: "https://example.com/plugins/test/ruyio-plugin.json")!
         await #expect(throws: RuyioError.self) {
             _ = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
@@ -287,7 +287,7 @@ struct MarketServiceTests {
         fetcher.files["https://example.com/plugins/test/releases/1.0.0/T.ruyioplugin.zip"] = data
         let engine = try engine(fetcher)
         #expect(!engine.developerMode)
-        let descriptor = try PluginDescriptor.decode(Data("{\"schemaVersion\":1,\"kind\":\"plugin\",\"id\":\"org.ruyio.test-plugin\",\"name\":\"T\",\"releases\":[{\"version\":\"1.0.0\",\"minimumHostVersion\":\"1.0.0\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/1.0.0/T.ruyioplugin.zip\",\"sha256\":\"\(digest)\"}]}".utf8))
+        let descriptor = try PluginDescriptor.decode(Data("{\"schemaVersion\":1,\"kind\":\"plugin\",\"id\":\"org.ruyio.test-plugin\",\"name\":\"T\",\"releases\":[{\"version\":\"1.0.0\",\"minimumHostVersion\":\"0.0.1\",\"minimumMacOSVersion\":\"15.0\",\"architectures\":[\"arm64\"],\"artifact\":\"releases/1.0.0/T.ruyioplugin.zip\",\"sha256\":\"\(digest)\"}]}".utf8))
         let url = URL(string: "https://example.com/plugins/test/ruyio-plugin.json")!
 
         let preview = try await engine.markets.prepareInstall(descriptor: descriptor, descriptorURL: url, release: descriptor.releases[0])
