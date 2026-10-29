@@ -31,7 +31,8 @@ Releases are published by GitHub Actions (A43). To release, land a commit on `ma
 version in both `HostInfo.swift` and `MARKETING_VERSION` (no prerelease suffix; 0.0.x for now), then run
 `Scripts/publish-code.sh`. After the tests pass, the `release` job runs `Scripts/release.sh --ci`: it
 builds that commit, signs it with the release certificate from the repository secrets (refusing any other
-certificate), signs the archive with the EdDSA update key, and publishes the GitHub release with the DMG,
+certificate or update key; both are pinned in release.sh), signs the archive with the EdDSA update key,
+refuses versions below the latest release, and publishes the GitHub release with the DMG,
 the zip, `appcast.xml` and `SHA256SUMS`. Pushes whose version is already released publish nothing.
 `Scripts/release.sh --snapshot` builds the current commit the same way on this Mac, without publishing.
 
