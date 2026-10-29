@@ -10,12 +10,17 @@ struct MarketContent: View {
     @ObservedObject var model: AppModel
     @Binding var showAdd: Bool
     @Binding var tab: Int
+    /// Raised by the toolbar's refresh button.
+    var refreshRequest = 0
+    @Binding var refreshing: Bool
     @State private var markets: [MarketRecord] = []
     @State private var entries: [MarketEntryState] = []
     @State private var search = ""
     @State private var openMarket: String?
     @State private var refreshingID: String?
     @State private var detail: MarketEntryState?
+    /// The sheet was opened with Install: it downloads and verifies right away.
+    @State private var detailInstalls = false
     var l: L10n { model.l }
 
     var body: some View {
@@ -36,7 +41,24 @@ struct MarketContent: View {
             }
         }
         .task(id: showAdd) { await reload() }
-        .sheet(item: $detail) { entry in MarketPluginSheet(model: model, entry: entry) { detail = nil } }
+        // Shown from the cache at once, then brought up to date: automatic refreshing is off by default, and
+        // opening the market is a request to see it as it is. The toolbar button refreshes regardless of age.
+        .task(id: refreshRequest) { await refreshMarkets(olderThan: refreshRequest == 0 ? 3600 : 0) }
+        .sheet(item: $detail) { entry in MarketPluginSheet(model: model, entry: entry, verifiesOnAppear: detailInstalls) { detail = nil } }
+    }
+
+    func refreshMarkets(olderThan age: TimeInterval) async {
+        #if DEBUG
+        if model.isGallery { return }
+        #endif
+        let due = await model.engine.markets.markets().filter { market in
+            market.enabled && market.state != "conflicted" && (market.lastRefreshAt.map { -$0.timeIntervalSinceNow >= age } ?? true)
+        }
+        guard !due.isEmpty, !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
+        for market in due { _ = await model.engine.markets.refresh(market.marketID) }
+        await reload()
     }
 
     func reload() async {
@@ -81,8 +103,17 @@ struct MarketContent: View {
                                 Text(variants.map(\.marketID).joined(separator: ", ")).font(.caption2).foregroundStyle(.tertiary)
                             }
                             Spacer()
-                            StatusChip(text: status(entry), tone: entry.hasUpdate ? .accentColor : .secondary)
-                            Button(l.t("查看", "View")) { detail = entry }
+                            if canInstall(entry) {
+                                // Downloads and verifies at once; installing still waits for the user to see the
+                                // checks and permissions and confirm.
+                                Button(l.t("安装", "Install")) { detailInstalls = true; detail = entry }.buttonStyle(.borderedProminent)
+                            } else if entry.hasUpdate {
+                                // Updates compare permissions and publishers on the plugin's own page.
+                                Button(l.t("更新", "Update")) { showInstalled(entry.id) }.buttonStyle(.borderedProminent)
+                            } else {
+                                StatusChip(text: status(entry), tone: entry.hasUpdate ? .accentColor : .secondary)
+                            }
+                            Button(l.t("查看", "View")) { detailInstalls = false; detail = entry }
                         }
                         .padding(.vertical, 2)
                     }
@@ -95,6 +126,17 @@ struct MarketContent: View {
     func matches(_ entry: MarketEntryState) -> Bool {
         search.isEmpty || [entry.id.rawValue, entry.descriptor?.name ?? "", entry.hintName ?? "", entry.descriptor?.description ?? ""]
             .contains { $0.localizedCaseInsensitiveContains(search) }
+    }
+
+    func showInstalled(_ id: PluginID) {
+        model.selectedPlugin = id
+        model.page = .plugins
+    }
+
+    /// Not installed and nothing wrong with the listing. A release this Mac can use is checked in the sheet,
+    /// which refreshes a stale market first.
+    func canInstall(_ entry: MarketEntryState) -> Bool {
+        !entry.isInstalled && !entry.rollbackWarning && entry.load != .failed
     }
 
     func status(_ entry: MarketEntryState) -> String {
@@ -296,6 +338,11 @@ struct PluginInstallPreviewView: View {
     let packageURL: URL?
     let source: String
     var sourceBinding: PluginSourceBinding? = nil
+    /// Opened with Install: download and verify without waiting for the button.
+    var verifiesOnAppear = false
+    /// Already installed (a market entry): the preview shows that instead of offering a download.
+    var installedVersion: SemanticVersion? = nil
+    var showInstalled: (() -> Void)? = nil
     let done: () -> Void
     @State private var preview: InstallPreview?
     @State private var checking = false
@@ -324,7 +371,13 @@ struct PluginInstallPreviewView: View {
                 if let src = descriptor.source { Text(l.source + ": " + src + " " + l.sourceUnverified).font(.caption).foregroundStyle(.secondary) }
             }
             Text(l.t("来源：", "Source: ") + source).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            if let preview {
+            if let installedVersion {
+                let newer = descriptor?.bestRelease().map(\.version).flatMap { $0 > installedVersion ? $0 : nil }
+                Label(newer.map { l.t("已安装 \(installedVersion)，可更新到 \($0)", "Installed: \(installedVersion). Update available: \($0)") }
+                      ?? l.t("已安装 \(installedVersion)", "Installed: \(installedVersion)"),
+                      systemImage: newer == nil ? "checkmark.circle.fill" : "arrow.down.circle.fill")
+                    .foregroundStyle(newer == nil ? Color.green : Color.accentColor)
+            } else if let preview {
                 verification(preview)
             } else {
                 Text(l.t("签名、权限与哈希：待验证", "Signature, permissions and hash: pending verification")).foregroundStyle(.secondary)
@@ -335,12 +388,18 @@ struct PluginInstallPreviewView: View {
                 Spacer()
                 if installing { ProgressView().controlSize(.small) }
                 if checking { Button(l.cancel) { task?.cancel(); checking = false } }
-                if let preview {
+                if installedVersion != nil, let showInstalled {
+                    Button(l.t("前往插件", "Show Plugin")) { showInstalled(); done() }.keyboardShortcut(.defaultAction)
+                } else if let preview {
                     Button(l.t("安装", "Install")) { install(preview) }.keyboardShortcut(.defaultAction).disabled(!preview.isInstallable || installing)
                 } else {
                     Button(l.t("下载并验证", "Download and Verify")) { verify() }.disabled(checking || (descriptor != nil && descriptor?.bestRelease() == nil))
                 }
             }
+        }
+        .task {
+            guard verifiesOnAppear, installedVersion == nil, preview == nil, !checking, descriptor?.bestRelease() != nil || packageURL != nil else { return }
+            verify()
         }
         // Closing the preview without installing drops the verified staging copy.
         .onDisappear { task?.cancel(); discardStaging() }
@@ -454,6 +513,7 @@ func confirmFreshDataInstallation(using l: L10n) -> Bool {
 struct MarketPluginSheet: View {
     @ObservedObject var model: AppModel
     let entry: MarketEntryState
+    var verifiesOnAppear = false
     let close: () -> Void
     @State private var loaded: (PluginDescriptor, URL)?
     @State private var loading = false
@@ -462,7 +522,9 @@ struct MarketPluginSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let (descriptor, url) = loaded {
-                PluginInstallPreviewView(model: model, descriptor: descriptor, descriptorURL: url, packageURL: nil, source: "market:\(entry.marketID)", done: close)
+                PluginInstallPreviewView(model: model, descriptor: descriptor, descriptorURL: url, packageURL: nil, source: "market:\(entry.marketID)",
+                                         verifiesOnAppear: verifiesOnAppear, installedVersion: entry.installedVersion,
+                                         showInstalled: { model.selectedPlugin = entry.id; model.page = .plugins }, done: close)
             } else {
                 Text(entry.hintName ?? entry.id.rawValue).font(.headline)
                 if loading { ProgressView().controlSize(.small) }
