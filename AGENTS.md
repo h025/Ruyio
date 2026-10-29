@@ -27,12 +27,18 @@ step as well.
 
 ## Releasing
 
-`Scripts/release.sh` builds `main` at the version in `HostInfo.swift` (`MARKETING_VERSION` must match; no
-prerelease suffix), signs it with the release certificate, signs the archive with the EdDSA update key,
-writes `appcast.xml`, publishes the code and creates the GitHub release when the GitHub CLI is signed in.
-`--snapshot` builds the current commit the same way without publishing. Both keys live in their own
-keychains (`ruyio-release-signing`, `ruyio-update-signing` in `~/Library/Keychains`); losing either breaks
-updates for installed copies, so never recreate them casually. Versions are 0.0.x for now.
+Releases are published by GitHub Actions (A43). To release, land a commit on `main` that sets the new
+version in both `HostInfo.swift` and `MARKETING_VERSION` (no prerelease suffix; 0.0.x for now), then run
+`Scripts/publish-code.sh`. After the tests pass, the `release` job runs `Scripts/release.sh --ci`: it
+builds that commit, signs it with the release certificate from the repository secrets (refusing any other
+certificate), signs the archive with the EdDSA update key, and publishes the GitHub release with the DMG,
+the zip, `appcast.xml` and `SHA256SUMS`. Pushes whose version is already released publish nothing.
+`Scripts/release.sh --snapshot` builds the current commit the same way on this Mac, without publishing.
+
+The keys live in two keychains on the maintainer's Mac (`ruyio-release-signing`, `ruyio-update-signing` in
+`~/Library/Keychains`) and, copied by `Scripts/upload-release-secrets.sh`, in the repository secrets
+`RUYIO_RELEASE_P12`, `RUYIO_RELEASE_P12_PASSWORD` and `RUYIO_UPDATE_KEY`. Losing them breaks updates for
+installed copies, so never recreate them casually.
 
 ## Installing
 

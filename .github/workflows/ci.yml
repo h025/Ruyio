@@ -1,5 +1,6 @@
-# Untrusted PR pipeline (plan §19): no certificates, no secrets, no signing.
-# Third-party actions are pinned to full commit SHAs (plan §19 supply chain).
+# Tests every publish of main and every outside pull request without secrets. Only after the tests pass
+# on a push to h025/Ruyio's main does the release job see the signing secrets (A43); pull requests,
+# forks and manual runs never do. Third-party actions are pinned to full commit SHAs (plan §19).
 name: CI
 # Day-to-day commits are checked locally (Scripts/check.sh) before they land on main; GitHub only sees
 # main when it is published, so this runs once per publish, plus for outside pull requests.
@@ -12,11 +13,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   test:
+    # A newer push replaces a test run still in progress; a release in progress is never cancelled.
+    concurrency:
+      group: ci-test-${{ github.ref }}
+      cancel-in-progress: true
     timeout-minutes: 45
     # Liquid Glass code needs the macOS 26 SDK; macos-15 images default to Xcode 16.
     runs-on: macos-26
@@ -34,3 +36,24 @@ jobs:
         run: brew install xcodegen && xcodegen generate
       - name: Build app (ad-hoc, arm64)
         run: xcodebuild -project Ruyio.xcodeproj -scheme Ruyio -configuration Release -derivedDataPath build/DerivedData build
+  # Publishes a GitHub release when HostInfo.version is a release version that has none yet: bumping the
+  # version in a commit on main is the whole release step. Other pushes find nothing to publish.
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'h025/Ruyio'
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    timeout-minutes: 45
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+      - name: Build, sign and publish a new version
+        run: Scripts/release.sh --ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUYIO_RELEASE_P12: ${{ secrets.RUYIO_RELEASE_P12 }}
+          RUYIO_RELEASE_P12_PASSWORD: ${{ secrets.RUYIO_RELEASE_P12_PASSWORD }}
+          RUYIO_UPDATE_KEY: ${{ secrets.RUYIO_UPDATE_KEY }}

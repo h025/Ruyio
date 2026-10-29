@@ -58,10 +58,11 @@ that passed it, and `main` is published here with `Scripts/publish-code.sh`, whi
 requests are welcome: CI runs on them, and maintainers land them through the same gate. Details are in
 [`AGENTS.md`](AGENTS.md).
 
-Releases come from `Scripts/release.sh`. Without an Apple Developer ID, the app is signed with a self-signed
-release certificate whose designated requirement stays the same across versions, so privacy grants survive
-updates; the update archive is signed with an EdDSA key in Sparkle's appcast format, and Ruyio installs an
-update only if both signatures match the running copy.
+Releases are built and published by GitHub Actions when a commit on `main` raises the version. Without an
+Apple Developer ID, the app is signed with a self-signed release certificate whose designated requirement
+stays the same across versions, so privacy grants survive updates; the update archive is signed with an
+EdDSA key in Sparkle's appcast format, and Ruyio installs an update only if both signatures match the
+running copy.
 
 ## Test
 
