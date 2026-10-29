@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import os
 import RuyioCore
 import RuyioHostKit
 import RuyioUI
@@ -14,6 +15,7 @@ final class CaptureService {
     static let selectionTimeout: TimeInterval = 110
     private static let promptedKey = "capture.screenRecordingPrompted"
 
+    private static let log = Logger(subsystem: "app.ruyio.mac", category: "capture")
     private var running = false
     /// The latest capture's screen frame, matched to a pin request by the image's digest.
     private var recent: (digest: String, frame: CGRect, at: Date)?
@@ -49,22 +51,33 @@ final class CaptureService {
         }
         // Where the selection began and ended: the system capture reports only the image, and a pin goes
         // back over the region it came from.
+        // Events carry their own location (screen coordinates for other apps' events); reading the pointer
+        // when the handler runs is late, by then a quick drag has moved on.
         var start: CGPoint?
         var end: CGPoint?
         let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { event in
-            let point = NSEvent.mouseLocation
+            let point = event.locationInWindow
+            let isDown = event.type == .leftMouseDown
             MainActor.assumeIsolated {
-                if event.type == .leftMouseDown { if start == nil { start = point } } else { end = point }
+                if isDown { if start == nil { start = point } } else { end = point }
             }
         }
         defer { if let monitor { NSEvent.removeMonitor(monitor) } }
+        // Should the capture interface keep its events from other apps, the button state is polled as well.
+        var polledStart: CGPoint?
+        var polledEnd: CGPoint?
+        var wasDown = false
         let deadline = Date().addingTimeInterval(Self.selectionTimeout)
         while !app.isTerminated {
             if Date() > deadline {
                 app.forceTerminate()
                 throw RuyioError(.cancelled, diagnostic: "selection timed out")
             }
-            try? await Task.sleep(for: .milliseconds(50))
+            let down = CGEventSource.buttonState(.combinedSessionState, button: .left)
+            if down, !wasDown, polledStart == nil { polledStart = NSEvent.mouseLocation }
+            if !down, wasDown { polledEnd = NSEvent.mouseLocation }
+            wasDown = down
+            try? await Task.sleep(for: .milliseconds(10))
         }
 
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("result.json")),
@@ -79,11 +92,14 @@ final class CaptureService {
             }
             let scale = result.scale ?? 1
             let size = CGSize(width: Double(width) / scale, height: Double(height) / scale)
-            if let frame = CapturePlacement.frame(start: start, end: end, size: size, windows: Self.windowFrames()) {
-                recent = (Self.digest(png), frame, Date())
-            } else {
-                recent = nil
-            }
+            let viaEvents = start != nil && end != nil
+            let from = viaEvents ? start : polledStart
+            let to = viaEvents ? end : polledEnd
+            let frame = CapturePlacement.frame(start: from, end: to, size: size, windows: Self.windowFrames())
+            recent = frame.map { (Self.digest(png), $0, Date()) }
+            // Coordinates only, never content: enough to see why a pin did not land on its region.
+            let report = "capture \(width)x\(height)@\(scale) start \(String(describing: from)) end \(String(describing: to)) via \(viaEvents ? "events" : "polling") frame \(String(describing: frame))"
+            Self.log.info("\(report, privacy: .public)")
             return CapturedScreen(png: png, pixelWidth: width, pixelHeight: height, scale: scale)
         case "permissionRequired":
             explainScreenRecording(model: model)
@@ -98,8 +114,13 @@ final class CaptureService {
     /// Where a pin of `png` should appear: over the region of the capture it came from, if that capture was
     /// the latest and recent. Pins from older captures (from a history) are placed at the pointer instead.
     func placement(for png: Data) -> CGRect? {
-        guard let recent, Date().timeIntervalSince(recent.at) < 600, recent.digest == Self.digest(png) else { return nil }
-        return recent.frame
+        guard let recent else {
+            Self.log.info("pin placement: no recent capture region")
+            return nil
+        }
+        let matches = Date().timeIntervalSince(recent.at) < 600 && recent.digest == Self.digest(png)
+        Self.log.info("pin placement \(matches ? "matches the latest capture" : "is not the latest capture", privacy: .public)")
+        return matches ? recent.frame : nil
     }
 
     private static func digest(_ data: Data) -> String {

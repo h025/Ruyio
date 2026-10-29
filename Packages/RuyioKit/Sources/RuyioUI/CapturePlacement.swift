@@ -11,14 +11,13 @@ public enum CapturePlacement {
     /// - `windows`: on-screen window frames, front to back, in the same coordinates.
     public static func frame(start: CGPoint?, end: CGPoint?, size: CGSize, windows: [CGRect], tolerance: CGFloat = 3) -> CGRect? {
         func fits(_ rect: CGRect) -> Bool { abs(rect.width - size.width) <= tolerance && abs(rect.height - size.height) <= tolerance }
-        if let start, let end {
-            let dragged = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y))
-            if fits(dragged) {
-                // Anchored at the corner where the drag began, with the capture's own, exact size.
-                let x = start.x <= end.x ? start.x : start.x - size.width
-                let y = start.y <= end.y ? start.y : start.y - size.height
-                return CGRect(origin: CGPoint(x: x, y: y), size: size)
-            }
+        if let start, let end, hypot(end.x - start.x, end.y - start.y) > 4 {
+            // Anchored at the corner under the pointer when the selection ended, with the capture's exact size.
+            // The release point is the precise one, and it stays the corner even when the selection was moved
+            // while dragging (Space); the drag's direction tells which corner it is.
+            let x = end.x >= start.x ? end.x - size.width : end.x
+            let y = end.y >= start.y ? end.y - size.height : end.y
+            return CGRect(origin: CGPoint(x: x, y: y), size: size)
         }
         // A click rather than a drag: a window capture. The frontmost window under it with the capture's size.
         if let point = end ?? start, let window = windows.first(where: { $0.contains(point) && fits($0) }) {

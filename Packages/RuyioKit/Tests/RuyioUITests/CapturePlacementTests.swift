@@ -12,9 +12,12 @@ struct CapturePlacementTests {
         // Bottom right to top left.
         #expect(CapturePlacement.frame(start: CGPoint(x: 400, y: 500), end: CGPoint(x: 100, y: 700), size: size, windows: [])
                 == CGRect(x: 100, y: 500, width: 300, height: 200))
-        // Rounding on a 2x screen: within tolerance, anchored at the start.
-        #expect(CapturePlacement.frame(start: CGPoint(x: 100.5, y: 700), end: CGPoint(x: 401.5, y: 499), size: size, windows: [])
-                == CGRect(x: 100.5, y: 500, width: 300, height: 200))
+        // The press was noticed a little late: the release corner still places it exactly.
+        #expect(CapturePlacement.frame(start: CGPoint(x: 112, y: 690), end: CGPoint(x: 400, y: 500), size: size, windows: [])
+                == CGRect(x: 100, y: 500, width: 300, height: 200))
+        // Dragged from the bottom left to the top right.
+        #expect(CapturePlacement.frame(start: CGPoint(x: 100, y: 500), end: CGPoint(x: 400, y: 700), size: size, windows: [])
+                == CGRect(x: 100, y: 500, width: 300, height: 200))
     }
 
     @Test func aClickFindsTheCapturedWindow() {
@@ -28,8 +31,13 @@ struct CapturePlacementTests {
 
     @Test func nothingToGoByGivesNoFrame() {
         #expect(CapturePlacement.frame(start: nil, end: nil, size: size, windows: []) == nil)
-        // A drag that does not match the capture (the selection was moved while dragging).
-        #expect(CapturePlacement.frame(start: CGPoint(x: 0, y: 0), end: CGPoint(x: 50, y: 50), size: size, windows: []) == nil)
+        #expect(CapturePlacement.frame(start: CGPoint(x: 5, y: 5), end: nil, size: size, windows: []) == nil)
+    }
+
+    @Test func aSelectionMovedWhileDraggingKeepsTheCornerUnderThePointer() {
+        // Space held mid-drag moved the selection: the drag no longer spans the capture, the corner still holds.
+        #expect(CapturePlacement.frame(start: CGPoint(x: 0, y: 900), end: CGPoint(x: 700, y: 300), size: size, windows: [])
+                == CGRect(x: 400, y: 300, width: 300, height: 200))
     }
 
     @Test func windowBoundsFlipToAppKitCoordinates() {
