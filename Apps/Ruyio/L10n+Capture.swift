@@ -4,8 +4,13 @@ import Foundation
 extension L10n {
     var screenRecordingTitle: String { t("需要屏幕录制权限", "Screen Recording Needed") }
     var screenRecordingMessage: String {
-        t("截图由“Ruyio 截图助手”完成。请在“系统设置 › 隐私与安全性 › 屏幕与系统录音”中打开它，然后再截一次。Ruyio 主程序和插件都不会获得这项权限。",
-          "Screenshots are taken by “Ruyio Capture Helper”. Turn it on in System Settings › Privacy & Security › Screen & System Audio Recording, then capture again. Neither Ruyio nor its plugins receive this permission.")
+        t("截图由“Ruyio 截图助手”完成。请在“系统设置 › 隐私与安全性 › \(screenRecordingPane)”中打开它，然后再截一次。Ruyio 主程序和插件都不会获得这项权限。",
+          "Screenshots are taken by “Ruyio Capture Helper”. Turn it on in System Settings › Privacy & Security › \(screenRecordingPane), then capture again. Neither Ruyio nor its plugins receive this permission.")
+    }
+    /// The pane's name: macOS 15 renamed it.
+    private var screenRecordingPane: String {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 15
+            ? t("屏幕与系统录音", "Screen & System Audio Recording") : t("屏幕录制", "Screen Recording")
     }
     func pinTitle(_ plugin: String) -> String { t("钉图 · \(plugin)", "Pinned Image · \(plugin)") }
     func pinTooltip(_ plugin: String) -> String {

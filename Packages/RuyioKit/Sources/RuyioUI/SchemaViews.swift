@@ -361,6 +361,15 @@ struct ItemRow: View {
 }
 
 public extension UINode {
+    /// The first plain list, depth first.
+    var firstList: ListSpec? {
+        switch self {
+        case .list(let spec): return spec
+        case .stack(let spec): return spec.children.lazy.compactMap(\.firstList).first
+        default: return nil
+        }
+    }
+
     /// Whether a JSON node is inside, so ⌘F has a JSON search to go to.
     var containsJSON: Bool {
         switch self {

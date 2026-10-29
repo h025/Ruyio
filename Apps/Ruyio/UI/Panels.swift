@@ -266,23 +266,43 @@ final class OverlayController {
 
     private func handleKey(_ event: NSEvent) -> Bool {
         guard let context else { return false }
-        // The search inside a JSON preview handles its own Return, arrows and Escape.
+        // The search inside a JSON preview steps through matches with Return (⇧ for back) and the arrows, and
+        // clears itself on Escape. Once it is empty, Escape closes a narrow window's preview (whose cover
+        // disables the main field); otherwise the field hands focus back. Other shortcuts work as usual.
         if let editor = panel?.firstResponder as? NSTextView, let field = editor.delegate as? NSTextField,
            field.identifier?.rawValue == NativeSearchField.previewIdentifier {
-            return false
+            let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            let isReturn = event.keyCode == 36 || event.keyCode == 76
+            if editor.hasMarkedText() || (isReturn && flags.isSubset(of: [.shift])) { return false }
+            switch KeyCommand(event) {
+            case .up, .down: return false
+            case .escape:
+                if field.stringValue.isEmpty, context.compactPreviewVisible { context.compactPreviewVisible = false; return true }
+                return false
+            default: break
+            }
         }
         // ⌘F: search inside the JSON preview, opening the preview if it is hidden.
         if event.modifierFlags.intersection([.command, .option, .control, .shift]) == [.command],
            event.charactersIgnoringModifiers?.lowercased() == "f", context.collection?.preview?.containsJSON == true {
             if (panel?.contentView?.bounds.width ?? 780) < 700 { context.compactPreviewVisible = true } else { context.previewVisible = true }
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: NativeSearchField.focusRequest, object: NativeSearchField.previewIdentifier)
-            }
+            // The preview's field may not exist yet: it appears once the JSON is parsed.
+            DispatchQueue.main.async { NativeSearchField.requestFocus(NativeSearchField.previewIdentifier) }
             return true
         }
         if context.collection == nil {
-            if KeyCommand(event) == .escape { close(); return true }
-            return false
+            switch KeyCommand(event) {
+            case .escape:
+                close()
+                return true
+            case .up, .down:
+                // A plugin's plain list: the arrows move its selection unless a text field is being edited.
+                guard !(panel?.firstResponder is NSTextView), context.navigableList != nil else { return false }
+                context.moveSelection(KeyCommand(event) == .up ? -1 : 1)
+                return true
+            default:
+                return false
+            }
         }
         switch KeyCommand(event) {
         case .up, .down:

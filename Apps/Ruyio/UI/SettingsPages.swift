@@ -179,10 +179,11 @@ struct PrivacyPage: View {
     }
 
     var clipboardState: (String, Bool) {
-        #if DEBUG
-        if model.isGallery { return (l.authorized, true) }
-        #endif
         if #available(macOS 15.4, *) {
+            #if DEBUG
+            // The same picture on every Mac; earlier systems have only one state anyway.
+            if model.isGallery { return (l.authorized, true) }
+            #endif
             switch NSPasteboard.general.accessBehavior {
             case .alwaysAllow, .default: return (l.authorized, true)
             case .ask: return (l.t("每次询问", "Ask each time"), false)

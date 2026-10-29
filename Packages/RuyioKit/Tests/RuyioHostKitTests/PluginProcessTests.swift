@@ -70,7 +70,15 @@ enum Fixture {
         return condition()
     }
 
-    static func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
+    /// Running, not just waiting to be reaped: an exited child answers kill(pid, 0) until the host's exit
+    /// handler collects it, which a busy machine can delay by seconds.
+    static func isAlive(_ pid: pid_t) -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return false }
+        return Int32(info.kp_proc.p_stat) != SZOMB
+    }
 
     /// Why a plugin process is still there, for a failure message: its state, every process holding the other
     /// end of one of its pipes (lsof lists a pipe end by its own address, with "->" and the other end's), and

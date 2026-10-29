@@ -278,6 +278,13 @@ final class UIGallery {
             if step == 3 { controller.state.practiceText = model.l.t("第一条复制记录", "My first clipboard item") }
             await settle()
             if let window = controller.window { await shoot(window, "onboarding-\(step)-\(name)", title: "Onboarding · \(step + 1)") }
+            if step == 2 {
+                // The Finder step before the extension is on: its hint depends on the macOS version.
+                model.finderExtensionEnabled = false
+                await settle()
+                if let window = controller.window { await shoot(window, "onboarding-2-off-\(name)", title: "Onboarding · 3 · extension off") }
+                model.finderExtensionEnabled = true
+            }
         }
         controller.window?.orderOut(nil)
         PasteService.shared.inAppPasteTarget = nil

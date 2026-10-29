@@ -25,13 +25,19 @@ public struct JSONTree: Sendable {
 
     public private(set) var nodes: [Node] = []
     public private(set) var isTruncated = false
-    let source: [Character]
+    /// Unicode scalars rather than characters: "\r\n" is one character, and so is a quote followed by a
+    /// combining mark, either of which would hide JSON syntax inside a character.
+    let source: [Unicode.Scalar]
+
+    /// Deeper documents show as plain text. The parser descends once per level, on a background thread
+    /// with a small stack; real documents stay far below this.
+    static let maximumDepth = 128
 
     public var root: Node? { nodes.first }
 
     /// Nil when the text is not JSON at all (a scalar alone is not worth a tree).
     public init?(_ text: String) {
-        source = Array(text)
+        source = Array(text.unicodeScalars)
         var parser = Parser(chars: source)
         parser.skipSpace()
         guard parser.peek == "{" || parser.peek == "[" else { return nil }
@@ -46,7 +52,13 @@ public struct JSONTree: Sendable {
     /// The value's own text, as copied.
     public func sourceText(of id: Int) -> String {
         let range = nodes[id].range
-        return String(source[range.clamped(to: 0..<source.count)])
+        return Self.string(source[range.clamped(to: 0..<source.count)])
+    }
+
+    static func string(_ scalars: ArraySlice<Unicode.Scalar>) -> String {
+        var text = String.UnicodeScalarView()
+        text.append(contentsOf: scalars)
+        return String(text)
     }
 
     /// A path such as `$.data.items[3]["first name"]`.
@@ -110,14 +122,14 @@ public struct JSONTree: Sendable {
     // MARK: Search
 
     /// Nodes whose key or scalar value contains `query`, ignoring case and width, in document order.
+    /// Keys and strings are matched as shown, quotes included, so the count agrees with the highlights.
     public func matches(_ query: String) -> [Int] {
         let needle = query.trimmingCharacters(in: .whitespaces)
         guard !needle.isEmpty else { return [] }
         return nodes.filter { node in
-            if let key = node.key, Self.contains(key, needle) { return true }
+            if let key = node.key, Self.contains("\"" + key + "\"", needle) { return true }
             switch node.kind {
-            case .string: return Self.contains(String(node.text.dropFirst().dropLast()), needle)
-            case .number, .literal: return Self.contains(node.text, needle)
+            case .string, .number, .literal: return Self.contains(node.text, needle)
             case .object, .array: return false
             }
         }.map(\.id)
@@ -140,15 +152,17 @@ public struct JSONTree: Sendable {
     // MARK: Parser
 
     private struct Parser {
-        let chars: [Character]
+        let chars: [Unicode.Scalar]
         var position = 0
         var nodes: [Node] = []
         var truncated = false
         var failed = false
 
-        init(chars: [Character]) { self.chars = chars }
+        init(chars: [Unicode.Scalar]) { self.chars = chars }
 
-        var peek: Character? { position < chars.count ? chars[position] : nil }
+        var peek: Unicode.Scalar? { position < chars.count ? chars[position] : nil }
+
+        func text(from start: Int) -> String { JSONTree.string(chars[start..<position]) }
 
         mutating func skipSpace() {
             while let c = peek, c == " " || c == "\n" || c == "\r" || c == "\t" { position += 1 }
@@ -156,6 +170,7 @@ public struct JSONTree: Sendable {
 
         @discardableResult
         mutating func value(parent: Int?, key: String?, index: Int?, depth: Int) -> Int? {
+            guard depth <= JSONTree.maximumDepth else { failed = true; return nil }
             skipSpace()
             guard let c = peek else { truncated = true; return nil }
             let id = nodes.count
@@ -180,7 +195,7 @@ public struct JSONTree: Sendable {
                     if isObject {
                         guard next == "\"" else { failed = true; break }
                         guard let name = string() else { truncated = true; break }
-                        memberKey = String(name.dropFirst().dropLast())
+                        memberKey = String(String.UnicodeScalarView(name.unicodeScalars.dropFirst().dropLast()))
                         skipSpace()
                         guard peek == ":" else { if peek == nil { truncated = true } else { failed = true }; break }
                         position += 1
@@ -195,13 +210,22 @@ public struct JSONTree: Sendable {
                 guard let text = string() else { truncated = true; return nil }
                 add(.string, text)
             case "-", "0"..."9":
-                while let d = peek, d.isNumber || "+-.eE".contains(d) { position += 1 }
-                add(.number, String(chars[start..<position]))
+                while let d = peek, ("0"..."9").contains(d) || "+-.eE".unicodeScalars.contains(d) { position += 1 }
+                add(.number, text(from: start))
             case "t", "f", "n":
-                while let l = peek, l.isLetter { position += 1 }
-                let word = String(chars[start..<position])
-                guard ["true", "false", "null"].contains(word) else { failed = true; return nil }
-                add(.literal, word)
+                while let l = peek, ("a"..."z").contains(l) { position += 1 }
+                let word = text(from: start)
+                let literals = ["true", "false", "null"]
+                if literals.contains(word) {
+                    add(.literal, word)
+                } else if peek == nil, literals.contains(where: { $0.hasPrefix(word) }) {
+                    // A preview cut short inside a literal.
+                    truncated = true
+                    return nil
+                } else {
+                    failed = true
+                    return nil
+                }
             default:
                 failed = true
                 return nil
@@ -216,7 +240,7 @@ public struct JSONTree: Sendable {
             var escaped = false
             while let c = peek {
                 position += 1
-                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { return String(chars[start..<position]) }
+                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { return text(from: start) }
             }
             return nil
         }

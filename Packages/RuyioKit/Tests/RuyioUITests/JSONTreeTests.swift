@@ -57,6 +57,34 @@ struct JSONTreeTests {
         #expect(cutInKey.isTruncated && cutInKey.root?.children.count == 1)
     }
 
+    @Test func windowsLineEndingsAndCombiningMarksParse() throws {
+        let crlf = try #require(JSONTree("{\r\n  \"a\": [1,\r\n 2]\r\n}"))
+        #expect(crlf.node(crlf.root!.children[0]).children.count == 2)
+        // A combining mark right after a quote joins it into one character, not one scalar.
+        let marked = try #require(JSONTree("[\"\u{301}abc\", {\"\u{301}k\": 1}]"))
+        #expect(marked.node(marked.root!.children[0]).text == "\"\u{301}abc\"")
+        #expect(marked.node(marked.node(marked.root!.children[1]).children[0]).key == "\u{301}k")
+    }
+
+    @Test func cutInsideALiteralIsTruncationNotAnError() throws {
+        let tree = try #require(JSONTree("[1, tru"))
+        #expect(tree.isTruncated && tree.root?.children.count == 1)
+        #expect(JSONTree(#"{"a": nul"#)?.isTruncated == true)
+    }
+
+    @Test func tooDeepFallsBackToText() {
+        let deep = String(repeating: "[", count: 5000) + String(repeating: "]", count: 5000)
+        #expect(JSONTree(deep) == nil)
+        let fine = String(repeating: "[", count: JSONTree.maximumDepth) + String(repeating: "]", count: JSONTree.maximumDepth)
+        #expect(JSONTree(fine) != nil)
+    }
+
+    @Test func quotedQueriesMatchWhatIsShown() throws {
+        let tree = try #require(JSONTree(#"{"id": 1, "name": "id", "idle": true}"#))
+        #expect(tree.matches(#""id""#).count == 2, "the key id and the string \"id\", not idle")
+        #expect(tree.matches("id").count == 3)
+    }
+
     @Test func notJSONGivesNoTree() {
         #expect(JSONTree("hello") == nil)
         #expect(JSONTree("42") == nil)

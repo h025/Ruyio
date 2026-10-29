@@ -41,6 +41,8 @@ run_tests() {
     cat "${TMPDIR:-/tmp}/event-stream-$name.jsonl" >> "$EVENTS" 2>/dev/null
   done
   [ -n "${bundle:-}" ] && [ -e "$bundle" ] || { echo "error: no test bundles in Packages/RuyioKit/.build/debug"; status=1; }
+  # Bundles that load but find no tests would otherwise pass. Ruyio's tests use Swift Testing only.
+  grep -q '"kind":"testStarted"' "$EVENTS" 2>/dev/null || { echo "error: no Swift Testing tests ran"; status=1; }
   exit "$status"
 }
 

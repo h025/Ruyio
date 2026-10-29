@@ -382,7 +382,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
 
     func applyRetention() async {
         let current = lock.withLock { settings }
-        try? await prune(current)
+        _ = try? await prune(current)
     }
 
     /// Chooses and deletes in one mutation, so a record favourited or copied again meanwhile is never pruned.
@@ -1108,7 +1108,7 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     func apply(_ updated: Settings) async throws {
         try await saveSettings(updated)
         // The settings are saved; a failed cleanup is retried by the hourly maintenance, not reported as a failed save.
-        try? await prune(updated)
+        _ = try? await prune(updated)
         await publishDynamicItems()
     }
 }

@@ -35,6 +35,28 @@ struct OfficialManifestTests {
         #expect(try Repo.manifest(plugin).minimumMacOSVersion <= HostInfo.minimumOS)
     }
 
+    /// Every other place that states the oldest supported macOS says the same as HostInfo.minimumOS.
+    @Test func minimumSystemIsTheSameEverywhere() throws {
+        let minimum = "\(HostInfo.minimumOS.major).\(HostInfo.minimumOS.minor)"
+        func lines(_ path: String) throws -> [Substring] {
+            try String(contentsOf: Repo.root.appendingPathComponent(path), encoding: .utf8).split(separator: "\n")
+        }
+        // `key: "14.0"` in project.yml.
+        let project = try lines("project.yml")
+        for key in ["macOS:", "MACOSX_DEPLOYMENT_TARGET:", "LSMinimumSystemVersion:"] {
+            let values = project.filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix(key) }
+                .map { $0.split(separator: "\"").dropFirst().first.map(String.init) ?? "" }
+            #expect(!values.isEmpty && values.allSatisfy { $0 == minimum }, "project.yml \(key) \(values)")
+        }
+        for plist in ["Apps/Ruyio/Info.plist", "Helpers/CaptureHelper/Info.plist"] {
+            let text = try lines(plist)
+            let key = try #require(text.firstIndex { $0.contains("<key>LSMinimumSystemVersion</key>") }, "\(plist)")
+            #expect(text[key + 1].contains("<string>\(minimum)</string>"), "\(plist)")
+        }
+        #expect(try lines("Packages/RuyioKit/Package.swift").contains { $0.contains(".macOS(.v\(HostInfo.minimumOS.major))") })
+        #expect(try lines("Scripts/release.sh").contains { $0.contains("<sparkle:minimumSystemVersion>\(minimum)</sparkle:minimumSystemVersion>") })
+    }
+
     @Test func clipboardHistoryDeclaresBackgroundAndHotkey() throws {
         let manifest = try Repo.manifest("ClipboardHistory")
         #expect(manifest.permissions.contains(.background))

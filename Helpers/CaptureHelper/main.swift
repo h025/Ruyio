@@ -42,6 +42,9 @@ DispatchQueue.global(qos: .userInitiated).async {
     process.arguments = ["-i", "-o", "-x", "-t", "png", output.path]
     do {
         try process.run()
+        // Ends a selection left open before the host gives up on it (110 s) and stops this helper: screencapture
+        // would otherwise outlive it, leaving its crosshair on screen.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 105) { if process.isRunning { process.terminate() } }
         process.waitUntilExit()
     } catch {
         finish(HelperResult(status: "failed"), in: directory)

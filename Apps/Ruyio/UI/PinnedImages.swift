@@ -22,14 +22,24 @@ final class PinnedImages {
         let panel = PinPanel(image: image, pointSize: size, pluginName: pluginName, l: l)
         panel.onClose = { [weak self, weak panel] in self?.panels.removeAll { $0 === panel } }
         panel.onCloseAll = { [weak self] in self?.closeAll() }
-        let onScreen = frame.map { region in NSScreen.screens.contains { $0.frame.intersects(region) } } ?? false
-        panel.setFrameOrigin(onScreen ? frame!.origin : Self.origin(for: size))
+        panel.setFrameOrigin(frame.flatMap(Self.origin(over:)) ?? Self.origin(for: size))
         panels.append(panel)
         panel.orderFrontRegardless()
     }
 
     func closeAll() {
         for panel in panels { panel.close() }
+    }
+
+    /// Over the original region, unless that is no longer on a display (rearranged since), and below the menu
+    /// bar: pins float under it, where a pin's top edge and close button could not be reached.
+    private static func origin(over region: CGRect) -> NSPoint? {
+        let center = NSPoint(x: region.midX, y: region.midY)
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) }) else { return nil }
+        var origin = region.origin
+        let top = screen.visibleFrame.maxY
+        if origin.y + region.height > top { origin.y = max(screen.frame.minY, top - region.height) }
+        return origin
     }
 
     /// Centred on the pointer and kept on that screen, when the original region is unknown.
@@ -101,6 +111,7 @@ final class PinPanel: NSPanel {
             return
         }
         switch key {
+        case "w": closeFromMenu(nil)
         case "c": copyImage(nil)
         case "s": saveImage(nil)
         case "0": actualSize(nil)
@@ -155,7 +166,7 @@ final class PinPanel: NSPanel {
         opacity.submenu = levels
         menu.addItem(opacity)
         menu.addItem(.separator())
-        menu.addItem(item(l.close, #selector(closeFromMenu(_:))))
+        menu.addItem(item(l.close, #selector(closeFromMenu(_:)), "w"))
         menu.addItem(item(l.closeAllPins, #selector(closeAllFromMenu(_:))))
         return menu
     }

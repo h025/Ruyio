@@ -112,8 +112,11 @@ public final class SchemaContext: ObservableObject {
         return .invoke(actionID: action.id, itemID: isItemAction ? item?.id : nil)
     }
 
+    /// The list the arrow keys move through: the collection's, or else the first list in the view.
+    public var navigableList: ListSpec? { collection?.list ?? document.root.firstList }
+
     public func moveSelection(_ delta: Int) {
-        guard let items = collection?.list.items, !items.isEmpty else { return }
+        guard let items = navigableList?.items, !items.isEmpty else { return }
         let index = items.firstIndex { $0.id == localSelection } ?? -1
         let next = max(0, min(items.count - 1, index + delta))
         localSelection = items[next].id

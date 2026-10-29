@@ -55,6 +55,7 @@ struct JSONTreeView: View {
     @State private var lines: [JSONTree.Line] = []
     @State private var query = ""
     @State private var hits: [Int] = []
+    @State private var hitSet: Set<Int> = []
     @State private var current = 0
 
     var body: some View {
@@ -89,17 +90,18 @@ struct JSONTreeView: View {
         .task(id: text) {
             let source = text
             let built = await Task.detached(priority: .userInitiated) { JSONTree(source) }.value
+            // Another item may have been selected while this one parsed; its own task sets the state.
+            guard !Task.isCancelled else { return }
             tree = built
             collapsed = built?.defaultCollapsed() ?? []
             lines = built?.lines(collapsed: collapsed) ?? []
             query = ""
             hits = []
+            hitSet = []
             current = 0
             parsed = true
         }
     }
-
-    private var hitSet: Set<Int> { Set(hits) }
 
     private func hit(for line: JSONTree.Line) -> JSONLineView.Hit? {
         guard !hits.isEmpty, line.role != .close else { return nil }
@@ -171,13 +173,13 @@ struct JSONTreeView: View {
         apply { collapsed = folded }
     }
 
-    /// Finds as you type; every match's parents open so each one can be reached.
+    /// Finds as you type. Only the current match's parents open, as the next and previous buttons reach
+    /// each one: opening every match's parents would unfold most of a large document on the first letter.
     private func search(proxy: ScrollViewProxy) {
         guard let tree else { return }
         hits = tree.matches(query)
+        hitSet = Set(hits)
         current = 0
-        guard !hits.isEmpty else { return }
-        apply { collapsed.subtract(tree.ancestors(of: hits)) }
         reveal(proxy: proxy)
     }
 
@@ -187,8 +189,13 @@ struct JSONTreeView: View {
         reveal(proxy: proxy)
     }
 
+    /// Opens the current match's parents (they may have been folded since) and scrolls to it.
     private func reveal(proxy: ScrollViewProxy) {
-        guard let line = lines.first(where: { $0.node == hits[current] && $0.role != .close }) else { return }
+        guard let tree, hits.indices.contains(current) else { return }
+        let target = hits[current]
+        let closed = tree.ancestors(of: [target]).intersection(collapsed)
+        if !closed.isEmpty { apply { collapsed.subtract(closed) } }
+        guard let line = lines.first(where: { $0.node == target && $0.role != .close }) else { return }
         withAnimation(animation) { proxy.scrollTo(line.id, anchor: .center) }
     }
 }

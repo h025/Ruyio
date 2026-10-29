@@ -124,6 +124,15 @@ public struct NativeSearchField: NSViewRepresentable {
     /// Posted with a field identifier as the object: that field takes keyboard focus.
     public static let focusRequest = Notification.Name("app.ruyio.search.focusRequest")
 
+    /// A request that found no field yet: a preview still parsing creates its search field later.
+    @MainActor static var pendingFocus: (identifier: String, at: Date)?
+
+    /// Focuses the field with `identifier`, now or when it appears within two seconds.
+    @MainActor public static func requestFocus(_ identifier: String) {
+        pendingFocus = (identifier, Date())
+        NotificationCenter.default.post(name: focusRequest, object: identifier)
+    }
+
     @Environment(\.isEnabled) private var isEnabled
     @Binding var text: String
     let placeholder: String
@@ -206,7 +215,11 @@ public struct NativeSearchField: NSViewRepresentable {
         var onCommand: ((Command) -> Void)?
         init(text: Binding<String>) { self.text = text }
         public func controlTextDidChange(_ notification: Notification) {
-            if let field = notification.object as? NSTextField { text.wrappedValue = field.stringValue }
+            guard let field = notification.object as? NSTextField else { return }
+            // An input method still composing ("ni" on the way to 你) is not a query yet; committing it
+            // changes the text again.
+            if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
+            text.wrappedValue = field.stringValue
         }
 
         public func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -229,49 +242,62 @@ public struct NativeSearchField: NSViewRepresentable {
         }
     }
 
+    // Selector-based observation ends with the field, even when its panel goes away without first
+    // removing it from the window.
     final class FocusingSearchField: NSSearchField, FocusRequestable {
         var focusOnAppear = true
-        var focusObserver: NSObjectProtocol?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            joinedWindow()
+            joinedWindow(observing: #selector(focusRequested(_:)))
         }
+        @objc func focusRequested(_ note: Notification) { takeFocus(for: note) }
     }
 
     final class FocusingTextField: NSTextField, FocusRequestable {
         var focusOnAppear = true
-        var focusObserver: NSObjectProtocol?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            joinedWindow()
+            joinedWindow(observing: #selector(focusRequested(_:)))
         }
+        @objc func focusRequested(_ note: Notification) { takeFocus(for: note) }
     }
 }
 
-/// Focus on joining a window (the panel's main field) and on `NativeSearchField.focusRequest` for its identifier.
+/// Focus on joining a window (the panel's main field), on `NativeSearchField.focusRequest` for its
+/// identifier, and on a request made just before the field appeared.
 @MainActor
 protocol FocusRequestable: NSTextField {
     var focusOnAppear: Bool { get }
-    var focusObserver: NSObjectProtocol? { get set }
 }
 
 extension FocusRequestable {
-    func joinedWindow() {
-        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
-        focusObserver = nil
+    func joinedWindow(observing selector: Selector) {
+        NotificationCenter.default.removeObserver(self, name: NativeSearchField.focusRequest, object: nil)
         guard let window else { return }
-        focusObserver = NotificationCenter.default.addObserver(forName: NativeSearchField.focusRequest, object: nil, queue: .main) { [weak self] note in
-            let target = note.object as? String
-            MainActor.assumeIsolated {
-                guard let self, target == self.identifier?.rawValue, self.isEnabled, let window = self.window else { return }
-                window.makeFirstResponder(self)
+        NotificationCenter.default.addObserver(self, selector: selector, name: NativeSearchField.focusRequest, object: nil)
+        if let pending = NativeSearchField.pendingFocus, pending.identifier == identifier?.rawValue {
+            NativeSearchField.pendingFocus = nil
+            if Date().timeIntervalSince(pending.at) < 2 {
+                DispatchQueue.main.async { [weak self] in self?.focus() }
+                return
             }
         }
         guard focusOnAppear else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isEnabled, window.firstResponder !== self.currentEditor() else { return }
-            window.makeFirstResponder(self)
+            guard let self, window.firstResponder !== self.currentEditor() else { return }
+            self.focus()
         }
+    }
+
+    func takeFocus(for note: Notification) {
+        guard note.object as? String == identifier?.rawValue, focus() else { return }
+        NativeSearchField.pendingFocus = nil
+    }
+
+    @discardableResult
+    func focus() -> Bool {
+        guard isEnabled, let window else { return false }
+        return window.makeFirstResponder(self)
     }
 }
 
