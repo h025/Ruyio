@@ -35,7 +35,9 @@ enum SigningFixture {
         _ = try output("/usr/bin/openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30", "-config", "cert.cnf",
                                             "-keyout", "key.pem", "-out", "cert.pem"], cwd: work)
         _ = try output("/usr/bin/openssl", ["x509", "-in", "cert.pem", "-outform", "der", "-out", "cert.der"], cwd: work)
-        _ = try output("/usr/bin/openssl", ["pkcs12", "-export", "-inkey", "key.pem", "-in", "cert.pem", "-name", name,
+        // Explicit legacy algorithms: `security import` reads these whatever the OpenSSL build defaults to.
+        _ = try output("/usr/bin/openssl", ["pkcs12", "-export", "-keypbe", "PBE-SHA1-3DES", "-certpbe", "PBE-SHA1-3DES", "-macalg", "sha1",
+                                            "-inkey", "key.pem", "-in", "cert.pem", "-name", name,
                                             "-out", "identity.p12", "-passout", "pass:test"], cwd: work)
         let keychain = work.appendingPathComponent("test.keychain-db")
         _ = try output("/usr/bin/security", ["create-keychain", "-p", "", keychain.path], cwd: work)
@@ -54,17 +56,6 @@ enum SigningFixture {
     }
 
     static func output(_ tool: String, _ args: [String], cwd: URL) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tool)
-        process.arguments = args
-        process.currentDirectoryURL = cwd
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
-        return String(decoding: data, as: UTF8.self)
+        try ToolFailure.run(tool, args, cwd: cwd)
     }
 }

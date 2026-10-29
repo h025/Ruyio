@@ -27,8 +27,9 @@ CNF
     # LibreSSL, not a Homebrew OpenSSL 3: `security import` cannot read OpenSSL 3's default PKCS#12.
     /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days "$_days" -config "$_work/cert.cnf" \
       -keyout "$_work/key.pem" -out "$_work/cert.pem" 2>/dev/null
-    /usr/bin/openssl pkcs12 -export -inkey "$_work/key.pem" -in "$_work/cert.pem" -name "$_name" \
-      -out "$_work/identity.p12" -passout pass:ruyio
+    # Explicit legacy algorithms: `security import` reads these whatever the OpenSSL build defaults to.
+    /usr/bin/openssl pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
+      -inkey "$_work/key.pem" -in "$_work/cert.pem" -name "$_name" -out "$_work/identity.p12" -passout pass:ruyio
     /usr/bin/security create-keychain -p "" "$_keychain"
     /usr/bin/security set-keychain-settings "$_keychain"
     /usr/bin/security unlock-keychain -p "" "$_keychain"

@@ -2,18 +2,44 @@ import Foundation
 import Testing
 @testable import RuyioHostKit
 
-/// Builds archives with the system `ditto`/`zip` tools only as test fixtures; production code never shells out.
-enum ZipFixture {
-    static func run(_ tool: String, _ args: [String], cwd: URL) throws {
+/// A fixture tool that exited with an error, with what it printed, so CI annotations say what went wrong.
+struct ToolFailure: Error, CustomStringConvertible {
+    var tool: String
+    var arguments: [String]
+    var status: Int32
+    var output: String
+    var description: String { "\(tool) \(arguments.joined(separator: " ")) exited \(status): \(output)" }
+
+    /// Runs a tool and returns its standard output; throws with its standard error when it fails.
+    static func run(_ tool: String, _ args: [String], cwd: URL) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = args
         process.currentDirectoryURL = cwd
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let stdout = Pipe()
+        let stderr = FileManager.default.temporaryDirectory.appendingPathComponent("tool-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: stderr.path, contents: nil)
+        let errorHandle = try FileHandle(forWritingTo: stderr)
+        defer { try? FileManager.default.removeItem(at: stderr) }
+        process.standardOutput = stdout
+        process.standardError = errorHandle
         try process.run()
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
+        try? errorHandle.close()
+        guard process.terminationStatus == 0 else {
+            let message = (try? String(contentsOf: stderr, encoding: .utf8)) ?? ""
+            throw ToolFailure(tool: tool, arguments: args, status: process.terminationStatus,
+                              output: message.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// Builds archives with the system `ditto`/`zip` tools only as test fixtures; production code never shells out.
+enum ZipFixture {
+    static func run(_ tool: String, _ args: [String], cwd: URL) throws {
+        _ = try ToolFailure.run(tool, args, cwd: cwd)
     }
 
     static func tempDir() -> URL {
