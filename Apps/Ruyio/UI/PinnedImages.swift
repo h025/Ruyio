@@ -244,6 +244,19 @@ private final class PinContentView: NSView {
         layer.minificationFilter = .trilinear
         layer.borderWidth = 0.5
         layer.borderColor = NSColor.separatorColor.cgColor
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = true
+        layer.cornerRadius = cornerRadius
+    }
+
+    /// Rounded like other floating windows; tiny pins get proportionally smaller corners.
+    private var cornerRadius: CGFloat { min(10, min(bounds.width, bounds.height) / 4) }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = cornerRadius
+        // The window's shadow follows the visible shape: recompute it for the rounded edge and every zoom.
+        window?.invalidateShadow()
     }
 
     override var mouseDownCanMoveWindow: Bool { true }
