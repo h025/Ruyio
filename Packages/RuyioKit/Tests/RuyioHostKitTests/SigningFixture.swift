@@ -10,6 +10,19 @@ enum SigningFixture {
         var hash: String
         var certificateSHA256: String
         var publisherID: String { "cert:" + certificateSHA256 }
+
+        /// Signs a bundle with this identity. A failure also lists the keychain's identities.
+        func sign(_ bundle: String, entitlements: URL? = nil, cwd: URL) throws {
+            var arguments = ["--force", "--sign", hash, "--keychain", keychain.path]
+            if let entitlements { arguments += ["--entitlements", entitlements.path] }
+            do {
+                _ = try ToolFailure.run("/usr/bin/codesign", arguments + [bundle], cwd: cwd)
+            } catch var failure as ToolFailure {
+                let identities = (try? ToolFailure.run("/usr/bin/security", ["find-identity", "-p", "codesigning", keychain.path], cwd: cwd)) ?? ""
+                failure.output += " | identities: " + identities.replacingOccurrences(of: "\n", with: " ")
+                throw failure
+            }
+        }
     }
 
     static let first = Result { try make(name: "Ruyio Test Publisher") }
@@ -45,6 +58,13 @@ enum SigningFixture {
         _ = try output("/usr/bin/security", ["unlock-keychain", "-p", "", keychain.path], cwd: work)
         _ = try output("/usr/bin/security", ["import", "identity.p12", "-k", keychain.path, "-P", "test", "-T", "/usr/bin/codesign"], cwd: work)
         _ = try output("/usr/bin/security", ["set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", "", keychain.path], cwd: work)
+        // codesign on the GitHub macOS runner finds identities only in keychains on the search list:
+        // `--keychain` alone reports "no identity found". A CI machine's list may change; a developer's must not.
+        if ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true" {
+            let current = try output("/usr/bin/security", ["list-keychains", "-d", "user"], cwd: work)
+                .split(separator: "\n").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"")) }.filter { !$0.isEmpty }
+            _ = try output("/usr/bin/security", ["list-keychains", "-d", "user", "-s"] + current + [keychain.path], cwd: work)
+        }
         let identities = try output("/usr/bin/security", ["find-identity", "-p", "codesigning", keychain.path], cwd: work)
         guard let line = identities.split(separator: "\n").first(where: { $0.contains("\"\(name)\"") }),
               let hash = line.split(separator: " ").dropFirst().first else {

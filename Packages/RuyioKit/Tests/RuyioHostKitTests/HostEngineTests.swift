@@ -45,8 +45,11 @@ enum PackageFixture {
         entitlements.merge(extraEntitlements) { $1 }
         let entURL = work.appendingPathComponent("ent.plist")
         try PropertyListSerialization.data(fromPropertyList: entitlements, format: .xml, options: 0).write(to: entURL)
-        let identity = signer.map { ["--sign", $0.hash, "--keychain", $0.keychain.path] } ?? ["--sign", "-"]
-        try ZipFixture.run("/usr/bin/codesign", ["--force"] + identity + ["--entitlements", entURL.path, root.appendingPathComponent("Test.app").path], cwd: work)
+        if let signer {
+            try signer.sign(root.appendingPathComponent("Test.app").path, entitlements: entURL, cwd: work)
+        } else {
+            try ZipFixture.run("/usr/bin/codesign", ["--force", "--sign", "-", "--entitlements", entURL.path, root.appendingPathComponent("Test.app").path], cwd: work)
+        }
         let zip = work.appendingPathComponent("Test.ruyioplugin.zip")
         try ZipFixture.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", "Test.ruyioplugin", zip.path], cwd: work)
         return zip

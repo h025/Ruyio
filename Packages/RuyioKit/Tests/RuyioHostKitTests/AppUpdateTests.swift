@@ -40,7 +40,7 @@ struct AppUpdateTests {
         let info: [String: Any] = ["CFBundleExecutable": "Ruyio", "CFBundleIdentifier": "app.ruyio.update-test", "CFBundlePackageType": "APPL",
                                    "CFBundleShortVersionString": version, "CFBundleVersion": version]
         try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
-        try ZipFixture.run("/usr/bin/codesign", ["--force", "--sign", signer.hash, "--keychain", signer.keychain.path, "Ruyio.app"], cwd: work)
+        try signer.sign("Ruyio.app", cwd: work)
         try ZipFixture.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", "Ruyio.app", "Ruyio.zip"], cwd: work)
         return (try Data(contentsOf: work.appendingPathComponent("Ruyio.zip")), work.appendingPathComponent("Ruyio.app"))
     }
