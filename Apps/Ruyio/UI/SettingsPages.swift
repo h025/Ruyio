@@ -278,6 +278,7 @@ struct GeneralPage: View {
                 Toggle(l.autoCheckApp, isOn: Binding(get: { model.appUpdates != nil && model.settings.autoCheckAppUpdates },
                                                      set: { v in model.update { $0.autoCheckAppUpdates = v } }))
                     .disabled(model.appUpdates == nil)
+                Text(l.updateSchedule).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if model.appUpdates == nil {
                     Text(l.localBuildNoUpdates).font(.caption).foregroundStyle(.secondary)
                 } else {

@@ -97,6 +97,18 @@ struct AppUpdateTests {
         #expect(seen.withLock { $0 } == [SemanticVersion("1.2.0")])
     }
 
+    @Test func checksAMomentApartShareOneRequestUnlessManual() async throws {
+        let fetcher = FakeFetcher()
+        fetcher.files[feed.absoluteString] = appcast()
+        let updates = service(fetcher, key: Curve25519.Signing.PrivateKey(), requirement: "identifier \"x\"")
+        let requests = { fetcher.requests.filter { $0 == self.feed.absoluteString }.count }
+        _ = try await updates.check()
+        #expect(try await updates.check(reusingWithin: 300)?.version == SemanticVersion("1.2.0"))
+        #expect(requests() == 1, "the scheduled check reuses the launch check")
+        _ = try await updates.check()
+        #expect(requests() == 2, "a manual check always asks")
+    }
+
     @Test func prepareVerifiesSignatureAndPublisherBeforeHandingOutTheApp() async throws {
         let publisher = try SigningFixture.first.get()
         let key = Curve25519.Signing.PrivateKey()

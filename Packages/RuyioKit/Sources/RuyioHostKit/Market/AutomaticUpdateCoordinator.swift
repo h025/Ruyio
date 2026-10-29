@@ -21,6 +21,9 @@ public actor AutomaticUpdateCoordinator {
     private let interval: TimeInterval
     /// After a network failure (often just woken from sleep, offline) the job runs again this soon.
     static let retryAfterFailure: TimeInterval = 30 * 60
+    /// At launch, or when a check is switched on, a job runs unless it ran this recently: updates show up
+    /// right after a restart, while restarting again and again does not become a stream of requests.
+    static let launchGap: TimeInterval = 15 * 60
     private let schedulesAutomatically: Bool
     private var enabled: Set<Job> = []
     private var attempts: [Job: Date] = [:]
@@ -67,11 +70,13 @@ public actor AutomaticUpdateCoordinator {
                refreshingMarkets: running[.markets] != nil, checkingPlugins: running[.plugins] != nil)
     }
 
-    /// Startup timers and wake notifications share this persisted rate limit and reentrancy guard.
-    public func checkIfDue(now: Date = Date()) async {
-        let market = beginIfDue(.markets, now: now)
-        let plugins = beginIfDue(.plugins, now: now)
-        let app = beginIfDue(.app, now: now)
+    /// Startup timers and wake notifications share this persisted rate limit and reentrancy guard. `atLaunch`
+    /// is the timers' first round: due after `launchGap` rather than the full interval.
+    public func checkIfDue(now: Date = Date(), atLaunch: Bool = false) async {
+        let gap = atLaunch ? Self.launchGap : nil
+        let market = beginIfDue(.markets, now: now, gap: gap)
+        let plugins = beginIfDue(.plugins, now: now, gap: gap)
+        let app = beginIfDue(.app, now: now, gap: gap)
         await market?.value
         await plugins?.value
         await app?.value
@@ -80,8 +85,10 @@ public actor AutomaticUpdateCoordinator {
     private func startTimer(_ job: Job) {
         let generation = generations[job, default: 0]
         timers[job] = Task { [weak self] in
+            var gap: TimeInterval? = Self.launchGap
             while !Task.isCancelled {
-                let work = await self?.beginIfDue(job, now: Date())
+                let work = await self?.beginIfDue(job, now: Date(), gap: gap)
+                gap = nil
                 await work?.value
                 guard let delay = await self?.nextDelay(job, generation: generation) else { return }
                 do { try await Task.sleep(for: .seconds(delay)) }
@@ -96,9 +103,10 @@ public actor AutomaticUpdateCoordinator {
         return max(1, interval - Date().timeIntervalSince(attempt))
     }
 
-    private func beginIfDue(_ job: Job, now: Date) -> Task<Void, Never>? {
+    /// `gap`: how long since the last attempt makes the job due; the regular interval unless given.
+    private func beginIfDue(_ job: Job, now: Date, gap: TimeInterval? = nil) -> Task<Void, Never>? {
         guard enabled.contains(job), running[job] == nil else { return nil }
-        if let previous = attempts[job], now >= previous, now.timeIntervalSince(previous) < interval { return nil }
+        if let previous = attempts[job], now >= previous, now.timeIntervalSince(previous) < (gap ?? interval) { return nil }
         // Persist attempts, including failures, so restart/wake never becomes a retry storm.
         do { try engine.database.setSetting(job.settingKey, now) }
         catch { return nil }
@@ -150,8 +158,9 @@ public actor AutomaticUpdateCoordinator {
                 if case .unavailable(let error) = await engine.checkForUpdateResult(id), error.code == .networkFailure { succeeded = false }
             }
         case .app:
-            // Only finds out; downloading and installing always wait for the user (A41).
-            do { _ = try await appUpdates?.check() }
+            // Only finds out; downloading and installing always wait for the user (A41). The launch check
+            // made just before is reused rather than repeated.
+            do { _ = try await appUpdates?.check(reusingWithin: 5 * 60) }
             catch let error as RuyioError where error.code == .networkFailure { succeeded = false }
             catch {}
         }

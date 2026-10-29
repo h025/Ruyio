@@ -42,6 +42,8 @@ public actor AppUpdateService {
     private let fetcher: any RemoteFetching
     private let staging: URL
     private var observer: (@Sendable (AppcastItem?) -> Void)?
+    private var running: Task<AppcastItem?, Error>?
+    private var lastCheck: (at: Date, newest: AppcastItem?)?
 
     /// `staging` must be a folder the host cleans at startup (`AppPaths.downloads`).
     public init(configuration: Configuration, fetcher: any RemoteFetching = SourceFetcher(usesSystemProxy: true), staging: URL) {
@@ -53,13 +55,25 @@ public actor AppUpdateService {
     /// Called with the result of every successful check, background or manual.
     public func observe(_ handler: @escaping @Sendable (AppcastItem?) -> Void) { observer = handler }
 
-    /// The newest compatible release above the running version, or nil when Ruyio is up to date.
-    public func check() async throws -> AppcastItem? {
-        let result = try await fetcher.fetch(configuration.feedURL, maxBytes: 1 << 20, accept: "application/rss+xml, application/xml, text/xml")
-        guard result.statusCode == 200 else { throw RuyioError(.sourceInvalid, diagnostic: "appcast HTTP \(result.statusCode)") }
-        let newest = Self.newest(try Appcast.parse(result.data), above: configuration.currentVersion, os: OSVersion.current)
+    /// The newest compatible release above the running version, or nil when Ruyio is up to date. A check
+    /// already under way is joined, and a result from the last `reusingWithin` seconds is returned as is:
+    /// the launch check and the scheduled one a moment later share one request. Manual checks pass 0.
+    public func check(reusingWithin age: TimeInterval = 0) async throws -> AppcastItem? {
+        if let running { return try await running.value }
+        if age > 0, let lastCheck, -lastCheck.at.timeIntervalSinceNow < age { return lastCheck.newest }
+        let task = Task { try await fetchNewest() }
+        running = task
+        defer { running = nil }
+        let newest = try await task.value
+        lastCheck = (Date(), newest)
         observer?(newest)
         return newest
+    }
+
+    private func fetchNewest() async throws -> AppcastItem? {
+        let result = try await fetcher.fetch(configuration.feedURL, maxBytes: 1 << 20, accept: "application/rss+xml, application/xml, text/xml")
+        guard result.statusCode == 200 else { throw RuyioError(.sourceInvalid, diagnostic: "appcast HTTP \(result.statusCode)") }
+        return Self.newest(try Appcast.parse(result.data), above: configuration.currentVersion, os: OSVersion.current)
     }
 
     static func newest(_ items: [AppcastItem], above current: SemanticVersion, os: OSVersion) -> AppcastItem? {

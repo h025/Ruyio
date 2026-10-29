@@ -55,6 +55,30 @@ struct AutomaticUpdateCoordinatorTests {
         #expect(await restarted.status().lastPluginAttempt == now.addingTimeInterval(6 * 60 * 60 + 1))
     }
 
+    @Test func launchChecksUnlessAQuarterHourAgo() async throws {
+        let fetcher = FakeFetcher()
+        let engine = try await prepare(fetcher)
+        let scheduler = AutomaticUpdateCoordinator(engine: engine, schedulesAutomatically: false)
+        await scheduler.configure(refreshMarkets: false, checkPluginUpdates: true)
+        let now = Date()
+        await scheduler.checkIfDue(now: now)
+        await scheduler.stop()
+        let checks = { fetcher.requests.filter { $0 == self.pluginAddress }.count }
+        #expect(checks() == 1)
+
+        // Relaunched an hour later: the schedule would wait five more hours, the launch checks now.
+        let relaunched = AutomaticUpdateCoordinator(engine: engine, schedulesAutomatically: false)
+        await relaunched.configure(refreshMarkets: false, checkPluginUpdates: true)
+        await relaunched.checkIfDue(now: now.addingTimeInterval(60 * 60))
+        #expect(checks() == 1)
+        await relaunched.checkIfDue(now: now.addingTimeInterval(60 * 60), atLaunch: true)
+        #expect(checks() == 2)
+        // Relaunched again five minutes after that: too soon.
+        await relaunched.checkIfDue(now: now.addingTimeInterval(65 * 60), atLaunch: true)
+        #expect(checks() == 2)
+        await relaunched.stop()
+    }
+
     @Test func appUpdateChecksRunOnlyWhenEnabledAndNeverDownload() async throws {
         let fetcher = FakeFetcher()
         let engine = try await prepare(fetcher)

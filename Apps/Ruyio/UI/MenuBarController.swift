@@ -85,6 +85,14 @@ final class MenuBarController: NSObject {
             entry.representedObject = page.rawValue
             menu.addItem(entry)
         }
+        // Found by the scheduled checks; updating compares permissions and publishers on the plugin's page.
+        let updatable = model.snapshot.plugins.filter { $0.status.update == .available }.count
+        if updatable > 0 {
+            let entry = NSMenuItem(title: l.pluginUpdatesMenu(updatable), action: #selector(openPageAction(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = Page.plugins.rawValue
+            menu.addItem(entry)
+        }
         if model.appUpdates != nil {
             let title: String
             switch model.appUpdatePhase {

@@ -4,6 +4,13 @@ import RuyioHostKit
 /// Copy for Ruyio's own updates (decision A41).
 extension L10n {
     var checkForUpdates: String { t("检查更新…", "Check for Updates…") }
+    func pluginUpdatesMenu(_ count: Int) -> String {
+        t("\(count) 个插件可更新…", count == 1 ? "1 Plugin Update Available…" : "\(count) Plugin Updates Available…")
+    }
+    var updateSchedule: String {
+        t("开启的项目在 Ruyio 启动时和之后每 6 小时检查一次（15 分钟内刚检查过就跳过），睡眠唤醒后补上错过的检查。只检查，下载和安装由你决定。",
+          "What is on is checked when Ruyio starts and every 6 hours after (skipped if checked in the last 15 minutes), and after waking from sleep when a check was missed. Checks only: downloading and installing are up to you.")
+    }
     func downloadUpdateMenu(_ version: String) -> String { t("下载 Ruyio \(version)…", "Download Ruyio \(version)…") }
     func downloadingUpdateMenu(_ version: String) -> String { t("正在下载 Ruyio \(version)…", "Downloading Ruyio \(version)…") }
     func installUpdateMenu(_ version: String) -> String { t("安装 Ruyio \(version) 并重新打开", "Install Ruyio \(version) and Relaunch") }
