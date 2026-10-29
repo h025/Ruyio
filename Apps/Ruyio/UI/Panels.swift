@@ -39,6 +39,13 @@ final class FloatingPanel: NSPanel {
         super.sendEvent(event)
     }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if super.performKeyEquivalent(with: event) { return true }
+        // This panel never becomes main and Ruyio is often not active: copy, paste and the like go
+        // straight to the focused text instead of through the Edit menu.
+        return StandardEditing.perform(event, in: self)
+    }
+
     override func resignKey() {
         super.resignKey()
         onResignKey?()
@@ -281,6 +288,13 @@ final class OverlayController {
             }
             return true
         default: break
+        }
+        // Focused text takes copy, cut, paste and select all when it would act on them: part of a preview
+        // selected, or the search field to paste into. A plugin's ⌘C then copies the whole item only when
+        // no text is selected.
+        if let editing = StandardEditing.action(for: event), StandardEditing.precedesPluginShortcuts(editing),
+           let panel, StandardEditing.canPerform(editing, in: panel) {
+            return false
         }
         // Plugin shortcuts need a modifier (Return aside): a bare letter, Space or ⌫ always edits the search.
         if let shortcut = HotkeyManager.shortcut(from: event), shortcut.key == "return" || !shortcut.modifiers.subtracting(.shift).isEmpty,

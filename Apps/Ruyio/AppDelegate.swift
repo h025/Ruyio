@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         bridge.model = model
         conflicts.model = model
+        installMainMenu()
         model.engine.setBridge(bridge)
         model.engine.setFileConflictDelegate(conflicts)
 
@@ -209,7 +210,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              strings: ["openRuyio": model.l.openRuyioToLoad])
     }
 
+    /// Rebuilt when the language changes.
+    private func installMainMenu() {
+        NSApp.mainMenu = MainMenu.make(model.l, settings: #selector(showSettings), help: #selector(showHelp))
+    }
+
+    @objc func showSettings() {
+        model.page = .general
+        showMainWindow()
+    }
+
+    @objc func showHelp() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/h025/Ruyio/wiki")!)
+    }
+
     private func settingsChanged() {
+        installMainMenu()
         let refreshMarkets = model.settings.autoRefreshMarkets
         let checkPlugins = model.settings.autoCheckPluginUpdates
         let checkApp = model.settings.autoCheckAppUpdates
