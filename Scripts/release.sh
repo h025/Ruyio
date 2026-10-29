@@ -175,7 +175,7 @@ Or download $DMG, open it and drag Ruyio to Applications. Ruyio is not notarized
 open System Settings › Privacy & Security and click Open Anyway. Installed copies update themselves from
 General settings. Release certificate SHA-256: \`$CERT_SHA256\`
 
-安装或更新：在终端运行上面的命令；或下载 $DMG，打开后把 Ruyio 拖到“应用程序”。Ruyio 未经 Apple 公证，
+安装或更新：在终端运行上面的命令；或下载 ${DMG}，打开后把 Ruyio 拖到“应用程序”。Ruyio 未经 Apple 公证，
 第一次打开时请到“系统设置 › 隐私与安全性”点“仍要打开”。之后可在“通用设置”中自动更新。"
 printf '%s\n' "$NOTES" > "$OUT/release-notes.md"
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
