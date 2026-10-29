@@ -51,20 +51,42 @@ certificate_sha256() {
 }
 
 # with_signing_keychain KEYCHAIN COMMAND...
-# Runs COMMAND with KEYCHAIN on the user's keychain search list, then restores the list. codesign on
-# macOS 26 and earlier finds identities only in listed keychains (--keychain alone reports "no identity
-# found"); macOS 27 does not need this. An interrupted run may leave the keychain listed, which is harmless.
+# Runs COMMAND with KEYCHAIN on the user's keychain search list. codesign on macOS 26 and earlier finds
+# identities only in listed keychains (--keychain alone reports "no identity found"); macOS 27 does not
+# need this. Afterwards only KEYCHAIN is taken off again, so changes other scripts made meanwhile stay,
+# also when interrupted. Paths are passed as data, never through eval.
 with_signing_keychain() {
-  _keychain=$1
+  _keychain=$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")
   shift
-  # One quoted path per line; joined into one line, the list passes back through eval as arguments.
-  _saved=$(/usr/bin/security list-keychains -d user | tr '\n' ' ')
-  _added=
-  if ! printf '%s' "$_saved" | grep -qF "\"$_keychain\""; then
-    eval "/usr/bin/security list-keychains -d user -s $_saved \"\$_keychain\""
-    _added=1
+  _listed=
+  if ! _ruyio_keychains | grep -qxF "$_keychain"; then
+    { _ruyio_keychains; printf '%s\n' "$_keychain"; } | _ruyio_set_keychains
+    _listed=1
+    trap '_ruyio_unlist "$_keychain"; exit 130' INT TERM
   fi
   if "$@"; then _status=0; else _status=$?; fi
-  if [ -n "$_added" ]; then eval "/usr/bin/security list-keychains -d user -s $_saved"; fi
+  if [ -n "$_listed" ]; then
+    _ruyio_unlist "$_keychain"
+    trap - INT TERM
+  fi
   return "$_status"
+}
+
+# The user's keychain search list, one path per line.
+_ruyio_keychains() {
+  /usr/bin/security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'
+}
+
+# Sets the search list from paths on standard input, one per line.
+_ruyio_set_keychains() {
+  _list=$(cat)
+  if [ -z "$_list" ]; then
+    /usr/bin/security list-keychains -d user -s
+  else
+    printf '%s\n' "$_list" | tr '\n' '\0' | xargs -0 /usr/bin/security list-keychains -d user -s
+  fi
+}
+
+_ruyio_unlist() {
+  _ruyio_keychains | grep -vxF "$1" | _ruyio_set_keychains
 }

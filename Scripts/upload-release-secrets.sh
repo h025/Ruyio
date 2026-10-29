@@ -15,6 +15,20 @@ command -v gh >/dev/null 2>&1 || fail "install the GitHub CLI first: brew instal
 gh auth status >/dev/null 2>&1 || fail "sign in first: gh auth login"
 [ -f "$SIGNING_KEYCHAIN" ] && [ -f "$UPDATE_KEYCHAIN" ] || fail "release keychains not found in ~/Library/Keychains"
 
+# Upload only the keys every installed copy trusts; Scripts/release.sh pins the same values.
+. "$(cd "$(dirname "$0")" && pwd)/lib/signing-identity.sh"
+PINNED_CERT=$(sed -n 's/^RELEASE_CERT_SHA256=//p' "$(dirname "$0")/release.sh")
+PINNED_KEY=$(sed -n 's/^RELEASE_UPDATE_PUBLIC_KEY=//p' "$(dirname "$0")/release.sh")
+/usr/bin/security unlock-keychain -p "" "$SIGNING_KEYCHAIN"
+[ "$(certificate_sha256 "$SIGNING_KEYCHAIN" "Ruyio Release Signing")" = "$PINNED_CERT" ] ||
+  fail "the certificate in $SIGNING_KEYCHAIN is not the pinned release certificate"
+/usr/bin/security unlock-keychain -p "" "$UPDATE_KEYCHAIN"
+PUBLIC=$(/usr/bin/security find-generic-password -a ed25519 -s "Ruyio Update Signing" -w "$UPDATE_KEYCHAIN" | /usr/bin/xcrun swift -e '
+import CryptoKit
+import Foundation
+print(try! Curve25519.Signing.PrivateKey(rawRepresentation: Data(base64Encoded: readLine()!)!).publicKey.rawRepresentation.base64EncodedString())')
+[ "$PUBLIC" = "$PINNED_KEY" ] || fail "the update key in $UPDATE_KEYCHAIN is not the pinned release key"
+
 WORK=$(mktemp -d)
 chmod 700 "$WORK"
 trap 'rm -rf "$WORK"' EXIT

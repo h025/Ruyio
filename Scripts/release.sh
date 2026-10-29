@@ -32,6 +32,8 @@ SIGNING_NAME="Ruyio Release Signing"
 # The certificate every release must carry (also pinned in install.sh): another one would cut installed
 # copies off from their updates and privacy grants.
 RELEASE_CERT_SHA256=7599d581e90fc58d44f395d3d5f6fc7df11709d33127fd8274dd0b76ee073a35
+# The EdDSA public key installed copies carry (SUPublicEDKey); an archive signed with another key is refused.
+RELEASE_UPDATE_PUBLIC_KEY=B1C0P6m+nJAEMG4HzlAS/EuI3xIgD2PBC7Sx0Q2YgUo=
 UPDATE_SERVICE="Ruyio Update Signing"
 SPARKLE_VERSION=2.10.1
 SPARKLE_SHA256=1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
@@ -42,6 +44,17 @@ case "${1:-}" in
   *) echo "usage: Scripts/release.sh --ci | --snapshot" >&2; exit 2 ;;
 esac
 fail() { echo "release: $*" >&2; exit 1; }
+
+if [ "$MODE" = ci ]; then
+  # Secrets stay in unexported variables from here on: the build, Swift packages, Xcode build phases and
+  # tools started below never see them. The token reaches only the gh calls.
+  P12=${RUYIO_RELEASE_P12:-}
+  P12_PASSWORD=${RUYIO_RELEASE_P12_PASSWORD:-}
+  UPDATE_KEY=${RUYIO_UPDATE_KEY:-}
+  TOKEN=${GH_TOKEN:-}
+  unset RUYIO_RELEASE_P12 RUYIO_RELEASE_P12_PASSWORD RUYIO_UPDATE_KEY GH_TOKEN
+  gh_() { GH_TOKEN=$TOKEN gh "$@"; }
+fi
 
 if [ "$MODE" = ci ]; then
   # The workflow's checkout is the commit that passed the tests.
@@ -68,12 +81,6 @@ MARKETING=$(sed -n 's/^ *MARKETING_VERSION: "\(.*\)"$/\1/p' "$SRC/project.yml")
 [ "$VERSION" = "$MARKETING" ] || fail "HostInfo.version ($VERSION) and MARKETING_VERSION ($MARKETING) differ"
 if [ "$MODE" = ci ]; then
   if echo "$HOST_LINE" | grep -q prerelease; then echo "release: $VERSION is a prerelease; nothing to publish"; exit 0; fi
-  DRAFT=$(gh release view "v$VERSION" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null || echo none)
-  case "$DRAFT" in
-    false) echo "release: v$VERSION is already published"; exit 0 ;;
-    # A run cancelled or failed after creating its draft; start that release over.
-    true) gh release delete "v$VERSION" --repo "$REPO" --yes ;;
-  esac
   LABEL=$VERSION
 else
   LABEL="$VERSION-snapshot.$(git -C "$SRC" rev-parse --short HEAD)"
@@ -82,21 +89,21 @@ OUT="$BUILD/release/$LABEL"
 
 # Signing identity and update key: from the secrets on CI, from this Mac's keychains otherwise.
 if [ "$MODE" = ci ]; then
-  [ -n "${RUYIO_RELEASE_P12:-}" ] && [ -n "${RUYIO_RELEASE_P12_PASSWORD:-}" ] && [ -n "${RUYIO_UPDATE_KEY:-}" ] ||
+  [ -n "$P12" ] && [ -n "$P12_PASSWORD" ] && [ -n "$UPDATE_KEY" ] ||
     fail "release secrets missing; run Scripts/upload-release-secrets.sh on the maintainer's Mac"
   SIGNING_KEYCHAIN="${RUNNER_TEMP:-$BUILD}/ruyio-release-signing.keychain-db"
   WORK=$(mktemp -d)
   trap '/usr/bin/security delete-keychain "$SIGNING_KEYCHAIN" 2>/dev/null; rm -rf "$WORK"' EXIT
-  printf '%s' "$RUYIO_RELEASE_P12" | /usr/bin/base64 -D > "$WORK/release.p12"
+  printf '%s' "$P12" | /usr/bin/base64 -D > "$WORK/release.p12"
   /usr/bin/security create-keychain -p "" "$SIGNING_KEYCHAIN"
   /usr/bin/security set-keychain-settings "$SIGNING_KEYCHAIN"
   /usr/bin/security unlock-keychain -p "" "$SIGNING_KEYCHAIN"
-  /usr/bin/security import "$WORK/release.p12" -k "$SIGNING_KEYCHAIN" -P "$RUYIO_RELEASE_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+  /usr/bin/security import "$WORK/release.p12" -k "$SIGNING_KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
   /usr/bin/security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$SIGNING_KEYCHAIN" >/dev/null
   rm -f "$WORK/release.p12"
   HASH=$(/usr/bin/security find-identity -p codesigning "$SIGNING_KEYCHAIN" | awk -v name="\"$SIGNING_NAME\"" 'index($0, name) {print $2; exit}')
   [ -n "$HASH" ] || fail "no \"$SIGNING_NAME\" identity in RUYIO_RELEASE_P12"
-  update_key() { printf '%s\n' "$RUYIO_UPDATE_KEY"; }
+  update_key() { printf '%s\n' "$UPDATE_KEY"; }
 else
   SIGNING_KEYCHAIN="$HOME/Library/Keychains/ruyio-release-signing.keychain-db"
   UPDATE_KEYCHAIN="$HOME/Library/Keychains/ruyio-update-signing.keychain-db"
@@ -123,6 +130,29 @@ import CryptoKit
 import Foundation
 let seed = Data(base64Encoded: readLine()!)!
 print(try! Curve25519.Signing.PrivateKey(rawRepresentation: seed).publicKey.rawRepresentation.base64EncodedString())')
+if [ "$PUBLIC_KEY" != "$RELEASE_UPDATE_PUBLIC_KEY" ]; then
+  [ "$MODE" = ci ] && fail "the update key's public key is $PUBLIC_KEY, not the pinned $RELEASE_UPDATE_PUBLIC_KEY"
+  echo "release: warning: signing updates with key $PUBLIC_KEY, not the release key; installed copies would refuse them" >&2
+fi
+
+if [ "$MODE" = ci ]; then
+  # The keys are checked on every push to main, so a broken secret shows up before a release needs it.
+  # Only then: is there anything to publish, and is it newer than what users have?
+  if VIEW=$(gh_ release view "v$VERSION" --repo "$REPO" --json isDraft --jq .isDraft 2>&1); then
+    case "$VIEW" in
+      false) echo "release: keys verified; v$VERSION is already published"; exit 0 ;;
+      # A run cancelled or failed after creating its draft: start that release over.
+      true) gh_ release delete "v$VERSION" --repo "$REPO" --yes ;;
+      *) fail "unexpected answer looking up v$VERSION: $VIEW" ;;
+    esac
+  else
+    case "$VIEW" in *"release not found"*) ;; *) fail "cannot look up v$VERSION: $VIEW" ;; esac
+  fi
+  LATEST=$(gh_ release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null | sed 's/^v//' || true)
+  if [ -n "$LATEST" ] && [ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+    fail "v$VERSION is older than the latest release v$LATEST; refusing to publish a downgrade"
+  fi
+fi
 
 # Sparkle's signing tool, from its pinned release archive.
 SPARKLE="$BUILD/sparkle-$SPARKLE_VERSION"
@@ -158,6 +188,11 @@ for CODE in "$APP"/Contents/Helpers/*.app "$APP"; do
   /usr/bin/codesign -d -r- "$CODE" 2>&1 | grep -q "certificate leaf = H\"$SHA1\"" || fail "$CODE is not signed with the release certificate"
 done
 /usr/bin/codesign --verify --deep --strict "$APP"
+# The certificate in the finished app, compared with the pin itself rather than with a lookup by name.
+/usr/bin/codesign -d --extract-certificates="$OUT/cert" "$APP" 2>/dev/null
+SIGNED_WITH=$(shasum -a 256 "$OUT/cert0" | cut -d' ' -f1)
+rm -f "$OUT"/cert*
+if [ "$SIGNED_WITH" != "$RELEASE_CERT_SHA256" ] && [ "$MODE" = ci ]; then fail "the app is signed with $SIGNED_WITH, not the release certificate"; fi
 for CODE in "$APP" "$APP"/Contents/Helpers/*.app "$APP"/Contents/PlugIns/*.appex "$APP"/Contents/XPCServices/*.xpc; do
   [ -d "$CODE" ] || continue
   if /usr/bin/codesign -d --entitlements - "$CODE" 2>/dev/null | grep -q get-task-allow; then fail "$CODE allows debugging"; fi
@@ -178,7 +213,12 @@ DMG="Ruyio-$LABEL.dmg"
 mkdir "$OUT/dmg"
 /usr/bin/ditto "$APP" "$OUT/dmg/Ruyio.app"
 ln -s /Applications "$OUT/dmg/Applications"
-/usr/bin/hdiutil create -quiet -volname "Ruyio $LABEL" -srcfolder "$OUT/dmg" -fs HFS+ -format UDZO -ov "$OUT/$DMG"
+# hdiutil fails now and then with "Resource busy" on hosted runners; a retry gets through.
+for ATTEMPT in 1 2 3; do
+  /usr/bin/hdiutil create -quiet -volname "Ruyio $LABEL" -srcfolder "$OUT/dmg" -fs HFS+ -format UDZO -ov "$OUT/$DMG" && break
+  [ "$ATTEMPT" = 3 ] && fail "hdiutil could not create $DMG"
+  sleep 5
+done
 rm -rf "$OUT/dmg" "$APP"
 SIGNATURE=$(update_key | "$SPARKLE/bin/sign_update" --ed-key-file - -p "$OUT/$ZIP")
 LENGTH=$(stat -f %z "$OUT/$ZIP")
@@ -225,7 +265,9 @@ Release certificate SHA-256: \`${CERT_SHA256}\`
 
 使用说明见 [Wiki](https://github.com/$REPO/wiki)。"
 # Draft first: the release, its tag and the appcast become visible only once every file is uploaded.
-gh release create "v$VERSION" --repo "$REPO" --target "${GITHUB_SHA:-$(git rev-parse HEAD)}" --draft \
+gh_ release create "v$VERSION" --repo "$REPO" --target "${GITHUB_SHA:-$(git rev-parse HEAD)}" --draft \
   --title "Ruyio $VERSION" --notes "$NOTES" "$OUT/$DMG" "$OUT/$ZIP" "$OUT/appcast.xml" "$OUT/SHA256SUMS"
-gh release edit "v$VERSION" --repo "$REPO" --draft=false --latest
+UPLOADED=$(gh_ release view "v$VERSION" --repo "$REPO" --json assets --jq '[.assets[] | select(.state == "uploaded")] | length')
+[ "$UPLOADED" = 4 ] || fail "only $UPLOADED of 4 files reached the draft of v$VERSION; the next run starts it over"
+gh_ release edit "v$VERSION" --repo "$REPO" --draft=false --latest
 echo "release: published https://github.com/$REPO/releases/tag/v$VERSION"

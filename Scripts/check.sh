@@ -23,7 +23,9 @@ until mkdir "$LOCK" 2>/dev/null; do
   echo "check: waiting for another check to finish"
   sleep 10
 done
-trap 'rmdir "$LOCK"' EXIT INT TERM
+# Released once, on exit: an interrupt only exits, so no other check can start while this one winds down.
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+trap 'exit 130' INT TERM
 
 CHECK="$MAIN/build/check"
 if [ -e "$CHECK/.git" ]; then

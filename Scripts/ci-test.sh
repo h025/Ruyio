@@ -17,6 +17,10 @@ MARK="$LOG.timedout"
 # swift test holds a test process's console output until that process ends, so a hung test prints
 # nothing; Swift Testing's event stream is written as each test starts and ends.
 EVENTS="$LOG.events"
+# Event files of this run are newer than this marker. The log itself keeps changing, so comparing with it
+# hid event files once console output had moved on, and a stall then showed up only at the time limit.
+START="$LOG.started"
+: > "$START"
 
 # Own process group, so the watchdog can stop swift test together with the test runner it starts.
 set -m
@@ -36,13 +40,13 @@ set +m
     kill -0 "$TESTS" 2>/dev/null || exit 0
     NOW=$(date +%s)
     [ $((NOW - BEGAN)) -ge "$LIMIT" ] && REASON="time limit ${LIMIT}s"
-    LAST=$(find "${TMPDIR:-/tmp}" -name "event-stream-*.jsonl" -newer "$LOG" \
+    LAST=$(find "${TMPDIR:-/tmp}" -name "event-stream-*.jsonl" -newer "$START" \
       -exec stat -f %m {} + 2>/dev/null | sort -n | tail -1)
     [ -n "$LAST" ] && [ $((NOW - LAST)) -ge "$STALL" ] && REASON="no test started or ended for ${STALL}s"
   done
   if kill -0 "$TESTS" 2>/dev/null; then
     echo "$REASON" > "$MARK"
-    find "${TMPDIR:-/tmp}" -name "event-stream-*.jsonl" -newer "$LOG" -exec cat {} + >> "$EVENTS.live" 2>/dev/null
+    find "${TMPDIR:-/tmp}" -name "event-stream-*.jsonl" -newer "$START" -exec cat {} + >> "$EVENTS.live" 2>/dev/null
     # Paused first, so it cannot start another test process between the listing and the kill.
     kill -STOP "$TESTS" 2>/dev/null
     # What every stuck process is waiting on. swift test starts the test runner (and tools such as xcrun)

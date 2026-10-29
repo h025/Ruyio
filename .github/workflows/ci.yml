@@ -24,6 +24,8 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+        with:
+          persist-credentials: false
       # Watchdog: a run with no test starting or ending for two minutes (or past 15 minutes) is stopped;
       # hung or failing tests and stuck stacks are written as check annotations, readable without signing
       # in (job logs are not).
@@ -50,6 +52,11 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+        with:
+          persist-credentials: false
+      # Tools come first, in a step that sees no secrets.
+      - name: Install XcodeGen
+        run: brew install xcodegen
       - name: Build, sign and publish a new version
         run: Scripts/release.sh --ci
         env:
