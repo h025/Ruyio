@@ -1,6 +1,8 @@
 import AppKit
+import CryptoKit
 import RuyioCore
 import RuyioHostKit
+import RuyioUI
 
 /// Runs one interactive capture through the bundled helper (`Contents/Helpers`). LaunchServices makes the
 /// helper its own responsible process, so Screen Recording is granted to it alone; the host, which spawns
@@ -13,6 +15,8 @@ final class CaptureService {
     private static let promptedKey = "capture.screenRecordingPrompted"
 
     private var running = false
+    /// The latest capture's screen frame, matched to a pin request by the image's digest.
+    private var recent: (digest: String, frame: CGRect, at: Date)?
 
     private struct HelperResult: Decodable {
         var status: String
@@ -43,6 +47,17 @@ final class CaptureService {
         } catch {
             throw RuyioError(.actionFailed, diagnostic: "capture helper did not start: \(error.localizedDescription)")
         }
+        // Where the selection began and ended: the system capture reports only the image, and a pin goes
+        // back over the region it came from.
+        var start: CGPoint?
+        var end: CGPoint?
+        let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { event in
+            let point = NSEvent.mouseLocation
+            MainActor.assumeIsolated {
+                if event.type == .leftMouseDown { if start == nil { start = point } } else { end = point }
+            }
+        }
+        defer { if let monitor { NSEvent.removeMonitor(monitor) } }
         let deadline = Date().addingTimeInterval(Self.selectionTimeout)
         while !app.isTerminated {
             if Date() > deadline {
@@ -62,7 +77,14 @@ final class CaptureService {
                   let width = result.pixelWidth, let height = result.pixelHeight else {
                 throw RuyioError(.actionFailed, diagnostic: "capture file missing")
             }
-            return CapturedScreen(png: png, pixelWidth: width, pixelHeight: height, scale: result.scale ?? 1)
+            let scale = result.scale ?? 1
+            let size = CGSize(width: Double(width) / scale, height: Double(height) / scale)
+            if let frame = CapturePlacement.frame(start: start, end: end, size: size, windows: Self.windowFrames()) {
+                recent = (Self.digest(png), frame, Date())
+            } else {
+                recent = nil
+            }
+            return CapturedScreen(png: png, pixelWidth: width, pixelHeight: height, scale: scale)
         case "permissionRequired":
             explainScreenRecording(model: model)
             throw RuyioError(.cancelled, diagnostic: "screen recording not granted to the capture helper")
@@ -70,6 +92,29 @@ final class CaptureService {
             throw RuyioError(.cancelled)
         default:
             throw RuyioError(.actionFailed, diagnostic: "capture failed")
+        }
+    }
+
+    /// Where a pin of `png` should appear: over the region of the capture it came from, if that capture was
+    /// the latest and recent. Pins from older captures (from a history) are placed at the pointer instead.
+    func placement(for png: Data) -> CGRect? {
+        guard let recent, Date().timeIntervalSince(recent.at) < 600, recent.digest == Self.digest(png) else { return nil }
+        return recent.frame
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Normal on-screen windows, front to back, in AppKit coordinates. Bounds need no Screen Recording.
+    private static func windowFrames() -> [CGRect] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+              let primary = NSScreen.screens.first?.frame.height else { return [] }
+        return list.compactMap { info in
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: bounds) else { return nil }
+            return CapturePlacement.appKitRect(fromWindowBounds: rect, primaryScreenHeight: primary)
         }
     }
 

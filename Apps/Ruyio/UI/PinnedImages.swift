@@ -15,13 +15,15 @@ final class PinnedImages {
     var galleryLastPanel: PinPanel? { panels.last }
     #endif
 
-    func pin(_ image: NSImage, scale: Double, pluginName: String, l: L10n) {
+    /// `frame`: where the capture was taken, so the pin covers the original region; otherwise at the pointer.
+    func pin(_ image: NSImage, scale: Double, pluginName: String, l: L10n, frame: CGRect? = nil) {
         if panels.count >= Self.limit { panels.first?.close() }
         let size = NSSize(width: max(8, image.size.width / scale), height: max(8, image.size.height / scale))
         let panel = PinPanel(image: image, pointSize: size, pluginName: pluginName, l: l)
         panel.onClose = { [weak self, weak panel] in self?.panels.removeAll { $0 === panel } }
         panel.onCloseAll = { [weak self] in self?.closeAll() }
-        panel.setFrameOrigin(Self.origin(for: size))
+        let onScreen = frame.map { region in NSScreen.screens.contains { $0.frame.intersects(region) } } ?? false
+        panel.setFrameOrigin(onScreen ? frame!.origin : Self.origin(for: size))
         panels.append(panel)
         panel.orderFrontRegardless()
     }
@@ -30,7 +32,7 @@ final class PinnedImages {
         for panel in panels { panel.close() }
     }
 
-    /// Centred on the pointer, where the selection just ended, and kept on that screen.
+    /// Centred on the pointer and kept on that screen, when the original region is unknown.
     private static func origin(for size: NSSize) -> NSPoint {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main

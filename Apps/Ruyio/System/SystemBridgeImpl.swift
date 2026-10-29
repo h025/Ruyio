@@ -115,7 +115,7 @@ final class SystemBridgeImpl: SystemBridge, @unchecked Sendable {
         await MainActor.run {
             let l = model?.l ?? L10n("en")
             let name = manifest?.displayName(locale: model?.language ?? "en").text ?? pluginID.rawValue
-            PinnedImages.shared.pin(image, scale: scale, pluginName: name, l: l)
+            PinnedImages.shared.pin(image, scale: scale, pluginName: name, l: l, frame: CaptureService.shared.placement(for: data))
         }
     }
 }
