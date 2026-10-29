@@ -174,7 +174,7 @@ public struct CollectionPanelView: View {
                                     if let event = context.invocation(itemID: item.id) { context.send(event) }
                                 })
                                 .listRowSeparator(.hidden)
-                                .listRowBackground(SelectionBackground(isSelected: isSelected))
+                                .listRowBackground(ListSelectionBackground(isSelected: isSelected))
                                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                                 .id(item.id)
                                 .onAppear {
@@ -286,10 +286,15 @@ public struct CollectionPanelView: View {
 }
 
 /// The selected row on glass: a soft vibrant fill with continuous corners, as Spotlight draws it.
-private struct SelectionBackground: View {
+/// The selected row of a list in a floating panel: a soft rounded fill, no separators around it. Keyboard
+/// focus stays in the search field, so the list's own highlight would be its unfocused grey block, and its
+/// separators read as heavy lines on glass. Shared by plugin lists and the command palette.
+public struct ListSelectionBackground: View {
     let isSelected: Bool
 
-    var body: some View {
+    public init(isSelected: Bool) { self.isSelected = isSelected }
+
+    public var body: some View {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(isSelected ? AnyShapeStyle(.fill.secondary) : AnyShapeStyle(.clear))
             .padding(.horizontal, 6)

@@ -304,14 +304,29 @@ struct SchemaListView: View {
         if spec.items.isEmpty, let empty = spec.empty {
             EmptyStateView(spec: empty, context: context)
         } else {
-            List(spec.items, selection: Binding(get: { context.localSelection }, set: { context.localSelection = $0; context.send(.selectionChanged($0)) })) { item in
-                ItemRow(item: item, context: context).tag(item.id)
+            // Drawn like the collection panel's list: soft selection, no separators, double-click runs the default.
+            List {
+                ForEach(spec.items) { item in
+                    let isSelected = item.id == context.localSelection
+                    ItemRow(item: item, context: context)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(TapGesture().onEnded { context.select(item.id) })
+                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                            if let event = context.invocation(itemID: item.id) { context.send(event) }
+                        })
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(ListSelectionBackground(isSelected: isSelected))
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                }
             }
+            .listStyle(.inset)
+            .scrollContentBackground(.hidden)
+            .alternatingRowBackgrounds(.disabled)
         }
     }
 }
 
-/// One plugin-provided row; selection, emphasis and hover come from the native List.
+/// One plugin-provided row; its list draws the selection behind it.
 struct ItemRow: View {
     let item: ListItem
     @ObservedObject var context: SchemaContext

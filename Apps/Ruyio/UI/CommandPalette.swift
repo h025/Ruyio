@@ -242,17 +242,24 @@ struct CommandPaletteView: View {
                     .frame(maxWidth: .infinity).padding(.vertical, 28)
                 } else {
                     ScrollViewReader { proxy in
-                        List(selection: $controller.selection) {
+                        // Like the history panel: focus stays in the search field, so the selection is a soft
+                        // fill drawn here rather than the list's grey block, and rows have no separators.
+                        List {
                             ForEach(results) { entry in
-                                row(entry).tag(entry.id).id(entry.id)
+                                let isSelected = entry.id == controller.selection
+                                row(entry)
+                                    .contentShape(Rectangle())
+                                    .simultaneousGesture(TapGesture().onEnded { controller.selection = entry.id })
+                                    .simultaneousGesture(TapGesture(count: 2).onEnded { controller.run(entry) })
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(ListSelectionBackground(isSelected: isSelected))
+                                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                                    .id(entry.id)
                             }
                         }
                         .listStyle(.inset)
                         .scrollContentBackground(.hidden)
                         .alternatingRowBackgrounds(.disabled)
-                        .contextMenu(forSelectionType: String.self) { _ in } primaryAction: { ids in
-                            if let id = ids.first, let entry = controller.results.first(where: { $0.id == id }) { controller.run(entry) }
-                        }
                         .frame(height: min(CGFloat(results.count) * 44 + 16, 300))
                         .onChange(of: controller.selection) { _, id in if let id { proxy.scrollTo(id) } }
                     }
@@ -272,7 +279,6 @@ struct CommandPaletteView: View {
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(Color.orange.opacity(0.1))
                 }
-                Divider().opacity(0.5)
                 HStack(spacing: 14) {
                     Text(l.paletteHelp)
                     Spacer()
