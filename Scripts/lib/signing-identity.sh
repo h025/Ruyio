@@ -49,3 +49,22 @@ CNF
 certificate_sha256() {
   /usr/bin/security find-certificate -c "$2" -Z "$1" | awk '/^SHA-256 hash:/ {print tolower($3); exit}'
 }
+
+# with_signing_keychain KEYCHAIN COMMAND...
+# Runs COMMAND with KEYCHAIN on the user's keychain search list, then restores the list. codesign on
+# macOS 26 and earlier finds identities only in listed keychains (--keychain alone reports "no identity
+# found"); macOS 27 does not need this. An interrupted run may leave the keychain listed, which is harmless.
+with_signing_keychain() {
+  _keychain=$1
+  shift
+  # One quoted path per line; joined into one line, the list passes back through eval as arguments.
+  _saved=$(/usr/bin/security list-keychains -d user | tr '\n' ' ')
+  _added=
+  if ! printf '%s' "$_saved" | grep -qF "\"$_keychain\""; then
+    eval "/usr/bin/security list-keychains -d user -s $_saved \"\$_keychain\""
+    _added=1
+  fi
+  if "$@"; then _status=0; else _status=$?; fi
+  if [ -n "$_added" ]; then eval "/usr/bin/security list-keychains -d user -s $_saved"; fi
+  return "$_status"
+}

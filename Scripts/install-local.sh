@@ -39,10 +39,10 @@ mkdir -p "$ROOT/build/install-staging"
 # Inside out: the capture helper holds Screen Recording, so it needs the stable identity too.
 for HELPER in "$STAGE"/Contents/Helpers/*.app; do
   [ -d "$HELPER" ] || continue
-  /usr/bin/codesign --force --sign "$HASH" --keychain "$KEYCHAIN" \
+  with_signing_keychain "$KEYCHAIN" /usr/bin/codesign --force --sign "$HASH" --keychain "$KEYCHAIN" \
     --preserve-metadata=entitlements,flags,runtime --timestamp=none "$HELPER"
 done
-/usr/bin/codesign --force --sign "$HASH" --keychain "$KEYCHAIN" \
+with_signing_keychain "$KEYCHAIN" /usr/bin/codesign --force --sign "$HASH" --keychain "$KEYCHAIN" \
   --preserve-metadata=entitlements,flags,runtime --timestamp=none "$STAGE"
 /usr/bin/codesign --verify --deep --strict "$STAGE"
 

@@ -103,7 +103,8 @@ echo "release: building $LABEL from $(git -C "$SRC" rev-parse --short HEAD), pub
 cd "$SRC"
 xcodegen generate --quiet
 DERIVED="$MAIN/build/release-DerivedData"
-xcodebuild -project Ruyio.xcodeproj -scheme Ruyio -configuration Release -derivedDataPath "$DERIVED" -quiet \
+# The build signs the default plugins with the release certificate (package-default-plugins.sh).
+with_signing_keychain "$SIGNING_KEYCHAIN" xcodebuild -project Ruyio.xcodeproj -scheme Ruyio -configuration Release -derivedDataPath "$DERIVED" -quiet \
   CURRENT_PROJECT_VERSION="$VERSION" RUYIO_OFFICIAL_PUBLISHER="cert:$CERT_SHA256" \
   RUYIO_UPDATE_FEED="$FEED" RUYIO_UPDATE_PUBLIC_KEY="$PUBLIC_KEY" \
   RUYIO_SIGN_IDENTITY="$HASH" RUYIO_SIGN_KEYCHAIN="$SIGNING_KEYCHAIN" build
@@ -116,7 +117,7 @@ APP="$OUT/Ruyio.app"
 SHA1=$(echo "$HASH" | tr 'A-F' 'a-f')
 for CODE in "$APP"/Contents/Helpers/*.app "$APP"; do
   [ -d "$CODE" ] || continue
-  /usr/bin/codesign --force --sign "$HASH" --keychain "$SIGNING_KEYCHAIN" \
+  with_signing_keychain "$SIGNING_KEYCHAIN" /usr/bin/codesign --force --sign "$HASH" --keychain "$SIGNING_KEYCHAIN" \
     --preserve-metadata=entitlements,flags,runtime --timestamp=none "$CODE"
   /usr/bin/codesign -d -r- "$CODE" 2>&1 | grep -q "certificate leaf = H\"$SHA1\"" || fail "$CODE is not signed with the release certificate"
 done
