@@ -15,6 +15,16 @@ Several agents work on this repository at the same time, so nobody edits the mai
    `main`, removes `docs/` and `design/` from the whole history, and GitHub CI runs once per publish.
    Never add a GitHub remote or `git push` directly; that would publish the private docs.
 
+## Documentation
+
+User and plugin-developer documentation lives in the GitHub wiki (`git@github.com:h025/Ruyio.wiki.git`,
+checked out beside this repository as `../Ruyio.wiki`). Whenever a change alters something the wiki
+describes (behaviour, settings, UI text, permissions, the manifest or SDK, packaging, signing,
+installation, releases or this workflow), update the affected wiki pages in the same task, and push them
+once the code is published, so the wiki never describes unpublished behaviour. The plugin market
+repository (`h025/ruyio-market`) repeats the plugin-writing essentials in `WRITING_PLUGINS.md`; keep it in
+step as well.
+
 ## Releasing
 
 `Scripts/release.sh` builds `main` at the version in `HostInfo.swift` (`MARKETING_VERSION` must match; no
