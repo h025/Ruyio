@@ -235,13 +235,18 @@ struct RuntimeDataReviewTests {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             try BackupPolicy.setExcludedFromBackup(true, at: root)
         }
+        // macOS applies the flag asynchronously; a few percent of changes show up milliseconds later.
+        func settles(_ root: URL, excluded: Bool) -> Bool {
+            for _ in 0..<200 where BackupPolicy.isExcludedFromBackup(root) != excluded { usleep(10_000) }
+            return BackupPolicy.isExcludedFromBackup(root) == excluded
+        }
         try BackupPolicy.setIncludedInBackup(true, paths: engine.paths)
         for root in [engine.paths.dataRoot, engine.paths.developmentDataRoot, retained, development] {
-            #expect(!BackupPolicy.isExcludedFromBackup(root))
+            #expect(settles(root, excluded: false))
         }
         try BackupPolicy.setIncludedInBackup(false, paths: engine.paths)
         for root in [engine.paths.dataRoot, engine.paths.developmentDataRoot, retained, development] {
-            #expect(BackupPolicy.isExcludedFromBackup(root))
+            #expect(settles(root, excluded: true))
         }
     }
 

@@ -99,9 +99,9 @@ public enum BackupPolicy {
     }
 
     public static func isExcludedFromBackup(_ url: URL) -> Bool {
-        // URL resource values are cached per instance; another URL may have changed the same directory.
-        var target = url
-        target.removeCachedResourceValue(forKey: .isExcludedFromBackupKey)
-        return (try? target.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup) ?? false
+        // The attribute that `isExcludedFromBackup` writes, read directly rather than through cached URL
+        // resource values. Setting it applies asynchronously: a read right after a change can be stale
+        // for a few milliseconds (measured: a few percent of changes).
+        getxattr(url.path, "com.apple.metadata:com_apple_backup_excludeItem", nil, 0, 0, XATTR_NOFOLLOW) >= 0
     }
 }
