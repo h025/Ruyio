@@ -305,12 +305,22 @@ struct PluginInstallPreviewView: View {
     @State private var task: Task<Void, Never>?
     var l: L10n { model.l }
 
+    /// Why nothing installs: what the newest release asks for.
+    func noCompatibleRelease(_ descriptor: PluginDescriptor) -> String {
+        guard let newest = descriptor.releases.max(by: { $0.version < $1.version }) else { return l.t("无兼容版本", "No compatible release") }
+        var needs: [String] = []
+        if newest.minimumHostVersion > HostInfo.version { needs.append("Ruyio \(newest.minimumHostVersion)") }
+        if newest.minimumMacOSVersion > OSVersion.current { needs.append("macOS \(newest.minimumMacOSVersion)") }
+        guard !needs.isEmpty else { return l.t("无兼容版本", "No compatible release") }
+        return l.t("无兼容版本：最新的 \(newest.version) 需要 \(needs.joined(separator: "、")) 或更高", "No compatible release: the newest, \(newest.version), needs \(needs.joined(separator: ", ")) or later")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(descriptor?.name ?? packageURL?.lastPathComponent ?? "", systemImage: "puzzlepiece.extension").font(.headline)
             if let descriptor {
                 if let description = descriptor.description { Text(description) }
-                Text(verbatim: "\(descriptor.id) · \(descriptor.bestRelease()?.version.description ?? l.t("无兼容版本", "No compatible release"))").font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: "\(descriptor.id) · \(descriptor.bestRelease()?.version.description ?? noCompatibleRelease(descriptor))").font(.caption).foregroundStyle(.secondary)
                 if let src = descriptor.source { Text(l.source + ": " + src + " " + l.sourceUnverified).font(.caption).foregroundStyle(.secondary) }
             }
             Text(l.t("来源：", "Source: ") + source).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -472,7 +482,14 @@ struct MarketPluginSheet: View {
         error = nil
         defer { loading = false }
         do {
-            loaded = try await model.engine.markets.descriptor(marketID: entry.marketID, pluginID: entry.id, refresh: false)
+            var found = try await model.engine.markets.descriptor(marketID: entry.marketID, pluginID: entry.id, refresh: false)
+            // A cached index can predate the releases this Ruyio can use (markets refresh on request by default):
+            // check the market again before saying there is none. Offline, the cached answer stands.
+            if found.0.bestRelease() == nil,
+               let fresh = try? await model.engine.markets.descriptor(marketID: entry.marketID, pluginID: entry.id, refresh: true) {
+                found = fresh
+            }
+            loaded = found
         } catch let failure as RuyioError {
             error = model.l.errorText(failure) + (failure.diagnostic.map { " (\($0))" } ?? "")
         } catch {
