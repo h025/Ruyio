@@ -15,9 +15,10 @@ permissions:
   contents: read
 jobs:
   test:
-    # A newer push replaces a test run still in progress; a release in progress is never cancelled.
+    # A newer push replaces a test run still in progress; a release in progress is never cancelled. Manual
+    # runs have their own group, so starting one never cancels a push's tests and the release after them.
     concurrency:
-      group: ci-test-${{ github.ref }}
+      group: ci-test-${{ github.event_name }}-${{ github.ref }}
       cancel-in-progress: true
     timeout-minutes: 45
     # Liquid Glass code needs the macOS 26 SDK; macos-15 images default to Xcode 16.
