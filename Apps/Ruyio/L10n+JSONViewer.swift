@@ -6,7 +6,7 @@ extension L10n {
     var jsonViewer: JSONViewerStrings {
         let zh = self.zh
         return JSONViewerStrings(
-            find: t("在 JSON 中查找（⌘F）", "Find in JSON (⌘F)"), noMatches: t("无结果", "No matches"),
+            find: t("在 JSON 中查找（⌘F）", "Find in JSON (⌘F)"), noMatches: t("无结果", "No matches"), clear: t("清除", "Clear"),
             previous: t("上一个（⇧↩）", "Previous (⇧↩)"), next: t("下一个（↩）", "Next (↩)"),
             expand: t("展开", "Expand"), collapse: t("收起", "Collapse"),
             expandAll: t("全部展开", "Expand All"), collapseAll: t("全部收起", "Collapse All"),

@@ -130,7 +130,9 @@ public struct NativeSearchField: NSViewRepresentable {
     var controlSize: NSControl.ControlSize
     var identifier: String
     var focusOnAppear: Bool
-    /// False inside a shape that already draws the field (a glass capsule): no bezel or background of its own.
+    /// False inside a shape that already draws the field (a glass capsule): a plain borderless text field,
+    /// with the magnifier and clear button left to that shape. AppKit's search field keeps room for its
+    /// magnifier only while bezeled; without the bezel, typing overlapped the icon.
     var bordered: Bool
     var onCommand: ((Command) -> Void)?
 
@@ -146,19 +148,27 @@ public struct NativeSearchField: NSViewRepresentable {
         self.onCommand = onCommand
     }
 
-    public func makeNSView(context: Context) -> NSSearchField {
-        let field = FocusingSearchField()
-        field.identifier = NSUserInterfaceItemIdentifier(identifier)
-        field.focusOnAppear = focusOnAppear
-        if !bordered {
-            field.isBezeled = false
-            field.isBordered = false
-            field.drawsBackground = false
-            field.focusRingType = .none
+    public func makeNSView(context: Context) -> NSTextField {
+        let field: NSTextField
+        if bordered {
+            let search = FocusingSearchField()
+            search.focusOnAppear = focusOnAppear
+            search.sendsSearchStringImmediately = true
+            field = search
+        } else {
+            let plain = FocusingTextField()
+            plain.focusOnAppear = focusOnAppear
+            plain.isBezeled = false
+            plain.isBordered = false
+            plain.drawsBackground = false
+            plain.focusRingType = .none
+            plain.cell?.isScrollable = true
+            plain.cell?.wraps = false
+            field = plain
         }
+        field.identifier = NSUserInterfaceItemIdentifier(identifier)
         field.placeholderString = placeholder
         field.delegate = context.coordinator
-        field.sendsSearchStringImmediately = true
         field.controlSize = controlSize
         field.font = .systemFont(ofSize: NSFont.systemFontSize(for: controlSize))
         field.setAccessibilityLabel(placeholder)
@@ -167,7 +177,7 @@ public struct NativeSearchField: NSViewRepresentable {
         return field
     }
 
-    public func updateNSView(_ field: NSSearchField, context: Context) {
+    public func updateNSView(_ field: NSTextField, context: Context) {
         context.coordinator.onCommand = onCommand
         if field.stringValue != text { field.stringValue = text }
         guard field.isEnabled != isEnabled else { return }
@@ -219,27 +229,48 @@ public struct NativeSearchField: NSViewRepresentable {
         }
     }
 
-    final class FocusingSearchField: NSSearchField {
+    final class FocusingSearchField: NSSearchField, FocusRequestable {
         var focusOnAppear = true
-        private var observer: NSObjectProtocol?
-
+        var focusObserver: NSObjectProtocol?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let observer { NotificationCenter.default.removeObserver(observer) }
-            observer = nil
-            guard let window else { return }
-            observer = NotificationCenter.default.addObserver(forName: NativeSearchField.focusRequest, object: nil, queue: .main) { [weak self] note in
-                let target = note.object as? String
-                MainActor.assumeIsolated {
-                    guard let self, target == self.identifier?.rawValue, self.isEnabled, let window = self.window else { return }
-                    window.makeFirstResponder(self)
-                }
-            }
-            guard focusOnAppear else { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isEnabled, window.firstResponder !== self.currentEditor() else { return }
+            joinedWindow()
+        }
+    }
+
+    final class FocusingTextField: NSTextField, FocusRequestable {
+        var focusOnAppear = true
+        var focusObserver: NSObjectProtocol?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            joinedWindow()
+        }
+    }
+}
+
+/// Focus on joining a window (the panel's main field) and on `NativeSearchField.focusRequest` for its identifier.
+@MainActor
+protocol FocusRequestable: NSTextField {
+    var focusOnAppear: Bool { get }
+    var focusObserver: NSObjectProtocol? { get set }
+}
+
+extension FocusRequestable {
+    func joinedWindow() {
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+        focusObserver = nil
+        guard let window else { return }
+        focusObserver = NotificationCenter.default.addObserver(forName: NativeSearchField.focusRequest, object: nil, queue: .main) { [weak self] note in
+            let target = note.object as? String
+            MainActor.assumeIsolated {
+                guard let self, target == self.identifier?.rawValue, self.isEnabled, let window = self.window else { return }
                 window.makeFirstResponder(self)
             }
+        }
+        guard focusOnAppear else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isEnabled, window.firstResponder !== self.currentEditor() else { return }
+            window.makeFirstResponder(self)
         }
     }
 }

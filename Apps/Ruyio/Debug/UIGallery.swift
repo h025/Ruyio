@@ -214,8 +214,9 @@ final class UIGallery {
             await settle(0.2)
             if variant == "compact-preview" { overlay.setCompactPreviewForGallery(true) }
             await settle(0.7)
-            if variant == "json-search", let field = Self.view(in: overlay.galleryWindow?.contentView, identifier: NativeSearchField.previewIdentifier) as? NSSearchField {
-                // As if typed: the field's delegate hears the change and the tree searches.
+            if variant == "json-search", let field = Self.view(in: overlay.galleryWindow?.contentView, identifier: NativeSearchField.previewIdentifier) as? NSTextField {
+                // As if typed into the focused field: the delegate hears the change and the tree searches.
+                overlay.galleryWindow?.makeFirstResponder(field)
                 field.stringValue = "size"
                 NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
                 await settle(0.7)

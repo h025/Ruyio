@@ -267,7 +267,7 @@ final class OverlayController {
     private func handleKey(_ event: NSEvent) -> Bool {
         guard let context else { return false }
         // The search inside a JSON preview handles its own Return, arrows and Escape.
-        if let editor = panel?.firstResponder as? NSTextView, let field = editor.delegate as? NSSearchField,
+        if let editor = panel?.firstResponder as? NSTextView, let field = editor.delegate as? NSTextField,
            field.identifier?.rawValue == NativeSearchField.previewIdentifier {
             return false
         }

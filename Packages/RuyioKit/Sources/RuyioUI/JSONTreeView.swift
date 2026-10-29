@@ -5,6 +5,7 @@ import SwiftUI
 public struct JSONViewerStrings: Sendable {
     public var find: String
     public var noMatches: String
+    public var clear: String
     public var previous: String
     public var next: String
     public var expand: String
@@ -17,7 +18,7 @@ public struct JSONViewerStrings: Sendable {
     public var keys: @Sendable (Int) -> String
     public var items: @Sendable (Int) -> String
 
-    public init(find: String = "Find in JSON", noMatches: String = "No matches", previous: String = "Previous Match",
+    public init(find: String = "Find in JSON", noMatches: String = "No matches", clear: String = "Clear", previous: String = "Previous Match",
                 next: String = "Next Match", expand: String = "Expand", collapse: String = "Collapse",
                 expandAll: String = "Expand All", collapseAll: String = "Collapse All",
                 copyValue: String = "Copy Value", copyPath: String = "Copy Path",
@@ -26,6 +27,7 @@ public struct JSONViewerStrings: Sendable {
                 items: @escaping @Sendable (Int) -> String = { $0 == 1 ? "1 item" : "\($0) items" }) {
         self.find = find
         self.noMatches = noMatches
+        self.clear = clear
         self.previous = previous
         self.next = next
         self.expand = expand
@@ -107,6 +109,7 @@ struct JSONTreeView: View {
 
     private func toolbar(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
             NativeSearchField(text: $query, placeholder: strings.find, controlSize: .regular,
                               identifier: NativeSearchField.previewIdentifier, focusOnAppear: false, bordered: false) { command in
                 switch command {
@@ -114,7 +117,11 @@ struct JSONTreeView: View {
                 case .previous: step(-1, proxy: proxy)
                 }
             }
-            .frame(minWidth: 120, maxWidth: 260)
+            .frame(minWidth: 100, maxWidth: 240)
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .foregroundStyle(.tertiary).help(strings.clear).accessibilityLabel(strings.clear)
+            }
             if !query.trimmingCharacters(in: .whitespaces).isEmpty {
                 Text(hits.isEmpty ? strings.noMatches : "\(current + 1)/\(hits.count)")
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)

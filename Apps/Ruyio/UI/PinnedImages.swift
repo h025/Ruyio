@@ -204,7 +204,7 @@ private final class PinContentView: NSView {
     init(frame: NSRect, image: NSImage, l: L10n) {
         cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
         let symbol = NSImage(systemSymbolName: "xmark", accessibilityDescription: l.close)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold)) ?? NSImage()
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium)) ?? NSImage()
         closeButton = NSButton(image: symbol, target: nil, action: nil)
         super.init(frame: frame)
         autoresizingMask = [.width, .height]
@@ -220,15 +220,16 @@ private final class PinContentView: NSView {
         } else {
             closeButton.bezelStyle = .circular
         }
-        closeButton.controlSize = .small
+        // The size of other glass close buttons, such as the history panel's: a small one was hard to hit.
+        closeButton.controlSize = .large
         closeButton.toolTip = l.close
         closeButton.setAccessibilityLabel(l.close)
         closeButton.alphaValue = 0
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
         NSLayoutConstraint.activate([
-            closeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            closeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
         ])
     }
 
