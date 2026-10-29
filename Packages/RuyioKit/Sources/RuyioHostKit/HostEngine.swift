@@ -125,7 +125,7 @@ public final class HostEngine: @unchecked Sendable {
                 // installed copy is replaced in place. Same version means same data schema; data is untouched.
                 // Only for the same signing identity: a publisher change would move code and data to another identity.
                 if let preview = try? await installer.inspect(package: package.url, trust: .bundledDefault, expectedSHA256: package.expectedSHA256) {
-                    let sameIdentity = preview.signing.publisherID == installed.publisherID && preview.signing.identifier == installed.signingIdentifier
+                    let sameIdentity = preview.recordPublisherID(installed: installed) == installed.publisherID && preview.signing.identifier == installed.signingIdentifier
                     installer.discard(preview)
                     if sameIdentity { _ = try? await install(bundled: package, enable: installed.enabledPreference) }
                 }
@@ -257,11 +257,12 @@ public final class HostEngine: @unchecked Sendable {
             throw RuyioError(.sourceInvalid, objectID: package.manifest.id.rawValue, diagnostic: preview.failureSummary)
         }
         let id = preview.manifest.id
+        let previous = await registry.record(id)
+        let publisherID = preview.recordPublisherID(installed: previous)
         let proposed = try InstalledPluginRecord(manifest: preview.manifest, installPath: preview.stagingBundle,
-                                                 executablePath: preview.stagingBundle, publisherID: preview.signing.publisherID,
+                                                 executablePath: preview.stagingBundle, publisherID: publisherID,
                                                  signingIdentifier: preview.signing.identifier, isDevelopment: false,
                                                  isDefault: true, updateChannel: .bundledWithHost)
-        let previous = await registry.record(id)
         if let previous, Self.dataIdentity(previous) != Self.dataIdentity(proposed) {
             installer.discard(preview)
             throw RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "signer changed; reinstall required")
@@ -274,7 +275,7 @@ public final class HostEngine: @unchecked Sendable {
         catch { installer.discard(preview); throw error }
         let wasRunning = await supervisor.isRunning(id)
         if wasRunning { await supervisor.stop(id) }
-        var record = try installer.commit(preview, isDefault: true, updateChannel: .bundledWithHost)
+        var record = try installer.commit(preview, publisherID: publisherID, isDefault: true, updateChannel: .bundledWithHost)
         if let previous {
             record.dataGeneration = previous.dataGeneration
             record.enabledPreference = previous.enabledPreference
@@ -317,7 +318,7 @@ public final class HostEngine: @unchecked Sendable {
         let kept: Int?
         do { kept = try retainedGeneration(for: proposed, choice: dataChoice) }
         catch { installer.discard(preview); throw error }
-        var record = try installer.commit(preview, isDefault: false, updateChannel: updateChannel, source: source)
+        var record = try installer.commit(preview, publisherID: proposed.publisherID, isDefault: false, updateChannel: updateChannel, source: source)
         if let kept { record.dataGeneration = kept }
         try await registry.insert(record)
         log.record(.pluginInstalled, ["plugin": preview.manifest.id.rawValue, "version": preview.manifest.version.description, "trust": preview.trust.rawValue])
@@ -610,7 +611,7 @@ public final class HostEngine: @unchecked Sendable {
         }
         defer { installer.discard(preview) }
         guard preview.isInstallable, preview.manifest.id == id,
-              preview.signing.publisherID == record.publisherID, preview.signing.identifier == record.signingIdentifier else {
+              !UpdateCoordinator.changesIdentity(record, preview) else {
             throw RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "new source is not the same publisher identity")
         }
         try await registry.update(id) {

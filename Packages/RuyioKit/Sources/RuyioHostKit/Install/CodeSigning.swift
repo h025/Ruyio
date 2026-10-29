@@ -9,6 +9,8 @@ public struct SigningInfo: Sendable, Hashable {
     public var teamID: String?
     /// SHA-256 of the leaf signing certificate, lowercase hex; nil for ad-hoc signatures.
     public var leafCertificateSHA256: String? = nil
+    /// The certificate chain ends at Apple's root, so Security has checked the Team ID against it.
+    public var isAppleAnchored = false
     public var isAdHoc: Bool
     public var hasHardenedRuntime: Bool
     public var entitlements: [String: EntitlementValue]
@@ -30,8 +32,13 @@ public struct SigningInfo: Sendable, Hashable {
     /// Who stands behind the code (A39): the Apple Team ID of an Apple-issued certificate, otherwise the
     /// signing certificate itself, which a free self-signed certificate provides. Only its private key can
     /// produce a valid signature with it. Nil for ad-hoc signatures, which anyone can make for any identifier.
+    /// The Team ID counts only under Apple's anchor: elsewhere the signer writes that field and could copy
+    /// someone else's.
     public var publisherID: String? {
-        if let teamID, !teamID.isEmpty { return teamID }
+        guard !isAdHoc else { return nil }
+        if isAppleAnchored, let teamID, teamID.count == 10, teamID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }) {
+            return teamID
+        }
         return leafCertificateSHA256.map { PublisherID.certificatePrefix + $0 }
     }
 }
@@ -71,6 +78,9 @@ public enum CodeSigning {
         let info = (infoRef as? [String: Any]) ?? [:]
         let leaf = (info[kSecCodeInfoCertificates as String] as? [SecCertificate])?.first
             .map { SHA256.hash(data: SecCertificateCopyData($0) as Data).map { String(format: "%02x", $0) }.joined() }
+        var anchor: SecRequirement?
+        let appleAnchored = leaf != nil && SecRequirementCreateWithString("anchor apple generic" as CFString, [], &anchor) == errSecSuccess
+            && anchor.map { SecStaticCodeCheckValidity(code, [], $0) == errSecSuccess } == true
         let codeFlags = (info[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
         var entitlements: [String: SigningInfo.EntitlementValue] = [:]
         if let dict = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any] {
@@ -87,6 +97,7 @@ public enum CodeSigning {
             identifier: info[kSecCodeInfoIdentifier as String] as? String,
             teamID: info[kSecCodeInfoTeamIdentifier as String] as? String,
             leafCertificateSHA256: leaf,
+            isAppleAnchored: appleAnchored,
             isAdHoc: codeFlags & SecCodeSignatureFlags.adhoc.rawValue != 0,
             hasHardenedRuntime: codeFlags & SecCodeSignatureFlags.runtime.rawValue != 0,
             entitlements: entitlements, isValid: status == errSecSuccess, validationError: validationError)

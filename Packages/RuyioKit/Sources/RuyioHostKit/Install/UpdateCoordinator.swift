@@ -53,10 +53,17 @@ public actor UpdateCoordinator {
         public var isDowngrade: Bool
     }
 
+    /// Another publisher, another signing identifier, or a move between development and ordinary plugins:
+    /// the latter keep data and settings apart, so crossing over is a reinstall, never an update (A39).
+    static func changesIdentity(_ record: InstalledPluginRecord, _ preview: InstallPreview) -> Bool {
+        record.publisherID != preview.recordPublisherID(installed: record) || record.signingIdentifier != preview.signing.identifier
+            || record.isDevelopment != preview.trust.isDevelopment
+    }
+
     public func diff(for preview: InstallPreview) async -> Diff? {
         guard let record = await engine.registry.record(preview.manifest.id), let current = try? record.decodedManifest() else { return nil }
         let added = Set(preview.manifest.permissions).subtracting(current.permissions).sorted()
-        let signerChanged = record.publisherID != preview.signing.publisherID || record.signingIdentifier != preview.signing.identifier
+        let signerChanged = Self.changesIdentity(record, preview)
         return Diff(fromVersion: current.version, toVersion: preview.manifest.version, addedPermissions: added,
                     signerChanged: signerChanged, isDowngrade: preview.manifest.version < current.version)
     }
@@ -124,7 +131,7 @@ public actor UpdateCoordinator {
             return .rolledBack(stillUsing: preview.manifest.version, error: RuyioError(.pluginNotFound, objectID: id.rawValue))
         }
         // Publisher changes are never a normal update (PRD §19.11, R08).
-        if record.publisherID != preview.signing.publisherID || record.signingIdentifier != preview.signing.identifier {
+        if Self.changesIdentity(record, preview) {
             engine.installer.discard(preview)
             return .rolledBack(stillUsing: oldVersion, error: RuyioError(.sourceInvalid, objectID: id.rawValue, diagnostic: "signer changed; reinstall required"))
         }
@@ -182,7 +189,8 @@ public actor UpdateCoordinator {
             try write(journal)
 
             // Code goes into its own version directory; the old one is untouched until cleanup.
-            var newRecord = try engine.installer.commit(preview, isDefault: record.isDefault, updateChannel: record.updateChannel, source: record.source)
+            var newRecord = try engine.installer.commit(preview, publisherID: preview.recordPublisherID(installed: record), isDefault: record.isDefault,
+                                                        updateChannel: record.updateChannel, source: record.source)
             journal.newInstallPath = newRecord.installPath
             try write(journal)
 

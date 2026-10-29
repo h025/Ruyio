@@ -60,11 +60,72 @@ struct UpdateTests {
 
     @Test func signerChangeIsNeverANormalUpdate() async throws {
         let engine = try engine()
-        try await engine.start(bundledPackages: [try PackageFixture.build(version: "1.0.0")])
-        var preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0"), trust: .bundledDefault)
+        let publisher = try SigningFixture.first.get()
+        let installed = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", signer: publisher), trust: .remote)
+        _ = try await engine.commitInstall(installed, updateChannel: .none, source: nil)
+        var preview = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", signer: publisher), trust: .remote)
+        preview.signing.isAppleAnchored = true
         preview.signing.teamID = "OTHERTEAM1"
         guard case .rolledBack = await engine.updater.update(with: preview) else { Issue.record("signer change accepted"); return }
         #expect(await engine.registry.record(id)?.version == "1.0.0")
+        await engine.shutdown()
+    }
+
+    @Test func aTeamIDCountsOnlyUnderApplesAnchor() {
+        var signing = SigningInfo(identifier: "x", teamID: "ABCDE12345", leafCertificateSHA256: "ab", isAdHoc: false,
+                                  hasHardenedRuntime: true, entitlements: [:], isValid: true, validationError: nil)
+        // A self-signed certificate can carry any Team ID; only its own fingerprint identifies it.
+        #expect(signing.publisherID == "cert:ab")
+        signing.isAppleAnchored = true
+        #expect(signing.publisherID == "ABCDE12345")
+        signing.teamID = "cert:ab"
+        #expect(signing.publisherID == "cert:ab", "a Team ID must look like one")
+        signing.teamID = "ABCDE12345"
+        signing.isAdHoc = true
+        #expect(signing.publisherID == nil)
+    }
+
+    @Test func defaultPluginsKeepTheirIdentityAcrossLocalAndReleaseBuilds() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("upd-\(UUID().uuidString)")
+        let paths = AppPaths(applicationSupport: base.appendingPathComponent("S"), caches: base.appendingPathComponent("C"))
+        try paths.ensureDirectories()
+        func run(_ package: URL, _ body: (HostEngine) async throws -> Void) async throws {
+            let engine = try HostEngine(paths: paths, locale: "en")
+            engine.setBridge(TestBridge())
+            try await engine.start(bundledPackages: [package])
+            try await body(engine)
+            await engine.shutdown()
+        }
+        // A local build: ad-hoc defaults. The user's data lands in the default's partition.
+        try await run(try PackageFixture.build(version: "1.0.0")) { engine in
+            _ = await engine.invoke(InvocationRequest(ref: ref("storage"), entry: .commandPalette))
+            #expect(await engine.registry.record(id)?.publisherID == nil)
+        }
+        // A release build signs its defaults with its certificate: the newer default replaces the old one.
+        try await run(try PackageFixture.build(version: "1.1.0", signer: try SigningFixture.first.get())) { engine in
+            let record = try #require(await engine.registry.record(id))
+            #expect(record.version == "1.1.0")
+            #expect(record.publisherID == nil)
+            #expect(await engine.invoke(InvocationRequest(ref: ref("storage-read"), entry: .commandPalette)).output == .notice("中文内容"))
+        }
+        // And back to a local build.
+        try await run(try PackageFixture.build(version: "1.2.0")) { engine in
+            #expect(await engine.registry.record(id)?.version == "1.2.0")
+            #expect(await engine.invoke(InvocationRequest(ref: ref("storage-read"), entry: .commandPalette)).output == .notice("中文内容"))
+        }
+    }
+
+    @Test func movingBetweenDevelopmentAndOrdinaryPluginsIsAReinstall() async throws {
+        let engine = try engine()
+        let publisher = try SigningFixture.first.get()
+        let development = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.0.0", signer: publisher), trust: .development)
+        _ = try await engine.commitInstall(development, updateChannel: .development, source: nil)
+        #expect(await engine.registry.record(id)?.isDevelopment == true)
+        // Same certificate, but a market build: data and settings live apart, so no silent switch.
+        let remote = try await engine.installer.inspect(package: try PackageFixture.build(version: "1.1.0", signer: publisher), trust: .remote)
+        #expect(await engine.updater.diff(for: remote)?.signerChanged == true)
+        guard case .rolledBack = await engine.updater.update(with: remote) else { Issue.record("development plugin silently became ordinary"); return }
+        #expect(await engine.registry.record(id)?.isDevelopment == true)
         await engine.shutdown()
     }
 

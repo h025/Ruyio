@@ -5,7 +5,8 @@ extension L10n {
     /// Who signed a plugin (A39): an Apple team, a self-signed certificate, or nobody (ad-hoc).
     func publisher(_ publisherID: String?) -> String {
         if let fingerprint = PublisherID.certificateSHA256(publisherID) {
-            return t("自签名证书 ", "Self-signed certificate ") + Self.fingerprintPrefix(fingerprint)
+            // Usually self-signed, but a private CA's certificate is identified the same way.
+            return t("证书 ", "Certificate ") + Self.fingerprintPrefix(fingerprint)
         }
         if let publisherID, !publisherID.isEmpty { return "Apple Team " + publisherID }
         return t("无（ad-hoc 签名）", "None (ad-hoc signature)")

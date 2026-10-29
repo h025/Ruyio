@@ -36,6 +36,15 @@ public struct InstallPreview: Sendable {
     public var stagingRoot: URL
 
     public var isInstallable: Bool { !checks.contains { $0.outcome == .failed } }
+
+    /// The publisher identity an installed record keeps: code and data directories, settings and update
+    /// checks follow it. Defaults bundled with the host are vouched for by the host's own signature, so
+    /// they keep the identity they were first installed with, whichever certificate this build used
+    /// (switching between a local and a release build must not strand them, A44).
+    public func recordPublisherID(installed: InstalledPluginRecord?) -> String? {
+        guard trust == .bundledDefault else { return signing.publisherID }
+        return installed?.isDefault == true ? installed?.publisherID : nil
+    }
     public var failureSummary: String { checks.filter { $0.outcome == .failed }.map { "\($0.name): \($0.detail ?? "")" }.joined(separator: "; ") }
 }
 
@@ -80,9 +89,10 @@ public final class PluginInstaller: Sendable {
     }
 
     /// Moves the verified bundle into Plugins/<identity>/<version>/ atomically and returns the record.
-    public func commit(_ preview: InstallPreview, isDefault: Bool, updateChannel: UpdateChannel, source: String? = nil) throws -> InstalledPluginRecord {
+    /// `publisherID` is `preview.recordPublisherID(installed:)` for the record being replaced, if any.
+    public func commit(_ preview: InstallPreview, publisherID: String?, isDefault: Bool, updateChannel: UpdateChannel, source: String? = nil) throws -> InstalledPluginRecord {
         guard preview.isInstallable else { throw RuyioError(.sourceInvalid, diagnostic: preview.failureSummary) }
-        let identity = AppPaths.identityDirectoryName(pluginID: preview.manifest.id, publisherID: preview.signing.publisherID)
+        let identity = AppPaths.identityDirectoryName(pluginID: preview.manifest.id, publisherID: publisherID)
         let versionDir = paths.pluginsRoot.appendingPathComponent(identity, isDirectory: true)
             .appendingPathComponent(preview.manifest.version.description, isDirectory: true)
         let fm = FileManager.default
@@ -101,7 +111,7 @@ public final class PluginInstaller: Sendable {
         let bundle = versionDir.appendingPathComponent(preview.manifest.bundlePath)
         let executable = versionDir.appendingPathComponent(preview.manifest.executable)
         return try InstalledPluginRecord(manifest: preview.manifest, installPath: bundle, executablePath: executable,
-                                         publisherID: preview.signing.publisherID, signingIdentifier: preview.signing.identifier,
+                                         publisherID: publisherID, signingIdentifier: preview.signing.identifier,
                                          isDevelopment: preview.trust.isDevelopment, isDefault: isDefault,
                                          updateChannel: updateChannel, source: source, artifactSHA256: preview.sha256.isEmpty ? nil : preview.sha256)
     }
