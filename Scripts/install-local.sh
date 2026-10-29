@@ -18,38 +18,9 @@ KEYCHAIN="$HOME/Library/Keychains/ruyio-local-signing.keychain-db"
 IDENTITY="Ruyio Local Signing"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
-# A dedicated keychain with an empty password, kept out of the search list: signing never prompts,
-# and the key only signs this developer's local builds.
-if [ ! -f "$KEYCHAIN" ]; then
-  WORK=$(mktemp -d)
-  cat > "$WORK/cert.cnf" <<EOF
-[req]
-distinguished_name = dn
-x509_extensions = ext
-prompt = no
-[dn]
-CN = $IDENTITY
-[ext]
-basicConstraints = critical, CA:false
-keyUsage = critical, digitalSignature
-extendedKeyUsage = critical, codeSigning
-subjectKeyIdentifier = hash
-EOF
-  # LibreSSL, not a Homebrew OpenSSL 3: `security import` cannot read OpenSSL 3's default PKCS#12.
-  /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$WORK/cert.cnf" \
-    -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2>/dev/null
-  /usr/bin/openssl pkcs12 -export -inkey "$WORK/key.pem" -in "$WORK/cert.pem" -name "$IDENTITY" \
-    -out "$WORK/identity.p12" -passout pass:ruyio
-  /usr/bin/security create-keychain -p "" "$KEYCHAIN"
-  /usr/bin/security set-keychain-settings "$KEYCHAIN"
-  /usr/bin/security unlock-keychain -p "" "$KEYCHAIN"
-  /usr/bin/security import "$WORK/identity.p12" -k "$KEYCHAIN" -P ruyio -T /usr/bin/codesign >/dev/null
-  /usr/bin/security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN" >/dev/null
-  rm -rf "$WORK"
-fi
-/usr/bin/security unlock-keychain -p "" "$KEYCHAIN"
-HASH=$(/usr/bin/security find-identity -p codesigning "$KEYCHAIN" | awk -v name="\"$IDENTITY\"" 'index($0, name) {print $2; exit}')
-[ -n "$HASH" ] || { echo "error: no \"$IDENTITY\" identity in $KEYCHAIN" >&2; exit 1; }
+# The identity only signs this developer's local builds (Scripts/lib/signing-identity.sh).
+. "$ROOT/Scripts/lib/signing-identity.sh"
+HASH=$(ensure_signing_identity "$KEYCHAIN" "$IDENTITY" 3650)
 
 if [ $# -gt 0 ]; then
   SRC=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")

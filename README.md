@@ -5,6 +5,21 @@ palette, global shortcuts, Finder context menus, a menu bar item, permissions an
 tools come from plugins. V1 ships two removable default plugins: **Clipboard History** and **Finder Essentials**.
 
 Platform: Apple Silicon (arm64), macOS 15 / 26 / 27. Languages: Simplified Chinese and English.
+Status: early 0.0.x releases; not feature-complete yet.
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/h025/Ruyio/main/Scripts/install.sh | sh
+```
+
+The script downloads the latest [release](https://github.com/h025/Ruyio/releases), checks that it is signed
+with Ruyio's release certificate (SHA-256 `7599d581e90fc58d44f395d3d5f6fc7df11709d33127fd8274dd0b76ee073a35`)
+and installs it in `/Applications`. After that, Ruyio updates itself from General settings.
+
+Ruyio is not notarized by Apple: the project does without the paid Developer Program. If you download the
+zip from the release page instead, unzip it, move Ruyio to Applications, open it once, then click **Open
+Anyway** in System Settings › Privacy & Security. Documentation is in the [wiki](https://github.com/h025/Ruyio/wiki).
 
 ## Layout
 
@@ -42,6 +57,11 @@ build of one exact commit) gates every change, `Scripts/land.sh` fast-forwards `
 that passed it, and `main` is published here with `Scripts/publish-code.sh`, which triggers CI. Pull
 requests are welcome: CI runs on them, and maintainers land them through the same gate. Details are in
 [`AGENTS.md`](AGENTS.md).
+
+Releases come from `Scripts/release.sh`. Without an Apple Developer ID, the app is signed with a self-signed
+release certificate whose designated requirement stays the same across versions, so privacy grants survive
+updates; the update archive is signed with an EdDSA key in Sparkle's appcast format, and Ruyio installs an
+update only if both signatures match the running copy.
 
 ## Test
 
