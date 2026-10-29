@@ -85,6 +85,12 @@ final class MenuBarController: NSObject {
             entry.representedObject = page.rawValue
             menu.addItem(entry)
         }
+        if model.appUpdates != nil {
+            let title = model.appUpdatePhase.available.map { l.installUpdateMenu($0.version.description) } ?? l.checkForUpdates
+            let update = NSMenuItem(title: title, action: #selector(appUpdateAction), keyEquivalent: "")
+            update.target = self
+            menu.addItem(update)
+        }
         let quit = NSMenuItem(title: l.quit("Ruyio"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
         item.menu = menu
@@ -115,6 +121,15 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func openPaletteAction() { openPalette?() }
+
+    @objc private func appUpdateAction() {
+        if let item = model.appUpdatePhase.available {
+            model.installAppUpdate(item)
+        } else {
+            openPage?(.general)
+            model.checkForAppUpdate()
+        }
+    }
 
     @objc private func openPageAction(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let page = Page(rawValue: raw) { openPage?(page) }

@@ -36,5 +36,9 @@
 	<string>$(RUYIO_FINDER_CHANNEL)</string>
 	<key>RuyioOfficialPublisher</key>
 	<string>$(RUYIO_OFFICIAL_PUBLISHER)</string>
+	<key>SUFeedURL</key>
+	<string>$(RUYIO_UPDATE_FEED)</string>
+	<key>SUPublicEDKey</key>
+	<string>$(RUYIO_UPDATE_PUBLIC_KEY)</string>
 </dict>
 </plist>

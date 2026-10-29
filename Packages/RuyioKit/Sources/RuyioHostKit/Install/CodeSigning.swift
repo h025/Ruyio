@@ -118,6 +118,21 @@ public enum CodeSigning {
     public static func assessExecution(bundle: URL) async -> (passed: Bool, detail: String?) {
         await satisfies(bundle: bundle, requirement: developerIDNotarizedRequirement)
     }
+
+    /// The running process's designated requirement, nil when unsigned or ad-hoc (`cdhash`, which no
+    /// other build can satisfy).
+    public static func designatedRequirementOfSelf() -> String? {
+        var code: SecCode?
+        var staticCode: SecStaticCode?
+        var requirement: SecRequirement?
+        var text: CFString?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopyDesignatedRequirement(staticCode, [], &requirement) == errSecSuccess, let requirement,
+              SecRequirementCopyString(requirement, [], &text) == errSecSuccess, let text else { return nil }
+        let string = text as String
+        return string.contains("cdhash") ? nil : string
+    }
 }
 
 /// Entitlement allowlist for plugin bundles (plan §7.2): everything not listed is refused.

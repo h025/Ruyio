@@ -60,6 +60,9 @@ final class AppModel: ObservableObject {
     @Published var finderExtensionEnabled = false
     @Published var settingsError: String?
     @Published var startupError: String?
+    /// Nil when this build cannot update itself (A41): local and development builds.
+    @Published var appUpdates: AppUpdateService?
+    @Published var appUpdatePhase: AppUpdatePhase = .idle
     #if DEBUG
     /// Visual fixtures use synthetic permission states and never inspect the system pasteboard.
     var isGallery = false

@@ -23,6 +23,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     RUYIO_APP_GROUP: group.app.ruyio.shared
     RUYIO_OFFICIAL_PUBLISHER: ""
+    RUYIO_UPDATE_FEED: ""
+    RUYIO_UPDATE_PUBLIC_KEY: ""
     RUYIO_FINDER_CHANNEL: home
     DEAD_CODE_STRIPPING: YES
 targets:
@@ -79,6 +81,9 @@ targets:
         RuyioFinderChannel: $(RUYIO_FINDER_CHANNEL)
         # Publisher ID of official builds (`cert:<SHA-256>` of the release certificate), set by Scripts/release.sh.
         RuyioOfficialPublisher: $(RUYIO_OFFICIAL_PUBLISHER)
+        # Ruyio's own updates (A41): Sparkle-format appcast and EdDSA key, set by Scripts/release.sh only.
+        SUFeedURL: $(RUYIO_UPDATE_FEED)
+        SUPublicEDKey: $(RUYIO_UPDATE_PUBLIC_KEY)
         NSAppleEventsUsageDescription: Ruyio asks Finder to place files you create from a right-click on the Desktop where you clicked.
     entitlements:
       path: Apps/Ruyio/Ruyio.entitlements

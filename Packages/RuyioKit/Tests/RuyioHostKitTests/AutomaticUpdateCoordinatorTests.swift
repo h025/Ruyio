@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import RuyioHostKit
@@ -52,6 +53,27 @@ struct AutomaticUpdateCoordinatorTests {
         await restarted.checkIfDue(now: now.addingTimeInterval(6 * 60 * 60 + 1))
         #expect(fetcher.requests.count == requests + 2)
         #expect(await restarted.status().lastPluginAttempt == now.addingTimeInterval(6 * 60 * 60 + 1))
+    }
+
+    @Test func appUpdateChecksRunOnlyWhenEnabledAndNeverDownload() async throws {
+        let fetcher = FakeFetcher()
+        let engine = try await prepare(fetcher)
+        let tests = AppUpdateTests()
+        fetcher.files[tests.feed.absoluteString] = tests.appcast()
+        let app = tests.service(fetcher, key: .init(), requirement: "identifier \"x\"")
+        let scheduler = AutomaticUpdateCoordinator(engine: engine, appUpdates: app, schedulesAutomatically: false)
+        let now = Date()
+        await scheduler.configure(refreshMarkets: false, checkPluginUpdates: false, checkAppUpdates: false)
+        await scheduler.checkIfDue(now: now)
+        #expect(!fetcher.requests.contains(tests.feed.absoluteString))
+
+        let found = Locked<[SemanticVersion?]>([])
+        await app.observe { item in found.withLock { $0.append(item?.version) } }
+        await scheduler.configure(refreshMarkets: false, checkPluginUpdates: false, checkAppUpdates: true)
+        await scheduler.checkIfDue(now: now)
+        #expect(found.withLock { $0 } == [SemanticVersion("1.2.0")])
+        #expect(!fetcher.requests.contains(tests.archiveURL))
+        await scheduler.stop()
     }
 
     @Test func failedChecksAreRateLimitedAndReportedAsFailure() async throws {

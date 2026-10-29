@@ -89,6 +89,7 @@ public enum NetworkPolicy {
     /// authenticates it. Only these names get that allowance; every other host stays public-only (A37).
     public static let fakeIPTolerantHosts: Set<String> = [
         "github.com", "api.github.com", "raw.githubusercontent.com", "codeload.github.com", "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
     ]
 
     /// Whether a resolved address is acceptable for this host name.

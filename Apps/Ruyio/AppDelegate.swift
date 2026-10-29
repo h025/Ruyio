@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import RuyioCore
 import RuyioHostKit
 import RuyioPersistence
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inputSheet: InputSheetController?
     private var hotkeySignature = ""
     private var automaticUpdates: AutomaticUpdateCoordinator?
+    private var appUpdateObservation: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
@@ -92,9 +94,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 await model.engine.setLocale(model.language)
                 try await model.engine.start(bundledPackages: Self.bundledPackages())
-                let updates = AutomaticUpdateCoordinator(engine: model.engine)
+                let appUpdates = AppUpdateService.Configuration.mainBundle().map {
+                    AppUpdateService(configuration: $0, staging: model.engine.paths.downloads)
+                }
+                if let appUpdates {
+                    AppUpdateService.removeLeftovers(beside: appUpdates.configuration.installedApp)
+                    await appUpdates.observe { [weak self] item in Task { @MainActor in self?.model.appUpdateFound(item) } }
+                    model.appUpdates = appUpdates
+                    appUpdateObservation = model.$appUpdatePhase.removeDuplicates().sink { [weak self] _ in
+                        DispatchQueue.main.async { self?.menuBar.rebuild() }
+                    }
+                }
+                let updates = AutomaticUpdateCoordinator(engine: model.engine, appUpdates: appUpdates)
                 automaticUpdates = updates
-                await updates.configure(refreshMarkets: model.settings.autoRefreshMarkets, checkPluginUpdates: model.settings.autoCheckPluginUpdates)
+                await updates.configure(refreshMarkets: model.settings.autoRefreshMarkets, checkPluginUpdates: model.settings.autoCheckPluginUpdates,
+                                        checkAppUpdates: model.settings.autoCheckAppUpdates)
             } catch {
                 model.startupError = error.localizedDescription
                 model.show(error.localizedDescription)
@@ -190,7 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func settingsChanged() {
         let refreshMarkets = model.settings.autoRefreshMarkets
         let checkPlugins = model.settings.autoCheckPluginUpdates
-        Task { await automaticUpdates?.configure(refreshMarkets: refreshMarkets, checkPluginUpdates: checkPlugins) }
+        let checkApp = model.settings.autoCheckAppUpdates
+        Task { await automaticUpdates?.configure(refreshMarkets: refreshMarkets, checkPluginUpdates: checkPlugins, checkAppUpdates: checkApp) }
         menuBar.setVisible(model.settings.showInMenuBar)
         menuBar.rebuild()
         hotkeySignature = ""

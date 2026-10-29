@@ -206,6 +206,35 @@ struct PrivacyPage: View {
 
 // MARK: - General settings (PRD §19.14)
 
+/// Ruyio's own update: check, then download, verify and install on request (A41).
+struct AppUpdateStatus: View {
+    @ObservedObject var model: AppModel
+    var l: L10n { model.l }
+
+    var body: some View {
+        HStack {
+            switch model.appUpdatePhase {
+            case .idle:
+                Button(l.checkNow) { model.checkForAppUpdate() }
+            case .checking:
+                ProgressView().controlSize(.small)
+            case .upToDate:
+                Text(l.upToDate).foregroundStyle(.secondary)
+                Button(l.checkNow) { model.checkForAppUpdate() }
+            case .available(let item):
+                Text(l.updateAvailable(item.version.description))
+                if let notes = item.releaseNotesURL { Link(l.releaseNotes, destination: notes) }
+                Button(l.downloadAndInstall) { model.installAppUpdate(item) }
+            case .downloading(let fraction):
+                ProgressView(value: fraction).frame(width: 140)
+            case .failed(let message):
+                Text(message).foregroundStyle(.orange).lineLimit(2).multilineTextAlignment(.trailing)
+                Button(l.checkNow) { model.checkForAppUpdate() }
+            }
+        }
+    }
+}
+
 struct GeneralPage: View {
     @ObservedObject var model: AppModel
     var l: L10n { model.l }
@@ -232,9 +261,14 @@ struct GeneralPage: View {
             Section(l.updates) {
                 Toggle(l.autoRefreshMarkets, isOn: Binding(get: { model.settings.autoRefreshMarkets }, set: { v in model.update { $0.autoRefreshMarkets = v } }))
                 Toggle(l.autoCheckPlugins, isOn: Binding(get: { model.settings.autoCheckPluginUpdates }, set: { v in model.update { $0.autoCheckPluginUpdates = v } }))
-                Toggle(l.autoCheckApp, isOn: .constant(false)).disabled(true)
-                Text(l.t("应用自动更新将在正式发布渠道配置完成后启用。", "Automatic app updates will be available when the release channel is configured."))
-                    .font(.caption).foregroundStyle(.secondary)
+                Toggle(l.autoCheckApp, isOn: Binding(get: { model.appUpdates != nil && model.settings.autoCheckAppUpdates },
+                                                     set: { v in model.update { $0.autoCheckAppUpdates = v } }))
+                    .disabled(model.appUpdates == nil)
+                if model.appUpdates == nil {
+                    Text(l.localBuildNoUpdates).font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent(l.appVersionRow) { AppUpdateStatus(model: model) }
+                }
             }
             Section(l.dataSection) {
                 Toggle(l.includeInBackup, isOn: Binding(get: { model.settings.includeInBackup }, set: { v in model.update { $0.includeInBackup = v } }))

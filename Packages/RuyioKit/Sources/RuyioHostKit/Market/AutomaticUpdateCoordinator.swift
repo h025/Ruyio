@@ -2,7 +2,7 @@ import Foundation
 import RuyioCore
 import RuyioPersistence
 
-/// Background metadata checks only. This coordinator never downloads or installs plugin code.
+/// Background metadata checks only. This coordinator never downloads or installs plugin or app code.
 public actor AutomaticUpdateCoordinator {
     public struct Status: Sendable {
         public var lastMarketAttempt: Date?
@@ -12,11 +12,12 @@ public actor AutomaticUpdateCoordinator {
     }
 
     private enum Job: String, CaseIterable, Sendable {
-        case markets, plugins
+        case markets, plugins, app
         var settingKey: String { "updates.automatic.\(rawValue).lastAttempt" }
     }
 
     private let engine: HostEngine
+    private let appUpdates: AppUpdateService?
     private let interval: TimeInterval
     /// After a network failure (often just woken from sleep, offline) the job runs again this soon.
     static let retryAfterFailure: TimeInterval = 30 * 60
@@ -28,8 +29,9 @@ public actor AutomaticUpdateCoordinator {
     private var running: [Job: Task<Void, Never>] = [:]
 
     /// `schedulesAutomatically: false` lets tests drive the same due checks with a controlled clock.
-    public init(engine: HostEngine, interval: TimeInterval = 6 * 60 * 60, schedulesAutomatically: Bool = true) {
+    public init(engine: HostEngine, appUpdates: AppUpdateService? = nil, interval: TimeInterval = 6 * 60 * 60, schedulesAutomatically: Bool = true) {
         self.engine = engine
+        self.appUpdates = appUpdates
         self.interval = max(1, interval)
         self.schedulesAutomatically = schedulesAutomatically
         for job in Job.allCases {
@@ -37,9 +39,10 @@ public actor AutomaticUpdateCoordinator {
         }
     }
 
-    public func configure(refreshMarkets: Bool, checkPluginUpdates: Bool) {
+    public func configure(refreshMarkets: Bool, checkPluginUpdates: Bool, checkAppUpdates: Bool = false) {
         configure(.markets, enabled: refreshMarkets)
         configure(.plugins, enabled: checkPluginUpdates)
+        configure(.app, enabled: checkAppUpdates && appUpdates != nil)
     }
 
     private func configure(_ job: Job, enabled shouldEnable: Bool) {
@@ -68,8 +71,10 @@ public actor AutomaticUpdateCoordinator {
     public func checkIfDue(now: Date = Date()) async {
         let market = beginIfDue(.markets, now: now)
         let plugins = beginIfDue(.plugins, now: now)
+        let app = beginIfDue(.app, now: now)
         await market?.value
         await plugins?.value
+        await app?.value
     }
 
     private func startTimer(_ job: Job) {
@@ -144,6 +149,11 @@ public actor AutomaticUpdateCoordinator {
                 guard canContinue(job, generation: generation) else { return true }
                 if case .unavailable(let error) = await engine.checkForUpdateResult(id), error.code == .networkFailure { succeeded = false }
             }
+        case .app:
+            // Only finds out; downloading and installing always wait for the user (A41).
+            do { _ = try await appUpdates?.check() }
+            catch let error as RuyioError where error.code == .networkFailure { succeeded = false }
+            catch {}
         }
         return succeeded
     }
