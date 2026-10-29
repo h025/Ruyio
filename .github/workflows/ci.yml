@@ -76,9 +76,12 @@ jobs:
         env:
           RUYIO_TEST_RUNTIME: ${{ github.workspace }}/build/macos14/runtime
           RUYIO_TEST_LIMIT: 900
+      # The app checks run even after failing tests, so one run shows everything that breaks on macOS 14.
       - name: Launch app
+        if: ${{ !cancelled() }}
         run: Scripts/ci-app-check.sh launch build/macos14/Ruyio.app
       - name: UI gallery
+        if: ${{ !cancelled() }}
         run: Scripts/ci-app-check.sh gallery build/macos14/Ruyio-Debug.app build/gallery
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

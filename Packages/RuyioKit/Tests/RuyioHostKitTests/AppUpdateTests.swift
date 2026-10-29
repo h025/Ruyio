@@ -10,7 +10,7 @@ struct AppUpdateTests {
     let feed = URL(string: "https://example.com/appcast.xml")!
     let archiveURL = "https://example.com/Ruyio-1.2.0.zip"
 
-    func appcast(version: String = "1.2.0", url: String? = nil, signature: String = "c2ln", length: Int = 0, minimumOS: String = "15.0") -> Data {
+    func appcast(version: String = "1.2.0", url: String? = nil, signature: String = "c2ln", length: Int = 0, minimumOS: String = "14.0") -> Data {
         Data("""
         <?xml version="1.0" encoding="utf-8"?>
         <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
@@ -68,7 +68,7 @@ struct AppUpdateTests {
         #expect(items.count == 1)
         #expect(items[0].version == SemanticVersion("1.2.0"))
         #expect(items[0].length == 42)
-        #expect(items[0].minimumSystemVersion == OSVersion("15.0"))
+        #expect(items[0].minimumSystemVersion == OSVersion("14.0"))
         #expect(items[0].releaseNotesURL?.absoluteString == "https://github.com/h025/Ruyio/releases/tag/v1.2.0")
         #expect(try Appcast.parse(appcast(url: "http://example.com/Ruyio.zip")).isEmpty)
         #expect(try Appcast.parse(appcast(signature: "")).isEmpty)

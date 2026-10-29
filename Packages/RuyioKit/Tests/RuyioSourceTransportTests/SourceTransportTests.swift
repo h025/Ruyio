@@ -77,7 +77,7 @@ struct DescriptorTests {
     static let sha = String(repeating: "a", count: 64)
     static let shaB = String(repeating: "b", count: 64)
 
-    func release(_ version: String, host: String = "1.0.0", os: String = "15.0", arch: [String] = ["arm64"], sha: String = DescriptorTests.sha) -> String {
+    func release(_ version: String, host: String = "1.0.0", os: String = "14.0", arch: [String] = ["arm64"], sha: String = DescriptorTests.sha) -> String {
         "{\"version\":\"\(version)\",\"minimumHostVersion\":\"\(host)\",\"minimumMacOSVersion\":\"\(os)\",\"architectures\":\(arch.description),\"artifact\":\"releases/\(version)/P.ruyioplugin.zip\",\"sha256\":\"\(sha)\"}"
     }
 

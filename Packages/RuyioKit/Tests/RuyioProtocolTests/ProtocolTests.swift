@@ -74,7 +74,7 @@ struct ManifestTests {
       "name": "Clipboard History",
       "version": "1.0.0",
       "minimumHostVersion": "1.0.0",
-      "minimumMacOSVersion": "15.0",
+      "minimumMacOSVersion": "14.0",
       "architectures": ["arm64"],
       "runtime": "native-isolated",
       "bundlePath": "Plugin.app",

@@ -71,6 +71,43 @@ enum Fixture {
     }
 
     static func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
+
+    /// Why a plugin process is still there, for a failure message: its state, every process holding the other
+    /// end of one of its pipes (lsof lists a pipe end by its own address, with "->" and the other end's), and
+    /// its threads. Runs the tools off the cooperative pool.
+    static func diagnose(_ pid: pid_t) async -> String {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                func run(_ tool: String, _ arguments: [String]) -> String {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: tool)
+                    process.arguments = arguments
+                    let pipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = pipe
+                    guard (try? process.run()) != nil else { return "\(tool) did not start\n" }
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    return String(decoding: data, as: UTF8.self)
+                }
+                var report = run("/bin/ps", ["-o", "pid,ppid,stat,etime,command", "-p", "\(pid)"])
+                let files = run("/usr/sbin/lsof", ["-nP", "-a", "-p", "\(pid)", "-d", "0-63"])
+                report += files
+                let others = files.split(separator: "\n").compactMap { line in
+                    line.split(separator: " ").last.flatMap { $0.hasPrefix("->") ? String($0.dropFirst(2)) : nil }
+                }
+                if !others.isEmpty {
+                    let all = run("/usr/sbin/lsof", ["-nP"]).split(separator: "\n")
+                    for other in others {
+                        report += "other end \(other) held by:\n" + all.filter { $0.contains(" \(other) ") }.joined(separator: "\n") + "\n"
+                    }
+                }
+                let sample = run("/usr/bin/sample", ["\(pid)", "1"])
+                report += sample.components(separatedBy: "Call graph:").dropFirst().first.map { String($0.prefix(6000)) } ?? sample
+                continuation.resume(returning: report)
+            }
+        }
+    }
 }
 
 @Suite(.serialized)
@@ -126,7 +163,10 @@ struct PluginProcessTests {
         #expect(Fixture.isAlive(pid))
         // Simulate host death: close only the pipes, do not signal the process.
         await session.closeChannelForTesting()
-        #expect(await Fixture.waitUntil { !Fixture.isAlive(pid) })
+        if await !Fixture.waitUntil({ !Fixture.isAlive(pid) }) {
+            Issue.record("plugin still running after the host closed its channel\n\(await Fixture.diagnose(pid))")
+            kill(pid, SIGKILL)
+        }
     }
 
     @Test func storageRoundTripThroughHost() async throws {
