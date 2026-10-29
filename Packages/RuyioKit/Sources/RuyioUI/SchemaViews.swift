@@ -30,8 +30,7 @@ public struct SchemaNodeView: View {
         case .code(let text):
             Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         case .json(let text):
-            Text(JSONFormatting.highlighted(JSONFormatting.indented(text)))
-                .font(.system(.callout, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            JSONTreeView(text: text, strings: context.strings.json).frame(maxWidth: .infinity, alignment: .leading)
         case .image(let spec):
             BlobImageView(blobID: spec.blobID, context: context, label: spec.accessibilityLabel, maxHeight: 360)
         case .keyValue(let rows):
@@ -357,6 +356,17 @@ struct ItemRow: View {
                     Text(action.title)
                 }
             }
+        }
+    }
+}
+
+public extension UINode {
+    /// Whether a JSON node is inside, so ⌘F has a JSON search to go to.
+    var containsJSON: Bool {
+        switch self {
+        case .json: return true
+        case .stack(let spec): return spec.children.contains { $0.containsJSON }
+        default: return false
         }
     }
 }

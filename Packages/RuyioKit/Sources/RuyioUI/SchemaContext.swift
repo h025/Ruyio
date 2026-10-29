@@ -136,8 +136,9 @@ public struct SchemaStrings: Sendable {
     public var choose: String
     public var preview: String
     public var moreActions: String
+    public var json: JSONViewerStrings
     public init(submit: String, cancel: String, undo: String, loading: String, choose: String,
-                preview: String = "Preview", moreActions: String = "More Actions") {
+                preview: String = "Preview", moreActions: String = "More Actions", json: JSONViewerStrings = JSONViewerStrings()) {
         self.submit = submit
         self.cancel = cancel
         self.undo = undo
@@ -145,6 +146,7 @@ public struct SchemaStrings: Sendable {
         self.choose = choose
         self.preview = preview
         self.moreActions = moreActions
+        self.json = json
     }
 }
 

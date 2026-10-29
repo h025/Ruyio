@@ -203,7 +203,7 @@ final class UIGallery {
         model.galleryMarketTab = 0
     }
 
-    private func overlayPanels(_ name: String, variants: [String] = ["text", "image", "file-unavailable", "paused", "empty", "no-results", "narrow", "compact-preview"]) async {
+    private func overlayPanels(_ name: String, variants: [String] = ["text", "image", "file-unavailable", "json", "json-search", "json-large", "paused", "empty", "no-results", "narrow", "compact-preview"]) async {
         for variant in variants {
             let document = history(variant: variant)
             overlay.presentForGallery(document: document, pluginID: PluginID("app.ruyio.clipboard-history"))
@@ -213,6 +213,12 @@ final class UIGallery {
             await settle(0.2)
             if variant == "compact-preview" { overlay.setCompactPreviewForGallery(true) }
             await settle(0.7)
+            if variant == "json-search", let field = Self.view(in: overlay.galleryWindow?.contentView, identifier: NativeSearchField.previewIdentifier) as? NSSearchField {
+                // As if typed: the field's delegate hears the change and the tree searches.
+                field.stringValue = "size"
+                NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+                await settle(0.7)
+            }
             if let window = overlay.galleryWindow { await shoot(window, "clipboard-\(variant)-\(name)", title: "Clipboard · \(variant)") }
             overlay.close()
             await settle(0.1)
@@ -400,6 +406,10 @@ final class UIGallery {
         case "image":
             spec.list.selection = "s3"
             if let blob = imageBlobID { spec.preview = .stack(StackSpec(children: [.image(ImageSpec(blobID: blob, pixelWidth: 800, pixelHeight: 500, accessibilityLabel: "Ruyio sample image")), .keyValue([KeyValueRow(key: "尺寸", value: "800 × 500"), KeyValueRow(key: "来源", value: "截屏")])])) }
+        case "json", "json-search", "json-large":
+            spec.list.selection = "s1"
+            let sample = variant == "json-large" ? Self.largeJSONSample : Self.jsonSample
+            spec.preview = .stack(StackSpec(children: [.json(sample), .keyValue([KeyValueRow(key: "来源", value: "终端"), KeyValueRow(key: "大小", value: "\(sample.utf8.count) 字节")])]))
         case "file-unavailable":
             spec.list.selection = "s4"
             spec.preview = .stack(StackSpec(children: [.text(TextSpec("文件已移动、删除或无法访问，请使用“复制路径”。")), .code("/Users/example/Documents/项目预算.xlsx")]))
@@ -418,6 +428,18 @@ final class UIGallery {
         }
         document.root = .collection(spec)
         return document
+    }
+
+    static let jsonSample = #"{"id": 1024, "name": "Ruyio", "enabled": true, "owner": null, "tags": ["clipboard", "finder", "plugins"], "release": {"version": "0.0.3", "date": "2026-10-29", "assets": [{"name": "Ruyio-0.0.3.dmg", "size": 8291357}, {"name": "Ruyio-0.0.3.zip", "size": 6649148}]}}"#
+
+    /// Over 400 nodes: the tree starts with its outline, deeper levels collapsed.
+    static let largeJSONSample = #"{"total": 60, "items": ["# + (0..<60).map { #"{"id": \#($0), "title": "Item \#($0)", "meta": {"tags": ["a", "b"], "score": 0.5}}"# }.joined(separator: ", ") + "]}"
+
+    static func view(in root: NSView?, identifier: String) -> NSView? {
+        guard let root else { return nil }
+        if root.identifier?.rawValue == identifier { return root }
+        for child in root.subviews { if let found = view(in: child, identifier: identifier) { return found } }
+        return nil
     }
 
     /// Mirrors the Clipboard History plugin's view with invented content.

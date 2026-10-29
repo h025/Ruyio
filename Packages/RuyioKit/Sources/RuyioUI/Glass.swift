@@ -113,22 +113,49 @@ public struct SymbolBadge: View {
     }
 }
 
-/// AppKit's own search field (magnifier, clear button, Liquid Glass styling) for SwiftUI. Takes focus
-/// when it joins a window, since floating panels open straight into typing.
+/// AppKit's own search field (magnifier, clear button, Liquid Glass styling) for SwiftUI. The panel's main
+/// field takes focus when it joins a window, since floating panels open straight into typing. A field
+/// inside a preview (`previewIdentifier`) waits to be clicked or asked for (⌘F), handles its own Return,
+/// arrows and Escape, and hands focus back to the main field on Escape when empty.
 public struct NativeSearchField: NSViewRepresentable {
+    public enum Command { case next, previous }
+    public static let previewIdentifier = "app.ruyio.search.preview"
+    public static let primaryIdentifier = "app.ruyio.search.primary"
+    /// Posted with a field identifier as the object: that field takes keyboard focus.
+    public static let focusRequest = Notification.Name("app.ruyio.search.focusRequest")
+
     @Environment(\.isEnabled) private var isEnabled
     @Binding var text: String
     let placeholder: String
     var controlSize: NSControl.ControlSize
+    var identifier: String
+    var focusOnAppear: Bool
+    /// False inside a shape that already draws the field (a glass capsule): no bezel or background of its own.
+    var bordered: Bool
+    var onCommand: ((Command) -> Void)?
 
-    public init(text: Binding<String>, placeholder: String, controlSize: NSControl.ControlSize = .large) {
+    public init(text: Binding<String>, placeholder: String, controlSize: NSControl.ControlSize = .large,
+                identifier: String = NativeSearchField.primaryIdentifier, focusOnAppear: Bool = true, bordered: Bool = true,
+                onCommand: ((Command) -> Void)? = nil) {
         _text = text
         self.placeholder = placeholder
         self.controlSize = controlSize
+        self.identifier = identifier
+        self.focusOnAppear = focusOnAppear
+        self.bordered = bordered
+        self.onCommand = onCommand
     }
 
     public func makeNSView(context: Context) -> NSSearchField {
         let field = FocusingSearchField()
+        field.identifier = NSUserInterfaceItemIdentifier(identifier)
+        field.focusOnAppear = focusOnAppear
+        if !bordered {
+            field.isBezeled = false
+            field.isBordered = false
+            field.drawsBackground = false
+            field.focusRingType = .none
+        }
         field.placeholderString = placeholder
         field.delegate = context.coordinator
         field.sendsSearchStringImmediately = true
@@ -141,6 +168,7 @@ public struct NativeSearchField: NSViewRepresentable {
     }
 
     public func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.onCommand = onCommand
         if field.stringValue != text { field.stringValue = text }
         guard field.isEnabled != isEnabled else { return }
         // AppKit draws its field editor above SwiftUI overlays. Relinquish it while a preview
@@ -165,16 +193,49 @@ public struct NativeSearchField: NSViewRepresentable {
     public final class Coordinator: NSObject, NSSearchFieldDelegate {
         var text: Binding<String>
         var restoreFocus = false
+        var onCommand: ((Command) -> Void)?
         init(text: Binding<String>) { self.text = text }
         public func controlTextDidChange(_ notification: Notification) {
             if let field = notification.object as? NSTextField { text.wrappedValue = field.stringValue }
         }
+
+        public func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard let onCommand else { return false }
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                onCommand(NSApp.currentEvent?.modifierFlags.contains(.shift) == true ? .previous : .next)
+            case #selector(NSResponder.moveDown(_:)): onCommand(.next)
+            case #selector(NSResponder.moveUp(_:)): onCommand(.previous)
+            case #selector(NSResponder.cancelOperation(_:)):
+                if control.stringValue.isEmpty {
+                    NotificationCenter.default.post(name: NativeSearchField.focusRequest, object: NativeSearchField.primaryIdentifier)
+                } else {
+                    control.stringValue = ""
+                    text.wrappedValue = ""
+                }
+            default: return false
+            }
+            return true
+        }
     }
 
     final class FocusingSearchField: NSSearchField {
+        var focusOnAppear = true
+        private var observer: NSObjectProtocol?
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
             guard let window else { return }
+            observer = NotificationCenter.default.addObserver(forName: NativeSearchField.focusRequest, object: nil, queue: .main) { [weak self] note in
+                let target = note.object as? String
+                MainActor.assumeIsolated {
+                    guard let self, target == self.identifier?.rawValue, self.isEnabled, let window = self.window else { return }
+                    window.makeFirstResponder(self)
+                }
+            }
+            guard focusOnAppear else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isEnabled, window.firstResponder !== self.currentEditor() else { return }
                 window.makeFirstResponder(self)

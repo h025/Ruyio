@@ -193,7 +193,7 @@ final class OverlayController {
         let context = SchemaContext(
             pluginID: pluginID, document: document,
             strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: l.t("撤销", "Undo"), loading: l.t("正在加载…", "Loading…"), choose: "…",
-                                   preview: l.t("预览", "Preview"), moreActions: l.t("更多操作", "More Actions")),
+                                   preview: l.t("预览", "Preview"), moreActions: l.t("更多操作", "More Actions"), json: l.jsonViewer),
             sendEvent: { [weak self] event, revision in await self?.send(event, revision: revision, ticket: ticket) },
             loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) })
         context.dismiss = { [weak self] in if self?.presentationID == ticket { self?.close() } }
@@ -266,6 +266,20 @@ final class OverlayController {
 
     private func handleKey(_ event: NSEvent) -> Bool {
         guard let context else { return false }
+        // The search inside a JSON preview handles its own Return, arrows and Escape.
+        if let editor = panel?.firstResponder as? NSTextView, let field = editor.delegate as? NSSearchField,
+           field.identifier?.rawValue == NativeSearchField.previewIdentifier {
+            return false
+        }
+        // ⌘F: search inside the JSON preview, opening the preview if it is hidden.
+        if event.modifierFlags.intersection([.command, .option, .control, .shift]) == [.command],
+           event.charactersIgnoringModifiers?.lowercased() == "f", context.collection?.preview?.containsJSON == true {
+            if (panel?.contentView?.bounds.width ?? 780) < 700 { context.compactPreviewVisible = true } else { context.previewVisible = true }
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: NativeSearchField.focusRequest, object: NativeSearchField.previewIdentifier)
+            }
+            return true
+        }
         if context.collection == nil {
             if KeyCommand(event) == .escape { close(); return true }
             return false
