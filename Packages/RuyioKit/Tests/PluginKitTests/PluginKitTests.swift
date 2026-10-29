@@ -29,6 +29,12 @@ struct OfficialManifestTests {
         }
     }
 
+    /// A bundled plugin that needs a newer macOS than Ruyio itself would be refused on the oldest supported one.
+    @Test(arguments: ["ClipboardHistory", "FinderEssentials"])
+    func manifestsRunOnTheOldestSupportedMacOS(_ plugin: String) throws {
+        #expect(try Repo.manifest(plugin).minimumMacOSVersion <= HostInfo.minimumOS)
+    }
+
     @Test func clipboardHistoryDeclaresBackgroundAndHotkey() throws {
         let manifest = try Repo.manifest("ClipboardHistory")
         #expect(manifest.permissions.contains(.background))

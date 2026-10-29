@@ -1,6 +1,6 @@
-# Tests every publish of main and every outside pull request without secrets. Only after the tests pass
-# on a push to h025/Ruyio's main does the release job see the signing secrets (A43); pull requests,
-# forks and manual runs never do. Third-party actions are pinned to full commit SHAs (plan §19).
+# Tests every publish of main and every outside pull request without secrets, on macOS 26 and on the oldest
+# supported macOS, 14. Only after both pass on a push to h025/Ruyio's main does the release job see the
+# signing secrets (A43); pull requests, forks and manual runs never do. Third-party actions are pinned to full commit SHAs (plan §19).
 name: CI
 # Day-to-day commits are checked locally (Scripts/check.sh) before they land on main; GitHub only sees
 # main when it is published, so this runs once per publish, plus for outside pull requests.
@@ -38,10 +38,59 @@ jobs:
         run: brew install xcodegen && xcodegen generate
       - name: Build app (ad-hoc, arm64)
         run: xcodebuild -project Ruyio.xcodeproj -scheme Ruyio -configuration Release -derivedDataPath build/DerivedData build
+      - name: Build Debug app (UI gallery)
+        run: xcodebuild -project Ruyio.xcodeproj -scheme Ruyio -configuration Debug -derivedDataPath build/DerivedData build
+      - name: Pack for macOS 14
+        run: Scripts/ci-pack-macos14.sh build/macos14.tar
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos14
+          path: build/macos14.tar
+          retention-days: 3
+  # The oldest supported macOS. Its Xcode cannot build Ruyio (macOS 26 SDK), so this runs what the test job
+  # built: the package tests with that Xcode's test runtime, a launch of the Release app and the UI gallery,
+  # whose captures are kept as an artifact for checking how views look on macOS 14 (A46).
+  macos14:
+    needs: test
+    concurrency:
+      group: ci-macos14-${{ github.ref }}
+      cancel-in-progress: true
+    timeout-minutes: 30
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos14
+          path: build
+      - name: Unpack
+        run: |
+          mkdir -p build/macos14
+          tar -xf build/macos14.tar -C build/macos14
+          tar -xf build/macos14/tests.tar -C Packages/RuyioKit
+          sw_vers
+      - name: Package tests
+        run: Scripts/ci-test.sh
+        env:
+          RUYIO_TEST_RUNTIME: ${{ github.workspace }}/build/macos14/runtime
+          RUYIO_TEST_LIMIT: 900
+      - name: Launch app
+        run: Scripts/ci-app-check.sh launch build/macos14/Ruyio.app
+      - name: UI gallery
+        run: Scripts/ci-app-check.sh gallery build/macos14/Ruyio-Debug.app build/gallery
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: macos14-gallery
+          path: build/gallery
+          if-no-files-found: ignore
+          retention-days: 14
   # Publishes a GitHub release when HostInfo.version is a release version that has none yet: bumping the
   # version in a commit on main is the whole release step. Other pushes find nothing to publish.
   release:
-    needs: test
+    needs: [test, macos14]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'h025/Ruyio'
     concurrency:
       group: release

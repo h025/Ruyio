@@ -4,7 +4,7 @@ A free, open-source, native macOS toolbox made of plugins. The host provides plu
 palette, global shortcuts, Finder context menus, a menu bar item, permissions and plugin management;
 tools come from plugins. V1 ships two removable default plugins: **Clipboard History** and **Finder Essentials**.
 
-Platform: Apple Silicon (arm64), macOS 15 / 26 / 27. Languages: Simplified Chinese and English.
+Platform: Apple Silicon (arm64), macOS 14 / 15 / 26 / 27. Languages: Simplified Chinese and English.
 Status: early 0.0.x releases; not feature-complete yet.
 
 ## Install

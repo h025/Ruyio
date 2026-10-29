@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "RuyioKit",
     defaultLocalization: "en",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "RuyioCore", targets: ["RuyioCore"]),
         .library(name: "RuyioProtocol", targets: ["RuyioProtocol"]),

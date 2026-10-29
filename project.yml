@@ -2,7 +2,7 @@ name: Ruyio
 options:
   bundleIdPrefix: app.ruyio
   deploymentTarget:
-    macOS: "15.0"
+    macOS: "14.0"
   createIntermediateGroups: true
   developmentLanguage: en
 packages:
@@ -13,7 +13,7 @@ settings:
     SWIFT_VERSION: "6.0"
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: NO
-    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
@@ -75,7 +75,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
-        LSMinimumSystemVersion: "15.0"
+        LSMinimumSystemVersion: "14.0"
         NSHumanReadableCopyright: "Ruyio · MIT License"
         RuyioAppGroup: $(RUYIO_APP_GROUP)
         RuyioFinderChannel: $(RUYIO_FINDER_CHANNEL)
@@ -168,7 +168,7 @@ targets:
         CFBundleName: Ruyio Capture Helper
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        LSMinimumSystemVersion: "15.0"
+        LSMinimumSystemVersion: "14.0"
         LSUIElement: true
     settings:
       base:

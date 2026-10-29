@@ -137,7 +137,8 @@ struct PrivacyPage: View {
                 permissionRow("puzzlepiece.extension.fill", .gray, l.finderExtension, l.finderExtensionUse, model.finderExtensionEnabled ? l.enabledState : l.notEnabled,
                               ok: model.finderExtensionEnabled) { FinderExtensionStatus.showManagementInterface() }
                 permissionRow("folder.fill", .cyan, l.filesAndFolders, l.filesAndFoldersUse, l.asNeeded, ok: true) { SystemSettings.openFilesAndFolders() }
-                permissionRow("list.clipboard.fill", .orange, l.clipboardAccess, l.clipboardAccessUse, clipboardState.0, ok: clipboardState.1) { SystemSettings.openPasteboardPrivacy() }
+                permissionRow("list.clipboard.fill", .orange, l.clipboardAccess, l.clipboardAccessUse, clipboardState.0, ok: clipboardState.1,
+                              open: openClipboardPrivacy)
             }
             ForEach(model.snapshot.plugins) { plugin in
                 Section {
@@ -171,6 +172,12 @@ struct PrivacyPage: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshSystemState() }
     }
 
+    /// Nil before macOS 15.4, where System Settings has no clipboard pane.
+    var openClipboardPrivacy: (() -> Void)? {
+        guard SystemSettings.hasPasteboardPrivacy else { return nil }
+        return { SystemSettings.openPasteboardPrivacy() }
+    }
+
     var clipboardState: (String, Bool) {
         #if DEBUG
         if model.isGallery { return (l.authorized, true) }
@@ -183,10 +190,11 @@ struct PrivacyPage: View {
             @unknown default: return (l.unknownState, false)
             }
         }
-        return (l.unknownState, true)
+        // Before macOS 15.4 every app may read the clipboard, and System Settings has no pane for it.
+        return (l.notRequired, true)
     }
 
-    func permissionRow(_ symbol: String, _ color: Color, _ title: String, _ use: String, _ state: String, ok: Bool, open: @escaping () -> Void) -> some View {
+    func permissionRow(_ symbol: String, _ color: Color, _ title: String, _ use: String, _ state: String, ok: Bool, open: (() -> Void)?) -> some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 7, style: .continuous).fill(color.gradient).frame(width: 30, height: 30)
                 .overlay(Image(systemName: symbol).font(.system(size: 15, weight: .medium)).foregroundStyle(.white))
@@ -198,7 +206,7 @@ struct PrivacyPage: View {
             Spacer()
             Label(state, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .font(.callout).foregroundStyle(ok ? Color.green : Color.orange)
-            Button(l.t("打开", "Open"), action: open).help(l.openSystemSettings)
+            if let open { Button(l.t("打开", "Open"), action: open).help(l.openSystemSettings) }
         }
         .padding(.vertical, 2)
     }

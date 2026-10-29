@@ -5,7 +5,7 @@ public enum HostInfo {
     public static let version = SemanticVersion(major: 0, minor: 0, patch: 3)
     public static let supportedIPCVersions: [Int] = [1]
     public static let supportedUISchemaVersions: [Int] = [1]
-    public static let minimumOS = OSVersion(major: 15)
+    public static let minimumOS = OSVersion(major: 14)
     public static let architecture = "arm64"
 
     /// Publisher ID (see `PublisherID`) of official builds, set by `Scripts/release.sh`. Empty in development

@@ -219,7 +219,7 @@ struct OnboardingView: View {
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
                 if !model.finderExtensionEnabled {
-                    Text(OSVersion.current < OSVersion(major: 15, minor: 2) ? l.finderLegacyHint : l.finderNotEnabledHint)
+                    Text(FinderExtensionStatus.settingsLackSwitch ? l.finderLegacyHint : l.finderNotEnabledHint)
                         .foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button(l.openSystemSettings) { FinderExtensionStatus.showManagementInterface() }

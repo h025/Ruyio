@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// Liquid Glass on macOS 26+ with material fallbacks on macOS 15, so callers stay free of availability checks.
+// Liquid Glass on macOS 26+ with material fallbacks on macOS 14 and 15, so callers stay free of availability checks.
 // Glass is for the floating control layer (panels, bars, buttons); content sits on quiet cards (HIG Materials).
 
 public extension View {

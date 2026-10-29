@@ -190,6 +190,7 @@ struct L10n {
     var notEnabled: String { t("未启用", "Not enabled") }
     var asNeeded: String { t("按需", "When needed") }
     var unknownState: String { t("未知", "Unknown") }
+    var notRequired: String { t("无需授权", "Not required") }
     func enforcement(_ level: EnforcementLevel) -> String {
         switch level {
         case .systemEnforced: return t("由 macOS 限制", "Enforced by macOS")

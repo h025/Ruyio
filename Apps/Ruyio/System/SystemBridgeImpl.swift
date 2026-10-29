@@ -127,6 +127,13 @@ enum FinderExtensionStatus {
         FIFinderSyncController.showExtensionManagementInterface()
     }
 
+    /// macOS 15.0 and 15.1 dropped the Finder extension switch from System Settings; 15.2 brought it back.
+    /// Earlier systems list it under Privacy & Security > Extensions.
+    static var settingsLackSwitch: Bool {
+        let os = OSVersion.current
+        return os.major == 15 && os.minor < 2
+    }
+
     /// Running from a disk image or an unmoved download breaks extension registration (R25).
     static var isTranslocated: Bool {
         let path = Bundle.main.bundlePath
@@ -155,6 +162,12 @@ enum SystemSettings {
 
     static func openScreenRecording() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    }
+
+    /// The Paste from Other Apps pane exists from macOS 15.4.
+    static var hasPasteboardPrivacy: Bool {
+        if #available(macOS 15.4, *) { return true }
+        return false
     }
 
     static func openPasteboardPrivacy() {

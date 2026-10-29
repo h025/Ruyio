@@ -233,7 +233,7 @@ cat > "$OUT/appcast.xml" <<XML
       <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
       <sparkle:version>$VERSION</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <sparkle:releaseNotesLink>https://github.com/$REPO/releases/tag/v$VERSION</sparkle:releaseNotesLink>
       <enclosure url="https://github.com/$REPO/releases/download/v$VERSION/$ZIP" length="$LENGTH" type="application/octet-stream" sparkle:edSignature="$SIGNATURE"/>
     </item>
@@ -245,7 +245,7 @@ echo "release: $OUT"
 ls -l "$OUT"
 [ "$MODE" = ci ] || exit 0
 
-NOTES="Early preview of Ruyio: still incomplete. Apple silicon, macOS 15 or later.
+NOTES="Early preview of Ruyio: still incomplete. Apple silicon, macOS 14 or later.
 
 **Install or update**
 
@@ -259,7 +259,7 @@ Release certificate SHA-256: \`${CERT_SHA256}\`
 
 ---
 
-早期预览版，功能尚未完善。需要 Apple 芯片 Mac、macOS 15 或更新版本。
+早期预览版，功能尚未完善。需要 Apple 芯片 Mac、macOS 14 或更新版本。
 
 **安装或更新**：在终端运行上面的命令；或下载 \`${DMG}\`，打开后把 Ruyio 拖到“应用程序”。Ruyio 未经 Apple 公证，第一次打开时请到“系统设置 › 隐私与安全性”点“**仍要打开**”。之后可在“通用设置”中自动更新。
 

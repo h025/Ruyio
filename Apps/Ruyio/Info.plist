@@ -25,7 +25,7 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>15.0</string>
+	<string>14.0</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Ruyio asks Finder to place files you create from a right-click on the Desktop where you clicked.</string>
 	<key>NSHumanReadableCopyright</key>

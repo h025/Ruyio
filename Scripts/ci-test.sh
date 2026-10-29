@@ -8,6 +8,8 @@
 #   RUYIO_TEST_LIMIT  overall seconds (default 1500)
 #   RUYIO_TEST_STALL  seconds without any test starting or ending once tests run (default 120)
 #   RUYIO_TEST_SERIAL non-empty to run tests one at a time
+#   RUYIO_TEST_RUNTIME run the bundles an earlier run left in Packages/RuyioKit/.build/debug with the test
+#                      runtime packed beside them (Scripts/ci-pack-macos14.sh) instead of building and testing
 set -uo pipefail
 LIMIT=${RUYIO_TEST_LIMIT:-1500}
 STALL=${RUYIO_TEST_STALL:-120}
@@ -22,10 +24,29 @@ EVENTS="$LOG.events"
 START="$LOG.started"
 : > "$START"
 
+run_tests() {
+  if [ -z "${RUYIO_TEST_RUNTIME:-}" ]; then
+    exec swift test --package-path Packages/RuyioKit "$PARALLEL" --experimental-event-stream-output "$EVENTS" --experimental-event-stream-version 0
+  fi
+  # An older macOS whose Xcode cannot build Ruyio: the runner, Swift Testing and XCTest come from the Xcode
+  # that built the bundles. Each bundle streams to its own event file, named like those of swift test.
+  local status=0 bundle name binary
+  export DYLD_FRAMEWORK_PATH="$RUYIO_TEST_RUNTIME/Frameworks:$RUYIO_TEST_RUNTIME/PrivateFrameworks"
+  export DYLD_LIBRARY_PATH="$RUYIO_TEST_RUNTIME/lib" NO_COLOR=1
+  for bundle in Packages/RuyioKit/.build/debug/*.xctest; do
+    name=$(basename "$bundle" .xctest)
+    binary="$bundle/Contents/MacOS/$name"
+    "$RUYIO_TEST_RUNTIME/swiftpm-testing-helper" --test-bundle-path "$binary" "$binary" --testing-library swift-testing "$PARALLEL" \
+      --experimental-event-stream-output "${TMPDIR:-/tmp}/event-stream-$name.jsonl" --experimental-event-stream-version 0 || status=1
+    cat "${TMPDIR:-/tmp}/event-stream-$name.jsonl" >> "$EVENTS" 2>/dev/null
+  done
+  [ -n "${bundle:-}" ] && [ -e "$bundle" ] || { echo "error: no test bundles in Packages/RuyioKit/.build/debug"; status=1; }
+  exit "$status"
+}
+
 # Own process group, so the watchdog can stop swift test together with the test runner it starts.
 set -m
-swift test --package-path Packages/RuyioKit "$PARALLEL" --experimental-event-stream-output "$EVENTS" --experimental-event-stream-version 0 \
-  > >(tee "$LOG") 2>&1 &
+run_tests > >(tee "$LOG") 2>&1 &
 TESTS=$!
 set +m
 # Detached from the output, and its sleep stopped with it, so an early finish never waits on the watchdog.

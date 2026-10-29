@@ -210,7 +210,7 @@
     }
   },
   "minimumHostVersion": "0.0.1",
-  "minimumMacOSVersion": "15.0",
+  "minimumMacOSVersion": "14.0",
   "name": "Finder Essentials",
   "permissions": [
     "clipboard.write",

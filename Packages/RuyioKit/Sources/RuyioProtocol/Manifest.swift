@@ -31,7 +31,7 @@ public struct PluginManifest: Codable, Sendable, Hashable {
     public init(
         schemaVersion: Int = 1, id: PluginID, name: String, description: String? = nil,
         version: SemanticVersion, minimumHostVersion: SemanticVersion = SemanticVersion(major: 0, minor: 0, patch: 1),
-        minimumMacOSVersion: OSVersion = OSVersion(major: 15), architectures: [String] = ["arm64"],
+        minimumMacOSVersion: OSVersion = OSVersion(major: 14), architectures: [String] = ["arm64"],
         runtime: String = "native-isolated", bundlePath: String, executable: String,
         permissions: [Permission] = [], actions: [ActionDeclaration] = [], views: [ViewDeclaration] = [],
         supportedIPC: [Int] = [1], supportedUISchema: [Int] = [1], storageSchemaVersion: Int = 1,
