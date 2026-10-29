@@ -148,12 +148,13 @@ public actor PluginSupervisor {
 
     private func sessionEnded(_ id: PluginID, session: PluginSession, error: RuyioError?) {
         leases[ObjectIdentifier(session)] = nil
-        guard sessions[id] === session else { return }
-        sessions[id] = nil
+        // A request right after a crash may already run in a new session; the crash is still reported.
+        let current = sessions[id] === session
+        if current { sessions[id] = nil }
         if let error {
-            stateHandler?(id, .failed)
+            if current { stateHandler?(id, .failed) }
             crashHandler?(id, error)
-        } else {
+        } else if current {
             stateHandler?(id, .stopped)
         }
     }

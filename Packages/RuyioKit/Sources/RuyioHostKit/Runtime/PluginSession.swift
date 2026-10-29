@@ -57,7 +57,10 @@ public final class PluginSession: @unchecked Sendable {
     }
 
     public var pid: pid_t? { lock.withLock { process?.pid } }
-    public var isAlive: Bool { lock.withLock { !terminated && peer != nil } }
+    /// A closed channel means the process is gone or going, even before its exit status arrives: a crash
+    /// fails the pending request at EOF, and a request sent right after must start a fresh process instead
+    /// of reaching this one (seen on slow CI machines).
+    public var isAlive: Bool { lock.withLock { !terminated && peer?.isClosed == false } }
     public var lastActivity: ContinuousClock.Instant { lock.withLock { _lastActivity } }
 
     /// Runs immediately when the session has already ended, so a fast crash is never missed.
