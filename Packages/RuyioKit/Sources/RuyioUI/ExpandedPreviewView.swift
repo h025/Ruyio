@@ -133,7 +133,7 @@ private struct ExpandedImageView: View {
             Button { setScale(current / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
                 .help(strings.zoomOut).accessibilityLabel(strings.zoomOut)
                 .disabled(current <= 0.05)
-            Slider(value: Binding(get: { min(4, max(0.05, current)) }, set: setScale), in: 0.05...4)
+            Slider(value: Binding(get: { min(4, max(0.05, current)) }, set: { value in setScale(value) }), in: 0.05...4)
                 .frame(width: 130).accessibilityLabel(strings.zoomIn)
             Button { setScale(current * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
                 .help(strings.zoomIn).accessibilityLabel(strings.zoomIn)
