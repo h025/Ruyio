@@ -166,11 +166,11 @@ final class UIGallery {
             model.selectedPlugin = PluginID(id)
             await settle(0.7)
             if let window = main.window {
-                await shoot(window, "detail-\(label)-\(name)", title: "\(label) · overview and entries")
+                await shoot(window, "detail-\(label)-\(name)", title: "\(label) · overview and entries", expectedPlugin: PluginID(id))
                 if !compact {
                     scrollToEnd(window.contentView)
                     await settle()
-                    await shoot(window, "detail-\(label)-bottom-\(name)", title: "\(label) · permissions, settings and versions")
+                    await shoot(window, "detail-\(label)-bottom-\(name)", title: "\(label) · permissions, settings and versions", expectedPlugin: PluginID(id))
                 }
             }
             model.selectedPlugin = nil
@@ -368,7 +368,7 @@ final class UIGallery {
         for child in view.subviews { scrollToEnd(child) }
     }
 
-    private func shoot(_ window: NSWindow, _ name: String, title: String) async {
+    private func shoot(_ window: NSWindow, _ name: String, title: String, expectedPlugin: PluginID? = nil) async {
         if window.styleMask.contains(.titled) {
             // Focus can move while an async fixture is settling. Activate the exact window at capture
             // time and let AppKit redraw its native active appearance before asking WindowServer.
@@ -385,6 +385,10 @@ final class UIGallery {
                 failures.append("inactive capture skipped: \(name); active=\(NSApp.isActive), key=\(window.isKeyWindow), keyWindow=\(NSApp.keyWindow?.windowNumber ?? -1)")
                 return
             }
+        }
+        if let expectedPlugin, model.selectedPlugin != expectedPlugin || model.galleryPresentedPlugin != expectedPlugin {
+            failures.append("detail navigation failed: \(name); expected=\(expectedPlugin), selected=\(String(describing: model.selectedPlugin)), presented=\(String(describing: model.galleryPresentedPlugin))")
+            return
         }
         typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { failures.append("capture API missing: \(name)"); return }

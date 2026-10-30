@@ -108,8 +108,23 @@ struct PluginDetailView: View {
         .sheet(isPresented: $showFinderMenu) { FinderMenuSheet(model: model, isPresented: $showFinderMenu) }
         .sheet(isPresented: $showSettings) { PluginSettingsSheet(model: model, summary: summary, isPresented: $showSettings) }
         // The page may be reused for another plugin rather than appear anew.
-        .onAppear { openRequestedSettings() }
-        .onChange(of: summary.id) { _, _ in openRequestedSettings() }
+        .onAppear {
+            openRequestedSettings()
+            #if DEBUG
+            if model.isGallery { model.galleryPresentedPlugin = summary.id }
+            #endif
+        }
+        #if DEBUG
+        .onDisappear {
+            if model.isGallery, model.galleryPresentedPlugin == summary.id { model.galleryPresentedPlugin = nil }
+        }
+        #endif
+        .onChange(of: summary.id) { _, _ in
+            openRequestedSettings()
+            #if DEBUG
+            if model.isGallery { model.galleryPresentedPlugin = summary.id }
+            #endif
+        }
         .onChange(of: model.settingsRequest) { _, _ in openRequestedSettings() }
     }
 

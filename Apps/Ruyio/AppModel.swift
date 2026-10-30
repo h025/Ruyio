@@ -69,6 +69,8 @@ final class AppModel: ObservableObject {
     /// Visual fixtures use synthetic permission states and never inspect the system pasteboard.
     var isGallery = false
     var galleryMarketTab = 0
+    /// Set by the detail view's appearance callbacks, so gallery navigation cannot pass on a list image.
+    var galleryPresentedPlugin: PluginID?
     #endif
 
     var l: L10n { L10n(settings.language.resolved) }

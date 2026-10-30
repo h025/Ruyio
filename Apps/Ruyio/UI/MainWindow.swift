@@ -42,10 +42,10 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: Binding(get: { model.page }, set: { page in
-                guard let page else { return }
-                // Choosing a sidebar item always lands on that page's root (PRD §18.1).
-                model.selectedPlugin = nil
-                model.page = page
+                // List can write its current selection back while SwiftUI updates the detail column.
+                // That synchronization must not dismiss a plugin that was just opened.
+                guard let page, page != model.page else { return }
+                showRoot(page)
             })) {
                 Section {
                     // Keep the selection tag outside badge: List reads the completed row's trait.
@@ -75,7 +75,17 @@ struct MainView: View {
 
     func sidebarRow(_ page: Page) -> some View {
         Label(page.title(l), systemImage: page.symbol)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            // An explicit click on the selected row still returns to its root (PRD §18.1).
+            .simultaneousGesture(TapGesture().onEnded { showRoot(page) })
+            .accessibilityAction { showRoot(page) }
             .accessibilityIdentifier("sidebar.\(page.rawValue)")
+    }
+
+    private func showRoot(_ page: Page) {
+        if model.selectedPlugin != nil { model.selectedPlugin = nil }
+        if model.page != page { model.page = page }
     }
 
     @ViewBuilder
