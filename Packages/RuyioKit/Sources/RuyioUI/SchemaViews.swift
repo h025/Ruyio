@@ -30,9 +30,12 @@ public struct SchemaNodeView: View {
         case .code(let text):
             Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         case .json(let text):
-            JSONTreeView(text: text, strings: context.strings.json).frame(maxWidth: .infinity, alignment: .leading)
+            JSONTreeView(text: text, strings: context.strings.json, expandLabel: context.strings.expandPreview,
+                         onExpand: context.expandPreview.map { expand in { expand(.json(text)) } })
+                .frame(maxWidth: .infinity, alignment: .leading)
         case .image(let spec):
-            BlobImageView(blobID: spec.blobID, context: context, label: spec.accessibilityLabel, maxHeight: 360)
+            BlobImageView(blobID: spec.blobID, context: context, label: spec.accessibilityLabel, maxHeight: 360,
+                          onExpand: context.expandPreview.map { expand in { expand(.image(spec)) } })
         case .keyValue(let rows):
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
@@ -92,19 +95,40 @@ struct BlobImageView: View {
     @ObservedObject var context: SchemaContext
     let label: String
     var maxHeight: CGFloat
+    var onExpand: (() -> Void)?
     @State private var image: NSImage?
 
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                if let onExpand {
+                    Button(action: onExpand) {
+                        Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                            .overlay(alignment: .topTrailing) {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .padding(8).ruyioGlass(in: Circle()).padding(8)
+                                    .allowsHitTesting(false)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .help(context.strings.expandPreview)
+                    .accessibilityLabel(context.strings.expandPreview + ": " + label)
+                    .accessibilityIdentifier("preview.expand.image")
+                } else {
+                    Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                }
             } else {
                 RoundedRectangle(cornerRadius: 6).fill(.quaternary).aspectRatio(16.0 / 10.0, contentMode: .fit)
             }
         }
         .frame(maxHeight: maxHeight)
         .accessibilityLabel(label)
-        .task(id: blobID) { image = await context.image(blobID) }
+        .task(id: blobID) {
+            image = nil
+            let loaded = await context.image(blobID)
+            guard !Task.isCancelled else { return }
+            image = loaded
+        }
     }
 }
 

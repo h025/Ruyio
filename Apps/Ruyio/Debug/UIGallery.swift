@@ -22,6 +22,7 @@ final class UIGallery {
     private var captures: [Capture] = []
     private var failures: [String] = []
     private var imageBlobID: String?
+    private var originalImageBlobID: String?
     private var theme = "light"
     private var locale = "zh-Hans"
 
@@ -84,6 +85,7 @@ final class UIGallery {
                 NSApp.appearance = NSAppearance(named: name == "light" ? .aqua : .darkAqua)
                 if only == nil || only == "main" { try await mainWindow(name) }
                 if only == nil || only == "overlay" { await overlayPanels(name) }
+                if only == nil || only == "expanded" { await expandedPreviews(name) }
                 if only == nil || only == "palette" { await commandPalette(name) }
                 if only == nil || only == "onboarding" { await onboarding(name) }
                 if only == nil || only == "sheets" { await sheets(name) }
@@ -106,6 +108,7 @@ final class UIGallery {
                 await settle()
                 try await mainWindow("en-light", compact: true)
                 await overlayPanels("en-light", variants: ["narrow", "narrow-paused", "compact-preview"])
+                await expandedPreviews("en-light")
                 await commandPalette("en-light")
                 await onboarding("en-light", steps: [0, 3])
                 await pluginSettings("en-light")
@@ -146,6 +149,7 @@ final class UIGallery {
         await model.engine.registry.setReport(PluginID("app.ruyio.clipboard-history"), PluginStatusReport(captureState: .recording, statusText: "正在记录"))
         await settle()
         imageBlobID = try makeImageFixture()
+        originalImageBlobID = try makeImageFixture(width: 1600)
     }
 
     private func mainWindow(_ name: String, compact: Bool = false) async throws {
@@ -228,6 +232,79 @@ final class UIGallery {
             }
             if let window = overlay.galleryWindow { await shoot(window, "clipboard-\(variant)-\(name)", title: "Clipboard · \(variant)") }
             overlay.close()
+            await settle(0.1)
+        }
+    }
+
+    private func expandedPreviews(_ name: String) async {
+        for variant in ["json", "image"] {
+            overlay.presentForGallery(document: history(variant: variant), pluginID: PluginID("app.ruyio.clipboard-history"))
+            await settle(0.3)
+            overlay.expandPreviewForGallery()
+            await settle(0.8)
+            guard let preview = overlay.galleryExpandedWindow, preview.isVisible, overlay.galleryWindow?.isVisible == true else {
+                failures.append("expanded preview closed its source: \(variant)-\(name)")
+                overlay.close()
+                continue
+            }
+            if !preview.canBecomeKey || preview.canBecomeMain {
+                failures.append("expanded preview changed floating-panel focus semantics: \(variant)-\(name)")
+            }
+            if variant == "image", let originalImageBlobID {
+                let original = await OverlayController.loadBlob(engine: model.engine, pluginID: PluginID("app.ruyio.clipboard-history"),
+                                                                blobID: originalImageBlobID, maxPixel: 4096)
+                if (original?.representations.map(\.pixelsWide).max() ?? 0) < 1600 {
+                    failures.append("expanded image lost original resolution: \(name)")
+                }
+            }
+            await shoot(preview, "expanded-\(variant)-\(name)", title: "Expanded preview · \(variant)")
+            // Reopening another snapshot reuses one companion window, including its parent relation.
+            overlay.expandPreviewForGallery(.json("{\"reused\":true}"))
+            await settle(0.2)
+            if overlay.galleryExpandedWindow !== preview || preview.parent !== overlay.galleryWindow {
+                failures.append("expanded preview did not reuse its window: \(variant)-\(name)")
+            }
+            overlay.expandPreviewForGallery()
+            await settle(0.5)
+            if variant == "json" {
+                if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                               windowNumber: preview.windowNumber, context: nil, characters: "f", charactersIgnoringModifiers: "f",
+                                               isARepeat: false, keyCode: 3) {
+                    _ = preview.performKeyEquivalent(with: event)
+                }
+                await settle(0.2)
+                if let field = Self.view(in: preview.contentView, identifier: ExpandedPreviewView.searchIdentifier) as? NSTextField {
+                    if preview.firstResponder !== field.currentEditor() { failures.append("expanded JSON search did not focus: \(name)") }
+                    field.stringValue = "size"
+                    NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+                    await settle(0.5)
+                    await shoot(preview, "expanded-json-search-\(name)", title: "Expanded JSON · search")
+                    if let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                    windowNumber: preview.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+                                                    isARepeat: false, keyCode: 53) {
+                        preview.sendEvent(escape)
+                        await settle(0.2)
+                        if !field.stringValue.isEmpty || !preview.isVisible { failures.append("expanded JSON Escape did not clear search first: \(name)") }
+                        preview.sendEvent(escape)
+                    }
+                } else {
+                    failures.append("expanded JSON search missing: \(name)")
+                    overlay.closeExpandedPreviewForGallery()
+                }
+            } else if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                                  windowNumber: preview.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w",
+                                                  isARepeat: false, keyCode: 13) {
+                _ = preview.performKeyEquivalent(with: event)
+            }
+            await settle(0.2)
+            if preview.isVisible || overlay.galleryWindow?.isVisible != true || overlay.galleryWindow?.isKeyWindow != true {
+                failures.append("expanded preview did not return focus to its source: \(variant)-\(name)")
+            }
+            overlay.expandPreviewForGallery()
+            await settle(0.2)
+            let companion = overlay.galleryExpandedWindow
+            overlay.close()
+            if companion?.isVisible == true { failures.append("expanded preview survived a closed source: \(variant)-\(name)") }
             await settle(0.1)
         }
     }
@@ -380,7 +457,7 @@ final class UIGallery {
             for _ in 0..<4 {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
-                window.makeMain()
+                if window.canBecomeMain { window.makeMain() }
                 await settle(0.2)
                 if NSApp.isActive && window.isKeyWindow { break }
             }
@@ -411,10 +488,11 @@ final class UIGallery {
         } catch { failures.append("\(name): \(error)") }
     }
 
-    private func makeImageFixture() throws -> String? {
-        let image = NSImage(size: NSSize(width: 800, height: 500), flipped: false) { rect in
+    private func makeImageFixture(width: CGFloat = 800) throws -> String? {
+        let image = NSImage(size: NSSize(width: width, height: width * 5 / 8), flipped: false) { rect in
             NSColor(calibratedRed: 0.89, green: 0.94, blue: 0.98, alpha: 1).setFill()
             rect.fill()
+            NSGraphicsContext.current?.cgContext.scaleBy(x: width / 800, y: width / 800)
             NSColor(calibratedRed: 0.22, green: 0.49, blue: 0.63, alpha: 1).setFill()
             NSBezierPath(roundedRect: NSRect(x: 60, y: 70, width: 680, height: 360), xRadius: 24, yRadius: 24).fill()
             let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 54, weight: .semibold), .foregroundColor: NSColor.white]
@@ -441,7 +519,7 @@ final class UIGallery {
         switch variant {
         case "image":
             spec.list.selection = "s3"
-            if let blob = imageBlobID { spec.preview = .stack(StackSpec(children: [.image(ImageSpec(blobID: blob, pixelWidth: 800, pixelHeight: 500, accessibilityLabel: "Ruyio sample image")), .keyValue([KeyValueRow(key: "尺寸", value: "800 × 500"), KeyValueRow(key: "来源", value: "截屏")])])) }
+            if let blob = imageBlobID { spec.preview = .stack(StackSpec(children: [.image(ImageSpec(blobID: blob, pixelWidth: 1600, pixelHeight: 1000, accessibilityLabel: "Ruyio sample image", originalBlobID: originalImageBlobID)), .keyValue([KeyValueRow(key: "尺寸", value: "1600 × 1000"), KeyValueRow(key: "来源", value: "截屏")])])) }
         case "json", "json-search", "json-large":
             spec.list.selection = "s1"
             let sample = variant == "json-large" ? Self.largeJSONSample : Self.jsonSample

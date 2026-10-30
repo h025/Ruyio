@@ -48,6 +48,9 @@ public struct JSONViewerStrings: Sendable {
 struct JSONTreeView: View {
     let text: String
     let strings: JSONViewerStrings
+    var searchIdentifier = NativeSearchField.previewIdentifier
+    var expandLabel = "Expand Preview"
+    var onExpand: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tree: JSONTree?
     @State private var parsed = false
@@ -80,9 +83,19 @@ struct JSONTreeView: View {
                     .onChange(of: query) { _, _ in search(proxy: proxy) }
                 }
             } else if parsed {
-                Text(JSONFormatting.highlighted(JSONFormatting.indented(text)))
-                    .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 8) {
+                    if let onExpand {
+                        HStack {
+                            Spacer()
+                            Button(action: onExpand) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                                .buttonStyle(.borderless).help(expandLabel).accessibilityLabel(expandLabel)
+                                .accessibilityIdentifier("preview.expand.json")
+                        }
+                    }
+                    Text(JSONFormatting.highlighted(JSONFormatting.indented(text)))
+                        .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } else {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity)
             }
@@ -113,7 +126,7 @@ struct JSONTreeView: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
             NativeSearchField(text: $query, placeholder: strings.find, controlSize: .regular,
-                              identifier: NativeSearchField.previewIdentifier, focusOnAppear: false, bordered: false) { command in
+                              identifier: searchIdentifier, focusOnAppear: false, bordered: false) { command in
                 switch command {
                 case .next: step(1, proxy: proxy)
                 case .previous: step(-1, proxy: proxy)
@@ -139,6 +152,11 @@ struct JSONTreeView: View {
             } label: { Image(systemName: "list.bullet.indent") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help(strings.expandAll + " / " + strings.collapseAll)
+            if let onExpand {
+                Button(action: onExpand) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                    .help(expandLabel).accessibilityLabel(expandLabel)
+                    .accessibilityIdentifier("preview.expand.json")
+            }
         }
         .buttonStyle(.borderless)
         .controlSize(.small)

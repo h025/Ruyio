@@ -1024,7 +1024,8 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
         switch record.kind {
         case .image:
             if let blob = record.previewBlobID ?? record.thumbnailBlobID {
-                children.append(.image(ImageSpec(blobID: blob, pixelWidth: record.imageSize?[0], pixelHeight: record.imageSize?[1], accessibilityLabel: record.title)))
+                let original = record.items.lazy.flatMap(\.representations).first { PasteboardRules.imageTypes.contains($0.type) && $0.blobID != nil }?.blobID
+                children.append(.image(ImageSpec(blobID: blob, pixelWidth: record.imageSize?[0], pixelHeight: record.imageSize?[1], accessibilityLabel: record.title, originalBlobID: original)))
             }
             if let size = record.imageSize { rows.append(KeyValueRow(key: s.dimensions, value: "\(size[0]) × \(size[1])")) }
         case .file:

@@ -18,22 +18,27 @@ public final class SchemaContext: ObservableObject {
     @Published public private(set) var formSubmissionAcknowledgement: FormSubmissionAcknowledgement?
     /// Host-owned close for floating presentations (close button); plugins cannot trigger it.
     public var dismiss: (() -> Void)?
+    /// Opens a host-owned snapshot viewer without invoking a plugin action or changing the selection.
+    public var expandPreview: ((ExpandedPreviewContent) -> Void)?
     /// Host-drawn provenance line for third-party plugins ("From the plugin …, Team …").
     public var source: String?
 
     private let sendEvent: (ViewEvent, Int) async -> Void
     private let loadBlob: (String) async -> NSImage?
+    private let loadPreviewBlob: ((String) async -> NSImage?)?
     private var imageCache: [String: NSImage] = [:]
     public var strings: SchemaStrings
 
     public init(pluginID: PluginID, document: ViewDocument, strings: SchemaStrings,
-                sendEvent: @escaping (ViewEvent, Int) async -> Void, loadBlob: @escaping (String) async -> NSImage?) {
+                sendEvent: @escaping (ViewEvent, Int) async -> Void, loadBlob: @escaping (String) async -> NSImage?,
+                loadPreviewBlob: ((String) async -> NSImage?)? = nil) {
         self.pluginID = pluginID
         self.viewID = document.viewID
         self.document = document
         self.strings = strings
         self.sendEvent = sendEvent
         self.loadBlob = loadBlob
+        self.loadPreviewBlob = loadPreviewBlob
         if case .collection(let spec) = document.root { localSelection = spec.list.selection }
     }
 
@@ -76,6 +81,12 @@ public final class SchemaContext: ObservableObject {
             imageCache[blobID] = image
         }
         return image
+    }
+
+    /// Large previews are held only by their window, never by the thumbnail cache.
+    public func previewImage(_ blobID: String) async -> NSImage? {
+        if let loadPreviewBlob { return await loadPreviewBlob(blobID) }
+        return await image(blobID)
     }
 
     public var collection: CollectionSpec? {
@@ -139,9 +150,19 @@ public struct SchemaStrings: Sendable {
     public var choose: String
     public var preview: String
     public var moreActions: String
+    public var expandPreview: String
+    public var fitImage: String
+    public var actualImageSize: String
+    public var zoomIn: String
+    public var zoomOut: String
+    public var imageUnavailable: String
+    public var imagePreviewOnly: String
     public var json: JSONViewerStrings
     public init(submit: String, cancel: String, undo: String, loading: String, choose: String,
-                preview: String = "Preview", moreActions: String = "More Actions", json: JSONViewerStrings = JSONViewerStrings()) {
+                preview: String = "Preview", moreActions: String = "More Actions", json: JSONViewerStrings = JSONViewerStrings(),
+                expandPreview: String = "Expand Preview", fitImage: String = "Fit to Window", actualImageSize: String = "Actual Size",
+                zoomIn: String = "Zoom In", zoomOut: String = "Zoom Out", imageUnavailable: String = "Image unavailable",
+                imagePreviewOnly: String = "Original unavailable; showing preview") {
         self.submit = submit
         self.cancel = cancel
         self.undo = undo
@@ -150,6 +171,13 @@ public struct SchemaStrings: Sendable {
         self.preview = preview
         self.moreActions = moreActions
         self.json = json
+        self.expandPreview = expandPreview
+        self.fitImage = fitImage
+        self.actualImageSize = actualImageSize
+        self.zoomIn = zoomIn
+        self.zoomOut = zoomOut
+        self.imageUnavailable = imageUnavailable
+        self.imagePreviewOnly = imagePreviewOnly
     }
 }
 

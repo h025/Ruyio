@@ -9,6 +9,7 @@ import SwiftUI
 /// switched (plan §12.3). Keyboard commands are intercepted before the search field sees them.
 final class FloatingPanel: NSPanel {
     var onKeyDown: ((NSEvent) -> Bool)?
+    var onKeyEquivalent: ((NSEvent) -> Bool)?
     var onResignKey: (() -> Void)?
 
     init(size: NSSize, minSize: NSSize, resizable: Bool) {
@@ -40,6 +41,7 @@ final class FloatingPanel: NSPanel {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if (firstResponder as? NSTextView)?.hasMarkedText() != true, onKeyEquivalent?(event) == true { return true }
         if super.performKeyEquivalent(with: event) { return true }
         // This panel never becomes main and Ruyio is often not active: copy, paste and the like go
         // straight to the focused text instead of through the Edit menu.
@@ -142,6 +144,7 @@ final class OverlayController {
     private var pendingSubmission: [String: JSONValue]?
     private var presentationID = UUID()
     private var lifecycleTask: Task<Void, Never>?
+    private var expandedPreview: ExpandedPreviewController?
     weak var palette: CommandPaletteController?
     /// `host.open-plugin-settings`: the plugin's settings in the main window.
     var openPluginSettings: ((PluginID) -> Void)?
@@ -193,10 +196,19 @@ final class OverlayController {
         let context = SchemaContext(
             pluginID: pluginID, document: document,
             strings: SchemaStrings(submit: l.done, cancel: l.cancel, undo: l.t("撤销", "Undo"), loading: l.t("正在加载…", "Loading…"), choose: "…",
-                                   preview: l.t("预览", "Preview"), moreActions: l.t("更多操作", "More Actions"), json: l.jsonViewer),
+                                   preview: l.t("预览", "Preview"), moreActions: l.t("更多操作", "More Actions"), json: l.jsonViewer,
+                                   expandPreview: l.t("放大预览", "Expand Preview"), fitImage: l.t("适合窗口", "Fit to Window"),
+                                   actualImageSize: l.t("实际大小", "Actual Size"), zoomIn: l.t("放大", "Zoom In"),
+                                   zoomOut: l.t("缩小", "Zoom Out"), imageUnavailable: l.t("无法加载图片", "Image unavailable"),
+                                   imagePreviewOnly: l.t("原图不可用，正在显示预览图", "Original unavailable; showing preview")),
             sendEvent: { [weak self] event, revision in await self?.send(event, revision: revision, ticket: ticket) },
-            loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) })
+            loadBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID) },
+            loadPreviewBlob: { blobID in await Self.loadBlob(engine: engine, pluginID: pluginID, blobID: blobID, maxPixel: 4096) })
         context.dismiss = { [weak self] in if self?.presentationID == ticket { self?.close() } }
+        context.expandPreview = { [weak self] content in
+            guard let self, self.presentationID == ticket else { return }
+            self.expand(content)
+        }
         if let summary = model.summary(pluginID), !summary.isDefault {
             // Apple Team IDs are short enough to show; a certificate fingerprint would only be noise here.
             let team = summary.publisherID.flatMap { PublisherID.certificateSHA256($0) == nil ? " · Team \($0)" : nil }
@@ -213,7 +225,7 @@ final class OverlayController {
             // Clicking outside closes the overlay unless a confirmation or system sheet is up.
             Task { @MainActor in
                 guard let self, self.presentationID == ticket, NSApp.modalWindow == nil else { return }
-                if NSApp.keyWindow !== self.panel { self.close() }
+                if !self.ownsKeyWindow { self.close() }
             }
         }
         panel.setFrameAutosaveName("RuyioOverlay.\(document.viewID)")
@@ -222,15 +234,41 @@ final class OverlayController {
         self.panel = panel
     }
 
-    static func loadBlob(engine: HostEngine, pluginID: PluginID, blobID: String) async -> NSImage? {
+    static func loadBlob(engine: HostEngine, pluginID: PluginID, blobID: String, maxPixel: Int = 1024) async -> NSImage? {
         guard let record = await engine.registry.record(pluginID),
               let store = try? engine.services.stores.store(pluginID: pluginID, generation: record.dataGeneration, development: record.isDevelopment),
-              let data = try? store.blobData(blobID, maxBytes: 8 << 20) else { return nil }
+              let data = try? store.blobData(blobID, maxBytes: (maxPixel > 1024 ? 16 : 8) << 20) else { return nil }
         // Decoding happens in the sandboxed media decoder service, never in the host (R43).
-        return await MediaDecoderClient.shared.image(from: data)
+        return await MediaDecoderClient.shared.image(from: data, maxPixel: maxPixel)
+    }
+
+    private func expand(_ content: ExpandedPreviewContent) {
+        guard let context, let panel else { return }
+        let preview = expandedPreview ?? ExpandedPreviewController()
+        let ticket = presentationID
+        expandedPreview = preview
+        preview.onClose = { [weak self] in self?.expandedPreview = nil }
+        preview.onResignKey = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.presentationID == ticket, NSApp.modalWindow == nil else { return }
+                if !self.ownsKeyWindow { self.close() }
+            }
+        }
+        var saveFrame = true
+        #if DEBUG
+        saveFrame = !model.isGallery
+        #endif
+        preview.show(content, context: context, source: panel, locale: model.language, saveFrame: saveFrame)
+    }
+
+    private var ownsKeyWindow: Bool {
+        guard let key = NSApp.keyWindow else { return false }
+        return key === panel || key === expandedPreview?.window
     }
 
     func close() {
+        expandedPreview?.close(returnFocus: false)
+        expandedPreview = nil
         presentationID = UUID()
         clearSubscription()
         panel?.orderOut(nil)
@@ -431,6 +469,13 @@ extension OverlayController {
     func presentForGallery(document: ViewDocument, pluginID: PluginID) { present(document: document, pluginID: pluginID) }
     func setCompactPreviewForGallery(_ visible: Bool) { context?.compactPreviewVisible = visible }
     var galleryWindow: NSWindow? { panel }
+    var galleryExpandedWindow: NSWindow? { expandedPreview?.window }
+    func expandPreviewForGallery(_ replacement: ExpandedPreviewContent? = nil) {
+        if let replacement { expand(replacement); return }
+        guard let node = context?.collection?.preview, let content = ExpandedPreviewContent.first(in: node) else { return }
+        expand(content)
+    }
+    func closeExpandedPreviewForGallery() { expandedPreview?.close() }
 }
 
 extension HUD {

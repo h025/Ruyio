@@ -166,6 +166,26 @@ private final class ClipboardMemoryHost: @unchecked Sendable {
 }
 
 struct ClipboardHistoryRegressionTests {
+    @Test func imagePreviewKeepsItsThumbnailAndExposesTheOriginalForExpansion() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        var record = try await fixture.plugin.makeRecord(fixture.clip(), kind: .text, fingerprint: "image-preview", date: Date())
+        record.kind = .image
+        record.previewBlobID = "preview-1024"
+        record.imageSize = [4000, 2500]
+        record.items = [.init(representations: [.init(type: "public.png", text: nil, blobID: "original-4000", byteCount: 1000)])]
+        guard case .stack(let stack) = fixture.plugin.previewNode(record, strings: fixture.plugin.strings),
+              case .image(let image)? = stack.children.first else {
+            Issue.record("An image record must provide its image preview")
+            return
+        }
+        #expect(image.blobID == "preview-1024")
+        #expect(image.originalBlobID == "original-4000")
+        #expect(image.pixelWidth == 4000)
+        #expect(image.pixelHeight == 2500)
+        #expect(record.allBlobIDs.contains("original-4000"))
+    }
+
     @Test func healthCheckToleratesOneBadRecordButRejectsUnreadableDataWithoutCapture() async throws {
         let fixture = try ClipboardFixture()
         defer { fixture.close() }

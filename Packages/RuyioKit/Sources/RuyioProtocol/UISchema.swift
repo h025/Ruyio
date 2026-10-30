@@ -106,11 +106,14 @@ public struct TextSpec: Codable, Sendable, Hashable {
 public struct ImageSpec: Codable, Sendable, Hashable {
     /// Host blob reference. Remote URLs are never fetched (plan §9).
     public var blobID: String
+    /// Optional full-resolution source for host-owned enlarged previews; inline rendering uses blobID.
+    public var originalBlobID: String?
     public var pixelWidth: Int?
     public var pixelHeight: Int?
     public var accessibilityLabel: String
-    public init(blobID: String, pixelWidth: Int? = nil, pixelHeight: Int? = nil, accessibilityLabel: String) {
+    public init(blobID: String, pixelWidth: Int? = nil, pixelHeight: Int? = nil, accessibilityLabel: String, originalBlobID: String? = nil) {
         self.blobID = blobID
+        self.originalBlobID = originalBlobID
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
         self.accessibilityLabel = accessibilityLabel
