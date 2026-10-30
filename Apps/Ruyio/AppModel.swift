@@ -97,6 +97,12 @@ final class AppModel: ObservableObject {
 
     func summary(_ id: PluginID) -> PluginSummary? { snapshot.plugins.first { $0.id == id } }
 
+    /// Root-page entry points dismiss details; callers opening a particular plugin retain its request.
+    func showRoot(_ page: Page) {
+        if selectedPlugin != nil { selectedPlugin = nil }
+        if self.page != page { self.page = page }
+    }
+
     // MARK: Settings
 
     func update(_ change: (inout HostSettings) -> Void) {

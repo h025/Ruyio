@@ -416,7 +416,7 @@ struct EntryToggle: View {
         case .menuBar: l.menuBar
         }
         Button {
-            if kind == .globalHotkey { model.selectedPlugin = nil; model.page = .shortcuts; return }
+            if kind == .globalHotkey { model.showRoot(.shortcuts); return }
             visible.toggle()
             Task { try? await model.engine.registry.setEntryVisible(ref, kind: kind, visible: visible) }
         } label: {

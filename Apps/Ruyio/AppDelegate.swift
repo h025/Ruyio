@@ -75,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         palette.openPluginDetail = { [weak self] id in self?.showPlugin(id) }
         menuBar = MenuBarController(model: model)
         menuBar.openPalette = { [weak self] in self?.palette.toggle() }
-        menuBar.openPage = { [weak self] page in self?.model.page = page; self?.showMainWindow() }
+        menuBar.openPage = { [weak self] page in self?.model.showRoot(page); self?.showMainWindow() }
         menuBar.runAction = { [weak self] item in self?.run(menuItem: item) }
         menuBar.setVisible(model.settings.showInMenuBar)
 
@@ -220,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showSettings() {
-        model.page = .general
+        model.showRoot(.general)
         showMainWindow()
     }
 

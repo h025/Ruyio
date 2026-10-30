@@ -234,7 +234,7 @@ struct CommandPaletteView: View {
                         Text(l.noCommands).font(.headline)
                         Button(l.openMarket) {
                             controller.close()
-                            model.page = .market
+                            model.showRoot(.market)
                             NSApp.sendAction(#selector(AppDelegate.showMainWindow), to: nil, from: nil)
                         }
                         .ruyioGlassButton()

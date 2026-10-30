@@ -161,8 +161,9 @@ final class UIGallery {
             await settle(0.65)
             if let window = main.window { await shoot(window, "main-\(page.rawValue)-\(name)", title: page.title(model.l)) }
         }
-        model.page = .plugins
         for (id, label) in [("app.ruyio.clipboard-history", "clipboard"), ("app.ruyio.finder-essentials", "finder")] {
+            // Match a menu/market deep link: change the root and requested plugin in the same update.
+            model.page = .plugins
             model.selectedPlugin = PluginID(id)
             await settle(0.7)
             if let window = main.window {
@@ -173,8 +174,12 @@ final class UIGallery {
                     await shoot(window, "detail-\(label)-bottom-\(name)", title: "\(label) · permissions, settings and versions", expectedPlugin: PluginID(id))
                 }
             }
-            model.selectedPlugin = nil
-            await settle(0.2)
+            // Match external root navigation (menu bar, Settings, onboarding) from an open detail.
+            model.showRoot(.general)
+            await settle()
+            if model.selectedPlugin != nil || model.galleryPresentedPlugin != nil {
+                failures.append("root navigation failed: \(label)-\(name)")
+            }
         }
         model.page = .general
         main.window?.setFrame(NSRect(x: 100, y: 100, width: 820, height: 560), display: true)

@@ -164,7 +164,7 @@ struct OnboardingView: View {
                     Text(l.t("历史剪贴板快捷键尚不可用，可在快捷键设置中配置。", "The clipboard shortcut is unavailable. Configure it in Shortcuts."))
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button(l.shortcuts) {
-                        model.page = .shortcuts
+                        model.showRoot(.shortcuts)
                         NSApp.sendAction(#selector(AppDelegate.showMainWindow), to: nil, from: nil)
                     }
                 }
@@ -251,7 +251,7 @@ struct OnboardingView: View {
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
         } actions: {
             primary(l.startUsing) { finish(true) }
-            secondary(l.viewPlugins) { finish(false); model.page = .plugins; NSApp.sendAction(#selector(AppDelegate.showMainWindow), to: nil, from: nil) }
+            secondary(l.viewPlugins) { finish(false); model.showRoot(.plugins); NSApp.sendAction(#selector(AppDelegate.showMainWindow), to: nil, from: nil) }
         }
     }
 
