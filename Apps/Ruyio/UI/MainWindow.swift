@@ -37,6 +37,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
 struct MainView: View {
     @ObservedObject var model: AppModel
+    // Synchronize after sidebar updates so the stack's initial empty path cannot erase an open request.
+    @State private var pluginPath: [PluginID] = []
     var l: L10n { model.l }
 
     var body: some View {
@@ -62,11 +64,18 @@ struct MainView: View {
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 280)
         } detail: {
-            NavigationStack {
+            NavigationStack(path: $pluginPath) {
                 page
-                    .navigationDestination(item: $model.selectedPlugin) { id in
+                    .navigationDestination(for: PluginID.self) { id in
                         PluginDetailHost(model: model, id: id)
                     }
+            }
+            .onChange(of: model.selectedPlugin, initial: true) { _, id in
+                let path = id.map { [$0] } ?? []
+                if pluginPath != path { pluginPath = path }
+            }
+            .onChange(of: pluginPath) { _, path in
+                if model.selectedPlugin != path.last { model.selectedPlugin = path.last }
             }
         }
         .environment(\.locale, Locale(identifier: model.language))
