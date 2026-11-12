@@ -39,8 +39,8 @@ public final class MediaDecoderClient: @unchecked Sendable {
     deinit { connection?.value.invalidate() }
 
     private func proxy(_ onError: @escaping (Error) -> Void) -> (RuyioMediaDecoding, UUID)? {
-        let connection = lock.withLock { () -> Connection in
-            if let connection { return connection }
+        let current = lock.withLock { () -> Connection in
+            if let existing = self.connection { return existing }
             let id = UUID()
             let value = connectionFactory()
             value.remoteObjectInterface = NSXPCInterface(with: RuyioMediaDecoding.self)
@@ -52,8 +52,8 @@ public final class MediaDecoderClient: @unchecked Sendable {
         }
         // Proxy errors may precede invalidation delivery. A retry must already see a fresh connection.
         // Fetch outside the lock so even a synchronous error callback cannot re-enter that lock.
-        let id = connection.id
-        let decoder = connection.value.remoteObjectProxyWithErrorHandler { [weak self] error in
+        let id = current.id
+        let decoder = current.value.remoteObjectProxyWithErrorHandler { [weak self] error in
             self?.removeConnection(id)?.invalidate()
             onError(error)
         } as? RuyioMediaDecoding
@@ -144,10 +144,10 @@ public final class MediaDecoderClient: @unchecked Sendable {
                 defer { continuation = nil; deadlineTask = nil }
                 return (continuation, deadlineTask)
             }
-            guard let (continuation, deadlineTask) = waiting else { return false }
-            deadlineTask?.cancel()
+            guard let (waitingContinuation, timer) = waiting else { return false }
+            timer?.cancel()
             beforeResume?()
-            continuation?.resume(returning: result)
+            waitingContinuation?.resume(returning: result)
             return true
         }
     }
