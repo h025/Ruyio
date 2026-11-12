@@ -236,19 +236,20 @@ struct SchemaImageLoadingTests {
         let gate = ThumbnailGate()
         defer { gate.finishAll() }
         let context = context(gate: gate)
-        let returned = ThumbnailSignal()
-        let run = Task {
-            for id in 0..<100 {
-                let task = Task { await context.image(String(id)) }
-                await Task.detached { task.cancel() }.value
-                #expect(await task.value == nil)
+        for id in 0..<100 {
+            let returned = ThumbnailSignal()
+            let task = Task {
+                let result = await context.image(String(id))
+                returned.signal()
+                return result
             }
-            returned.signal()
+            await Task.detached { task.cancel() }.value
+            // Bound each cancellation after it was issued, not the scheduling of 100 detached tasks.
+            let completed = await returned.wait()
+            #expect(completed)
+            if !completed { gate.finishAll() }
+            #expect(await task.value == nil)
         }
-        let completed = await returned.wait()
-        #expect(completed)
-        if !completed { gate.finishAll() }
-        await run.value
         #expect(gate.peak <= 4)
     }
 

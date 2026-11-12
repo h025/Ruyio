@@ -90,8 +90,8 @@ private final class DecoderFixture: NSObject, NSXPCListenerDelegate, @unchecked 
 
 @Suite(.serialized)
 struct MediaDecoderClientTests {
-    private func eventually(_ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(15)
+    private func eventually(timeout: Duration = .seconds(15), _ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
         while !condition(), ContinuousClock.now < deadline {
             do { try await Task.sleep(for: .milliseconds(1)) }
             catch { return false }
@@ -104,7 +104,10 @@ struct MediaDecoderClientTests {
         defer { fixture.stop(); clock.cancelAll() }
         let client = MediaDecoderClient(connectionFactory: { fixture.makeConnection() }, deadlineClock: clock.clock)
         let first = Task { await client.image(from: Data([1])) }
-        try #require(await eventually { fixture.service.received(1) && clock.waitingCount == 1 })
+        // The combined test runner also starts signing and sandbox fixtures. Allow their initial
+        // executor/XPC scheduling to settle; the product deadline itself is controlled by the clock.
+        try #require(await eventually(timeout: .seconds(60)) { fixture.service.received(1) && clock.waitingCount == 1 },
+                     "connections=\(fixture.connectionCount), received=\(fixture.service.received(1)), deadlineAttempts=\(clock.attemptCount), waiting=\(clock.waitingCount)")
         let old = try #require(fixture.firstConnection)
         let delayedInvalidation = try #require(old.invalidationHandler)
         let invalidated = DecodeLatch()
