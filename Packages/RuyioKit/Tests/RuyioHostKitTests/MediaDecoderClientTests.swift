@@ -292,6 +292,35 @@ extension MediaDecoderClientTests {
         #expect(await eventually { clock.attemptCount == 2 && clock.finishedCount == 2 && clock.waitingCount == 0 })
     }
 
+    @Test func cancellationBetweenTheInitialCheckAndRegistrationCannotLoseTheContinuation() async {
+        let fixture = DecoderFixture(), clock = DecodeDeadlineClock()
+        defer { fixture.stop(); clock.cancelAll() }
+        let originalClock = clock.clock
+        let cancellationClock = MediaDecoderClient.DeadlineClock(now: {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return originalClock.now()
+        }, sleep: originalClock.sleep)
+        let client = MediaDecoderClient(connectionFactory: { fixture.makeConnection() }, deadlineClock: cancellationClock)
+        let request = Task { await client.image(from: Data([1])) }
+        #expect(await request.value == nil)
+        #expect(fixture.connectionCount == 0)
+        #expect(clock.attemptCount == 0)
+    }
+
+    @Test func cancellationDuringConnectionSetupCannotLeaveAnUnownedTimerOrSendTheDecode() async {
+        let fixture = DecoderFixture(), clock = DecodeDeadlineClock()
+        defer { fixture.stop(); clock.cancelAll() }
+        let client = MediaDecoderClient(connectionFactory: {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return fixture.makeConnection()
+        }, deadlineClock: clock.clock)
+        let request = Task { await client.image(from: Data([1])) }
+        #expect(await request.value == nil)
+        #expect(fixture.connectionCount == 1)
+        #expect(!fixture.service.received(1))
+        #expect(clock.attemptCount == 0)
+    }
+
     @Test func aBurstOfSuccessfulDecodesLeavesNoDeadlineTasksBehind() async throws {
         let fixture = DecoderFixture(), clock = DecodeDeadlineClock()
         fixture.service.replyAutomatically()
