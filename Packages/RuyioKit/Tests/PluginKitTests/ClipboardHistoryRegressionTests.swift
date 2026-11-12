@@ -49,6 +49,13 @@ private final class ClipboardFixture: @unchecked Sendable {
             Int($0.dropFirst(7))! < Int($1.dropFirst(7))!
         }
     }
+
+    func history() async throws -> CollectionSpec {
+        guard case .collection(let spec) = try await plugin.historyDocument(selectFirst: false).root else {
+            throw RuyioError(.internalError, diagnostic: "expected history collection")
+        }
+        return spec
+    }
 }
 
 private actor QueryBarrier {
@@ -80,7 +87,12 @@ private final class ClipboardMemoryHost: @unchecked Sendable {
     var quotaBytes: Int64 = 1_342_177_280
     var denyFileURLs = false
     var delayedSearch: String?
+    var delayNextQuery = false
+    var queryCount = 0
+    var delayNextDelete = false
+    var failDeletes = false
     let queryBarrier = QueryBarrier()
+    let deleteBarrier = QueryBarrier()
 
     func insert(_ document: StoredDocument) { lock.withLock { docs[document.collection + "/" + document.id] = document } }
 
@@ -104,16 +116,27 @@ private final class ClipboardMemoryHost: @unchecked Sendable {
         if envelope.method == StorageMethod.query {
             let query = try JSONCoding.decode(StorageQuery.self, from: envelope.payload)
             let (page, delay) = lock.withLock {
+                queryCount += 1
+                let delayNext = delayNextQuery
+                delayNextQuery = false
                 let matching = docs.values.filter { matches($0, query: query) }.sorted {
                     query.ascending ? $0.sortKey < $1.sortKey : $0.sortKey > $1.sortKey
                 }
                 let offset = Int(query.cursor ?? "0") ?? 0
                 let slice = Array(matching.dropFirst(offset).prefix(query.limit))
                 return (StoragePage(documents: slice, nextCursor: offset + slice.count < matching.count ? String(offset + slice.count) : nil),
-                        query.search != nil && query.search == delayedSearch)
+                        delayNext || (query.search != nil && query.search == delayedSearch))
             }
             if delay { await queryBarrier.suspend() }
             return try JSONCoding.value(page)
+        }
+        if envelope.method == StorageMethod.delete {
+            let delay = lock.withLock {
+                let delay = delayNextDelete
+                delayNextDelete = false
+                return delay
+            }
+            if delay { await deleteBarrier.suspend() }
         }
         return try lock.withLock {
             switch envelope.method {
@@ -126,6 +149,7 @@ private final class ClipboardMemoryHost: @unchecked Sendable {
                 let key = try JSONCoding.decode(StorageKey.self, from: envelope.payload)
                 return try docs[key.collection + "/" + key.id].map { try JSONCoding.value($0) } ?? .null
             case StorageMethod.delete:
+                if failDeletes { throw RuyioError(.storageFailure) }
                 let key = try JSONCoding.decode(StorageKey.self, from: envelope.payload)
                 docs.removeValue(forKey: key.collection + "/" + key.id)
                 return .null
@@ -166,6 +190,104 @@ private final class ClipboardMemoryHost: @unchecked Sendable {
 }
 
 struct ClipboardHistoryRegressionTests {
+    @Test func closingHistoryDropsLoadedPagesAndClosedRefreshDoesNotLoadThemAgain() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        try await fixture.seed(550)
+        _ = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        for _ in 0..<9 { try await fixture.plugin.loadNextPage() }
+        let loaded = try await fixture.history()
+        #expect(loaded.list.items.count == 50 * ClipboardHistoryPlugin.windowPages)
+        #expect(loaded.footerActions.contains { $0.id == "previous-page" })
+        let revision = try await fixture.plugin.historyDocument(selectFirst: false).revision
+
+        await fixture.plugin.closeView("history")
+        let closed = try await fixture.history()
+        #expect(closed.list.items.isEmpty && closed.list.selection == nil && closed.list.nextCursor == nil)
+        #expect(!closed.footerActions.contains { $0.id == "previous-page" || $0.id == "newest" })
+        let queries = fixture.host.lock.withLock { fixture.host.queryCount }
+        try await fixture.plugin.reloadItems()
+        #expect(fixture.host.lock.withLock { fixture.host.queryCount } == queries)
+        #expect(try await fixture.history().list.items.isEmpty)
+        #expect(fixture.remaining().count == 550)
+
+        let reopened = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        #expect(reopened.revision > revision)
+        #expect(try await fixture.history().list.items.first?.id == "record-549")
+        await fixture.plugin.closeView("history")
+        #expect(try await fixture.history().list.items.isEmpty)
+    }
+
+    @Test func lateCloseDoesNotInvalidateANewOpenWhileItsQueryIsPending() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        try await fixture.seed(5)
+        _ = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        fixture.host.lock.withLock { fixture.host.delayNextQuery = true }
+        let reopened = Task { try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en")) }
+        await fixture.host.queryBarrier.waitUntilEntered()
+        await fixture.plugin.closeView("history")
+        await fixture.host.queryBarrier.release()
+        _ = try await reopened.value
+        #expect(try await fixture.history().list.items.count == 5)
+        await fixture.plugin.closeView("history")
+        #expect(try await fixture.history().list.items.isEmpty)
+    }
+
+    @Test func anInFlightSearchCannotRestorePagesAfterTheFinalClose() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        try await fixture.seed(5)
+        _ = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        fixture.host.lock.withLock { fixture.host.delayedSearch = "example" }
+        let search = Task {
+            try await fixture.plugin.handleViewEvent(ViewEventRequest(viewID: "history", revision: 1, event: .searchChanged("example")))
+        }
+        await fixture.host.queryBarrier.waitUntilEntered()
+        await fixture.plugin.closeView("history")
+        await fixture.host.queryBarrier.release()
+        _ = try await search.value
+        let closed = try await fixture.history()
+        #expect(closed.list.items.isEmpty && closed.searchText.isEmpty)
+    }
+
+    @Test func aFailedDeleteOnCloseKeepsOnlyUndoMetadataAndCanBeRetried() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        try await fixture.seed(5)
+        _ = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        _ = try await fixture.plugin.invokeItemAction("delete", itemID: "record-4")
+        let token = try #require(try await fixture.history().undo?.token)
+        fixture.host.lock.withLock { fixture.host.failDeletes = true }
+        await fixture.plugin.closeView("history")
+        let closed = try await fixture.history()
+        #expect(closed.list.items.isEmpty && closed.undo?.token == token)
+        #expect(try await fixture.plugin.record("record-4")?.deletedAt != nil)
+        fixture.host.lock.withLock { fixture.host.failDeletes = false }
+        await fixture.plugin.commitPendingDelete(force: true, token: token)
+        #expect(try await fixture.plugin.record("record-4") == nil)
+        #expect(try await fixture.history().undo == nil)
+        #expect(try await fixture.history().list.items.isEmpty)
+    }
+
+    @Test func closingDuringDeleteCommitDoesNotClearAReopenedHistory() async throws {
+        let fixture = try ClipboardFixture()
+        defer { fixture.close() }
+        try await fixture.seed(5)
+        _ = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        _ = try await fixture.plugin.invokeItemAction("delete", itemID: "record-4")
+        fixture.host.lock.withLock { fixture.host.delayNextDelete = true }
+        let close = Task { await fixture.plugin.closeView("history") }
+        await fixture.host.deleteBarrier.waitUntilEntered()
+        #expect(try await fixture.history().list.items.isEmpty)
+        _ = try await fixture.plugin.openView(ViewOpenRequest(viewID: "history", locale: "en"))
+        await fixture.host.deleteBarrier.release()
+        await close.value
+        #expect(try await fixture.history().list.items.count == 4)
+        #expect(try await fixture.plugin.record("record-4") == nil)
+        await fixture.plugin.closeView("history")
+    }
+
     @Test func imagePreviewKeepsItsThumbnailAndExposesTheOriginalForExpansion() async throws {
         let fixture = try ClipboardFixture()
         defer { fixture.close() }

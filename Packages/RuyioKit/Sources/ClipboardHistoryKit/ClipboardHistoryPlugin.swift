@@ -604,7 +604,10 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
                 return try await historyDocument(selectFirst: true)
             } catch {
                 // The host only closes views that opened successfully.
-                lock.withLock { historyOpenCount = max(0, historyOpenCount - 1) }
+                lock.withLock {
+                    historyOpenCount = max(0, historyOpenCount - 1)
+                    if !historyIsOpen { discardHistoryPages() }
+                }
                 throw error
             }
         case Self.settingsView:
@@ -616,9 +619,21 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
 
     public func closeView(_ viewID: String) async {
         if viewID == Self.historyView {
-            lock.withLock { historyOpenCount = max(0, historyOpenCount - 1); viewGeneration += 1 }
-            await commitPendingDelete(force: true)
+            let pendingToken = lock.withLock { () -> String? in
+                historyOpenCount = max(0, historyOpenCount - 1)
+                guard !historyIsOpen else { return nil }
+                // Release before awaiting storage: a late close must never clear a newly opened view.
+                discardHistoryPages()
+                return view.pendingUndo?.token
+            }
+            if let pendingToken { await commitPendingDelete(force: true, token: pendingToken) }
         }
+    }
+
+    /// Called under `lock` after the final view closes. Keep failed deletion metadata for a retry.
+    private func discardHistoryPages() {
+        viewGeneration += 1
+        view = ViewState(revision: view.revision, pendingUndo: view.pendingUndo)
     }
 
     public func handleViewEvent(_ request: ViewEventRequest) async throws -> ViewEventReply {
@@ -829,12 +844,15 @@ public final class ClipboardHistoryPlugin: RuyioPlugin, @unchecked Sendable {
     /// Reloads the current window in place (or from the newest record with `resetPage`), covering at least
     /// as many records as are loaded now so the list never shrinks under the user.
     func reloadItems(keepSelection: Bool = false, resetPage: Bool = true) async throws {
-        let (base, start, minimum, generation) = lock.withLock { () -> (StorageQuery, String?, Int, Int) in
+        let request = lock.withLock { () -> (StorageQuery, String?, Int, Int)? in
+            // A queued background refresh can enter after the close has already released its pages.
+            guard historyIsOpen else { return nil }
             viewGeneration += 1
             view.loadingPage = false
             if resetPage { view.pageStarts = []; view.pageCounts = []; view.droppedPages = [] }
             return (query(for: view), view.pageStarts.first ?? nil, resetPage ? 0 : view.items.count, viewGeneration)
         }
+        guard let (base, start, minimum, generation) = request else { return }
         var records: [ClipRecord] = []
         var starts: [String?] = []
         var counts: [Int] = []
