@@ -2,6 +2,32 @@ import Darwin
 import Foundation
 import RuyioPluginSDK
 
+// Symlink names select raw process fixtures without adding arguments to the production launcher.
+let fixtureName = URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
+if fixtureName.hasPrefix("RuyioProcessFixture-") {
+    let mode = String(fixtureName.dropFirst("RuyioProcessFixture-".count))
+    if mode == "exit" { _exit(23) }
+    // Test runners can block SIGTERM; keep signal disposition and masking explicit in these fixtures.
+    var mask = sigset_t()
+    sigemptyset(&mask)
+    sigprocmask(SIG_SETMASK, &mask, nil)
+    signal(SIGTERM, mode.hasPrefix("ignore-term") ? SIG_IGN : SIG_DFL)
+    var child: pid_t = 0
+    if mode == "ignore-term-child" {
+        let arguments: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("30"), nil]
+        let environment: [UnsafeMutablePointer<CChar>?] = [nil]
+        defer { arguments.forEach { free($0) } }
+        let result = arguments.withUnsafeBufferPointer { argv in
+            environment.withUnsafeBufferPointer { envp in
+                posix_spawn(&child, "/bin/sleep", nil, nil, argv.baseAddress!, envp.baseAddress!)
+            }
+        }
+        if result != 0 { _exit(70) }
+    }
+    FileHandle.standardOutput.write(Data("ready:\(child)\n".utf8))
+    while true { pause() }
+}
+
 /// Fixture plugin for real-process integration tests. Not shipped.
 final class TestPlugin: RuyioPlugin, @unchecked Sendable {
     let context: PluginContext

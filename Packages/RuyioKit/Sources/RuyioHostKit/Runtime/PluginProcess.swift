@@ -118,16 +118,23 @@ public final class PluginProcess: @unchecked Sendable {
         kill(pid, sig)
     }
 
-    /// Waits up to `timeout` for exit; escalates SIGTERM then SIGKILL.
+    /// Sends SIGTERM, escalates after `grace`, and waits for the child to be reaped even if cancelled.
     public func terminate(grace: Duration = .seconds(2)) async {
         if hasExited { return }
         signal(SIGTERM)
         let deadline = ContinuousClock.now + grace
-        while !hasExited && ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(25))
+        // Cleanup is independent of the caller's cancellation; one deadline replaces repeated polling.
+        let escalation = Task.detached { [weak self] in
+            do { try await ContinuousClock().sleep(until: deadline) }
+            catch { return }
+            self?.signal(SIGKILL)
         }
-        if !hasExited { signal(SIGKILL) }
-        while !hasExited { try? await Task.sleep(for: .milliseconds(10)) }
+        await withCheckedContinuation { continuation in
+            onExit { _ in
+                escalation.cancel()
+                continuation.resume()
+            }
+        }
     }
 
     private func reapIfExited() {
