@@ -26,7 +26,12 @@ public final class SchemaContext: ObservableObject {
     private let sendEvent: (ViewEvent, Int) async -> Void
     private let loadBlob: (String) async -> NSImage?
     private let loadPreviewBlob: ((String) async -> NSImage?)?
-    private var imageCache: [String: NSImage] = [:]
+    private struct ImageLoad {
+        let id: UUID
+        let task: Task<NSImage?, Never>
+    }
+    private var imageCache = ImageMemoryCache()
+    private var imageLoads: [String: ImageLoad] = [:]
     public var strings: SchemaStrings
 
     public init(pluginID: PluginID, document: ViewDocument, strings: SchemaStrings,
@@ -74,13 +79,23 @@ public final class SchemaContext: ObservableObject {
     }
 
     public func image(_ blobID: String) async -> NSImage? {
-        if let cached = imageCache[blobID] { return cached }
-        let image = await loadBlob(blobID)
-        if let image {
-            if imageCache.count > 200 { imageCache.removeAll() }
-            imageCache[blobID] = image
+        guard !Task.isCancelled else { return nil }
+        if let cached = imageCache.image(for: blobID) { return cached }
+        let load: ImageLoad
+        if let existing = imageLoads[blobID] {
+            load = existing
+        } else {
+            let loader = loadBlob
+            load = ImageLoad(id: UUID(), task: Task { await loader(blobID) })
+            imageLoads[blobID] = load
         }
-        return image
+        // Awaiting an unstructured task does not let one disappearing row cancel other consumers.
+        let image = await load.task.value
+        if imageLoads[blobID]?.id == load.id {
+            imageLoads.removeValue(forKey: blobID)
+            if let image { imageCache.insert(image, for: blobID) }
+        }
+        return Task.isCancelled ? nil : image
     }
 
     /// Large previews are held only by their window, never by the thumbnail cache.
