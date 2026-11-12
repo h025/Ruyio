@@ -156,8 +156,12 @@ public final class PluginStore: Sendable {
     public func query(_ query: StorageQuery) throws -> StoragePage {
         let limit = max(1, min(query.limit, StorageLimits.maxQueryLimit))
         return try dbQueue.read { db in
+            var arguments = StatementArguments()
+            guard let source = try Self.documentSource(db, query: query, arguments: &arguments) else {
+                return StoragePage(documents: [], nextCursor: nil)
+            }
             var clauses = ["d.collection = ?"]
-            var arguments: StatementArguments = [query.collection]
+            arguments += [query.collection]
             Self.appendFilters(query.filters, to: &clauses, arguments: &arguments)
             if let search = query.search?.trimmingCharacters(in: .whitespacesAndNewlines), !search.isEmpty {
                 if search.count >= 3 {
@@ -177,7 +181,7 @@ public final class PluginStore: Sendable {
                 arguments += [cursor.sortKey, cursor.sortKey, cursor.id]
             }
             let order = query.ascending ? "ASC" : "DESC"
-            let sql = "SELECT d.collection, d.id FROM document d WHERE \(clauses.joined(separator: " AND ")) ORDER BY d.sort_key \(order), d.id \(order) LIMIT ?"
+            let sql = "SELECT d.collection, d.id FROM \(source) WHERE \(clauses.joined(separator: " AND ")) ORDER BY d.sort_key \(order), d.id \(order) LIMIT ?"
             arguments += [limit + 1]
             let keys = try Row.fetchAll(db, sql: sql, arguments: arguments).map { row -> (String, String) in (row[0], row[1]) }
             var documents: [StoredDocument] = []
@@ -208,14 +212,16 @@ public final class PluginStore: Sendable {
 
     public func count(_ query: StorageQuery) throws -> Int {
         try dbQueue.read { db in
+            var arguments = StatementArguments()
+            guard let source = try Self.documentSource(db, query: query, arguments: &arguments) else { return 0 }
             var clauses = ["d.collection = ?"]
-            var arguments: StatementArguments = [query.collection]
+            arguments += [query.collection]
             Self.appendFilters(query.filters, to: &clauses, arguments: &arguments)
             if let search = query.search?.trimmingCharacters(in: .whitespacesAndNewlines), !search.isEmpty {
                 clauses.append("instr(ruyio_fold(d.search_text), ?) > 0")
                 arguments += [Self.fold(search)]
             }
-            return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM document d WHERE \(clauses.joined(separator: " AND "))", arguments: arguments) ?? 0
+            return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(source) WHERE \(clauses.joined(separator: " AND "))", arguments: arguments) ?? 0
         }
     }
 
@@ -471,6 +477,27 @@ public final class PluginStore: Sendable {
         let docs = try Int64.fetchOne(db, sql: "SELECT COALESCE(SUM(size), 0) FROM document") ?? 0
         let blobs = try Int64.fetchOne(db, sql: "SELECT COALESCE(SUM(size), 0) FROM blob") ?? 0
         return docs + blobs
+    }
+
+    /// Starts from a small, complete candidate set when a text equality is selective. Returns nil only
+    /// when an equality has no matches. Called inside the final query/count's read snapshot.
+    private static func documentSource(_ db: Database, query: StorageQuery,
+                                       arguments: inout StatementArguments) throws -> String? {
+        let candidateLimit = 32
+        for filter in query.filters {
+            guard filter.op == .equals, case .string(let text) = filter.value else { continue }
+            let ids = try String.fetchAll(db, sql: """
+                SELECT id FROM field WHERE collection = ? AND name = ? AND value_text = ? LIMIT ?
+                """, arguments: [query.collection, filter.field, text, candidateLimit + 1])
+            // Broad filters should keep using the sort index, rather than sorting every matching row.
+            guard ids.count <= candidateLimit else { continue }
+            guard !ids.isEmpty else { return nil }
+            arguments += StatementArguments(ids)
+            // CROSS JOIN keeps candidates outermost; IN can still make SQLite scan document_sort.
+            let values = Array(repeating: "(?)", count: ids.count).joined(separator: ",")
+            return "(VALUES \(values)) AS candidates CROSS JOIN document d ON d.id = candidates.column1"
+        }
+        return "document d"
     }
 
     static func appendFilters(_ filters: [StorageFilter], to clauses: inout [String], arguments: inout StatementArguments) {
