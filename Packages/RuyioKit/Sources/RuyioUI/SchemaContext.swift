@@ -24,14 +24,8 @@ public final class SchemaContext: ObservableObject {
     public var source: String?
 
     private let sendEvent: (ViewEvent, Int) async -> Void
-    private let loadBlob: (String) async -> NSImage?
     private let loadPreviewBlob: ((String) async -> NSImage?)?
-    private struct ImageLoad {
-        let id: UUID
-        let task: Task<NSImage?, Never>
-    }
-    private var imageCache = ImageMemoryCache()
-    private var imageLoads: [String: ImageLoad] = [:]
+    private let images: ImageLoadScheduler
     public var strings: SchemaStrings
 
     public init(pluginID: PluginID, document: ViewDocument, strings: SchemaStrings,
@@ -42,7 +36,7 @@ public final class SchemaContext: ObservableObject {
         self.document = document
         self.strings = strings
         self.sendEvent = sendEvent
-        self.loadBlob = loadBlob
+        self.images = ImageLoadScheduler(loader: loadBlob)
         self.loadPreviewBlob = loadPreviewBlob
         if case .collection(let spec) = document.root { localSelection = spec.list.selection }
     }
@@ -79,23 +73,7 @@ public final class SchemaContext: ObservableObject {
     }
 
     public func image(_ blobID: String) async -> NSImage? {
-        guard !Task.isCancelled else { return nil }
-        if let cached = imageCache.image(for: blobID) { return cached }
-        let load: ImageLoad
-        if let existing = imageLoads[blobID] {
-            load = existing
-        } else {
-            let loader = loadBlob
-            load = ImageLoad(id: UUID(), task: Task { await loader(blobID) })
-            imageLoads[blobID] = load
-        }
-        // Awaiting an unstructured task does not let one disappearing row cancel other consumers.
-        let image = await load.task.value
-        if imageLoads[blobID]?.id == load.id {
-            imageLoads.removeValue(forKey: blobID)
-            if let image { imageCache.insert(image, for: blobID) }
-        }
-        return Task.isCancelled ? nil : image
+        await images.image(blobID)
     }
 
     /// Large previews are held only by their window, never by the thumbnail cache.
