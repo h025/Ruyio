@@ -76,6 +76,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
         LSMinimumSystemVersion: "14.0"
+        LSUIElement: true
         NSHumanReadableCopyright: "Ruyio · MIT License"
         RuyioAppGroup: $(RUYIO_APP_GROUP)
         RuyioFinderChannel: $(RUYIO_FINDER_CHANNEL)

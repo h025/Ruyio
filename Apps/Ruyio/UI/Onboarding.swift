@@ -32,8 +32,7 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
         state.step = 0
         state.practiceText = ""
         state.clipboardDone = false
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
+        if let window { DockPresence.shared.show(window) }
         PasteService.shared.inAppPasteTarget = { [weak self] text in
             guard let self, self.state.step == 1 else { return false }
             // An image (or any non-text item) completes the step too, without an Accessibility prompt.
@@ -45,6 +44,7 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
 
     /// Closing the window equals "Set Up Later" (interaction §5.1).
     func windowWillClose(_ notification: Notification) {
+        if let window { DockPresence.shared.windowWillClose(window) }
         PasteService.shared.inAppPasteTarget = nil
         if !model.settings.onboardingCompleted { model.update { $0.onboardingCompleted = true } }
     }

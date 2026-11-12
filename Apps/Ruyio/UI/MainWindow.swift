@@ -30,8 +30,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     func show() {
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
+        if let window { DockPresence.shared.show(window) }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let window { DockPresence.shared.windowWillClose(window) }
     }
 }
 

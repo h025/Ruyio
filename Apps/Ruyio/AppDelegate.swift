@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = detail
             alert.addButton(withTitle: l.t("退出", "Quit"))
             alert.addButton(withTitle: l.t("打开数据位置", "Show Data Folder"))
+            NSApp.activate()
             if alert.runModal() == .alertSecondButtonReturn, let paths = try? AppPaths.standard() {
                 NSWorkspace.shared.activateFileViewerSelecting([paths.applicationSupport])
             }
@@ -130,7 +131,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let started = await model.engine.registry.snapshot()
             finderBridge?.update(projection: started.entries, locale: model.language, strings: ["openRuyio": model.l.openRuyioToLoad])
             finderBridge?.markReady()
-            if !model.settings.onboardingCompleted { showOnboarding() }
+            if !model.settings.onboardingCompleted {
+                showOnboarding()
+            } else if !model.settings.showInMenuBar {
+                // A launch must expose an entry even when the user has hidden the status item.
+                showMainWindow()
+            }
         }
     }
 
@@ -153,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    /// Clicking the Dock icon restores the last page (PRD §18.1).
+    /// Dock, Finder and Spotlight reopen the last page, including while the app is an accessory.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { showMainWindow() }
         return true
