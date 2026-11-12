@@ -18,7 +18,12 @@ public final class RPCPeer: @unchecked Sendable {
     private let writeFD: Int32
     private let lock = NSLock()
     private let writeQueue: DispatchQueue
-    private var pending: [String: CheckedContinuation<Envelope, Error>] = [:]
+    private struct PendingRequest {
+        let continuation: CheckedContinuation<Envelope, Error>
+        let deadlineTask: Task<Void, Never>
+    }
+    private var pending: [String: PendingRequest] = [:]
+    private let requestClock: RequestClock
     private var closed = false
     private var started = false
     /// Guarded by `writeQueue`: once set, no write ever touches the (possibly reused) descriptor number.
@@ -33,11 +38,26 @@ public final class RPCPeer: @unchecked Sendable {
     private var onClose: CloseHandler?
     private var allowedIncoming: (@Sendable (String, Envelope.Kind) -> Bool)?
 
-    public init(readFD: Int32, writeFD: Int32, label: String, maxInFlight: Int = 16) {
+    public convenience init(readFD: Int32, writeFD: Int32, label: String, maxInFlight: Int = 16) {
+        self.init(readFD: readFD, writeFD: writeFD, label: label, maxInFlight: maxInFlight, requestClock: .continuous)
+    }
+
+    /// Internal so deadline cleanup and races can be tested without waiting for real timeouts.
+    struct RequestClock: Sendable {
+        var now: @Sendable () -> ContinuousClock.Instant
+        var sleep: @Sendable (ContinuousClock.Instant) async throws -> Void
+
+        static let continuous = RequestClock(now: { .now }, sleep: { deadline in
+            try await ContinuousClock().sleep(until: deadline)
+        })
+    }
+
+    init(readFD: Int32, writeFD: Int32, label: String, maxInFlight: Int = 16, requestClock: RequestClock) {
         self.readFD = readFD
         self.writeFD = writeFD
         self.label = label
         self.maxInFlight = maxInFlight
+        self.requestClock = requestClock
         self.writeQueue = DispatchQueue(label: "ruyio.rpc.write.\(label)")
         _ = fcntl(writeFD, F_SETNOSIGPIPE, 1)
         _ = fcntl(writeFD, F_SETFL, fcntl(writeFD, F_GETFL) | O_NONBLOCK)
@@ -79,6 +99,8 @@ public final class RPCPeer: @unchecked Sendable {
     ) async throws -> JSONValue {
         let envelope = Envelope(kind: .request, method: method, executionID: executionID, operationID: operationID,
                                 registryGeneration: registryGeneration, payload: payload)
+        let deadline = requestClock.now() + timeout
+        let sleep = requestClock.sleep
         let reply: Envelope = try await withCheckedThrowingContinuation { continuation in
             lock.lock()
             if closed {
@@ -91,15 +113,16 @@ public final class RPCPeer: @unchecked Sendable {
                 continuation.resume(throwing: RuyioError(.invalidRequest, retryable: true, diagnostic: "too many in-flight requests"))
                 return
             }
-            pending[envelope.messageID] = continuation
-            lock.unlock()
-
             // The timeout starts before the write, so a stalled write can never suspend the caller forever.
             let id = envelope.messageID
-            Task { [weak self] in
-                try? await Task.sleep(for: timeout)
+            let deadlineTask = Task { [weak self] in
+                do { try await sleep(deadline) }
+                catch { return }
                 self?.failPending(id, error: RuyioError(.requestTimeout, retryable: true, diagnostic: method))
             }
+            // Register under the same lock as completion, including a zero timeout or a racing close.
+            pending[id] = PendingRequest(continuation: continuation, deadlineTask: deadlineTask)
+            lock.unlock()
             do {
                 try write(envelope)
             } catch {
@@ -136,7 +159,7 @@ public final class RPCPeer: @unchecked Sendable {
     /// Closes both descriptors and fails all pending requests.
     public func close(reason: RuyioError? = nil) {
         let handler: CloseHandler?
-        let waiting: [CheckedContinuation<Envelope, Error>]
+        let waiting: [PendingRequest]
         lock.lock()
         if closed { lock.unlock(); return }
         closed = true
@@ -155,12 +178,13 @@ public final class RPCPeer: @unchecked Sendable {
         }
         lock.unlock()
 
+        for request in waiting { request.deadlineTask.cancel() }
         writeQueue.sync {
             writeClosed = true
             _ = Darwin.close(writeFD)
         }
         let error = reason ?? RuyioError(.pluginCrashed, diagnostic: "connection closed")
-        for continuation in waiting { continuation.resume(throwing: error) }
+        for request in waiting { request.continuation.resume(throwing: error) }
         handler?(reason)
     }
 
@@ -208,9 +232,10 @@ public final class RPCPeer: @unchecked Sendable {
 
     private func failPending(_ id: String, error: Error) {
         lock.lock()
-        let continuation = pending.removeValue(forKey: id)
+        let request = pending.removeValue(forKey: id)
         lock.unlock()
-        continuation?.resume(throwing: error)
+        request?.deadlineTask.cancel()
+        request?.continuation.resume(throwing: error)
     }
 
     private func readLoop() {
@@ -256,9 +281,10 @@ public final class RPCPeer: @unchecked Sendable {
         case .response:
             guard let id = envelope.replyTo else { return }
             lock.lock()
-            let continuation = pending.removeValue(forKey: id)
+            let request = pending.removeValue(forKey: id)
             lock.unlock()
-            continuation?.resume(returning: envelope)
+            request?.deadlineTask.cancel()
+            request?.continuation.resume(returning: envelope)
         case .event:
             guard allowed?(envelope.method, .event) ?? true else { return }
             eventHandler?(envelope)
