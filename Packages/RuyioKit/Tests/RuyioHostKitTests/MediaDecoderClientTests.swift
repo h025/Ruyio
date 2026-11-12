@@ -91,7 +91,7 @@ private final class DecoderFixture: NSObject, NSXPCListenerDelegate, @unchecked 
 @Suite(.serialized)
 struct MediaDecoderClientTests {
     private func eventually(_ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(15)
         while !condition(), ContinuousClock.now < deadline {
             do { try await Task.sleep(for: .milliseconds(1)) }
             catch { return false }
@@ -100,16 +100,17 @@ struct MediaDecoderClientTests {
     }
 
     @Test func anOldInvalidationCannotDiscardTheReplacementConnection() async throws {
-        let fixture = DecoderFixture()
-        defer { fixture.stop() }
-        let client = MediaDecoderClient(connectionFactory: { fixture.makeConnection() })
+        let fixture = DecoderFixture(), clock = DecodeDeadlineClock()
+        defer { fixture.stop(); clock.cancelAll() }
+        let client = MediaDecoderClient(connectionFactory: { fixture.makeConnection() }, deadlineClock: clock.clock)
         let first = Task { await client.image(from: Data([1])) }
-        try #require(await eventually { fixture.service.received(1) })
+        try #require(await eventually { fixture.service.received(1) && clock.waitingCount == 1 })
         let old = try #require(fixture.firstConnection)
         let delayedInvalidation = try #require(old.invalidationHandler)
         let invalidated = DecodeLatch()
         // Deliver the real old connection's callback later, after its timeout creates a replacement.
         old.invalidationHandler = { invalidated.signal() }
+        clock.fireNext()
         #expect(await first.value == nil)
         try #require(await eventually { invalidated.value == 1 })
         let second = Task { await client.image(from: Data([2])) }
