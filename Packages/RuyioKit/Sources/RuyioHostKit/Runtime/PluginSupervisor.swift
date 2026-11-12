@@ -39,11 +39,30 @@ public actor PluginSupervisor {
     private var stateHandler: ProcessStateHandler?
     private var locale: String
     private var idleTask: Task<Void, Never>?
+    private var idleGeneration: UInt64 = 0
+    private let idleClock: IdleClock
     private var launchedOnce: Set<PluginID> = []
 
     public init(services: PluginServiceHandler, locale: String) {
         self.services = services
         self.locale = locale
+        self.idleClock = .continuous
+    }
+
+    /// The clock is internal so process-lifecycle tests can advance idle time without waiting 30 seconds.
+    struct IdleClock: Sendable {
+        var now: @Sendable () -> ContinuousClock.Instant
+        var sleep: @Sendable (ContinuousClock.Instant) async throws -> Void
+
+        static let continuous = IdleClock(now: { .now }, sleep: { deadline in
+            try await ContinuousClock().sleep(until: deadline, tolerance: .seconds(1))
+        })
+    }
+
+    init(services: PluginServiceHandler, locale: String, idleClock: IdleClock) {
+        self.services = services
+        self.locale = locale
+        self.idleClock = idleClock
     }
 
     public func setHandlers(crash: @escaping CrashHandler, state: @escaping ProcessStateHandler) {
@@ -53,6 +72,7 @@ public actor PluginSupervisor {
 
     public func register(_ spec: PluginLaunchSpec) {
         specs[spec.manifest.id] = spec
+        if sessions[spec.manifest.id] != nil { scheduleIdleCheck() }
     }
 
     public func unregister(_ id: PluginID) async {
@@ -116,6 +136,7 @@ public actor PluginSupervisor {
     public func acquireLease(_ id: PluginID) async throws -> PluginSession {
         let session = try await ensureRunning(id)
         leases[ObjectIdentifier(session), default: 0] += 1
+        scheduleIdleCheck()
         return session
     }
 
@@ -130,6 +151,7 @@ public actor PluginSupervisor {
         stopEpoch[id, default: 0] += 1
         guard let session = sessions.removeValue(forKey: id) else { return }
         leases[ObjectIdentifier(session)] = nil
+        scheduleIdleCheck()
         stateHandler?(id, .stopping)
         await session.stop()
         stateHandler?(id, .stopped)
@@ -150,7 +172,10 @@ public actor PluginSupervisor {
         leases[ObjectIdentifier(session)] = nil
         // A request right after a crash may already run in a new session; the crash is still reported.
         let current = sessions[id] === session
-        if current { sessions[id] = nil }
+        if current {
+            sessions[id] = nil
+            scheduleIdleCheck()
+        }
         if let error {
             if current { stateHandler?(id, .failed) }
             crashHandler?(id, error)
@@ -160,25 +185,40 @@ public actor PluginSupervisor {
     }
 
     private func scheduleIdleCheck() {
+        idleGeneration &+= 1
+        let generation = idleGeneration
         idleTask?.cancel()
+        idleTask = nil
+        // Background plugins and leased sessions cannot be reaped. Do not wake up just to inspect them.
+        let deadline = sessions.compactMap { id, session -> ContinuousClock.Instant? in
+            guard let spec = specs[id], !spec.isBackground, session.isAlive,
+                  (leases[ObjectIdentifier(session)] ?? 0) == 0 else { return nil }
+            return session.lastActivity + Self.idleTimeout
+        }.min()
+        guard let deadline else { return }
+        let sleep = idleClock.sleep
         idleTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
-            await self?.reapIdle()
+            do { try await sleep(deadline) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            await self?.reapIdle(generation: generation)
         }
     }
 
-    private func reapIdle() async {
-        let now = ContinuousClock.now
-        var anyAlive = false
-        for (id, session) in sessions {
+    private func reapIdle(generation: UInt64) async {
+        // An expired sleep can already be queued on this actor when a lease or another start replaces it.
+        guard !Task.isCancelled, generation == idleGeneration else { return }
+        idleTask = nil
+        let now = idleClock.now()
+        for (id, session) in Array(sessions) {
             guard let spec = specs[id] else { continue }
-            if spec.isBackground || (leases[ObjectIdentifier(session)] ?? 0) > 0 { anyAlive = true; continue }
+            if spec.isBackground || (leases[ObjectIdentifier(session)] ?? 0) > 0 { continue }
             if now - session.lastActivity >= Self.idleTimeout {
                 await stop(id)
-            } else {
-                anyAlive = true
+                // stop() schedules the remaining sessions before suspending; preserve that newer timer.
+                guard !Task.isCancelled, generation == idleGeneration else { return }
             }
         }
-        if anyAlive { scheduleIdleCheck() }
+        scheduleIdleCheck()
     }
 }
