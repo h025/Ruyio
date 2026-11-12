@@ -162,6 +162,34 @@ struct HostEngineTests {
         await engine2.shutdown()
     }
 
+    @Test(arguments: [true, false])
+    func aNewerBundledDefaultUpgradesOnRestartAndPreservesDataAndPreference(enabled: Bool) async throws {
+        let oldPackage = try PackageFixture.build(version: "1.0.0")
+        let (engine, paths) = try makeEngine()
+        try await engine.start(bundledPackages: [oldPackage])
+        #expect(await engine.invoke(InvocationRequest(ref: ref("storage"), entry: .commandPalette)).output == .notice("中文内容"))
+        if !enabled { await engine.disable(id) }
+        let oldRecord = try #require(await engine.registry.record(id))
+        await engine.shutdown()
+
+        let newPackage = try PackageFixture.build(version: "1.0.1")
+        let restarted = try HostEngine(paths: paths, locale: "en")
+        restarted.setBridge(TestBridge())
+        try await restarted.start(bundledPackages: [newPackage])
+        let updated = try #require(await restarted.registry.record(id))
+        #expect(updated.version == "1.0.1")
+        #expect(updated.artifactSHA256 == HostEngine.sha256(of: newPackage))
+        #expect(updated.publisherID == oldRecord.publisherID)
+        #expect(updated.signingIdentifier == oldRecord.signingIdentifier)
+        #expect(updated.updateChannel == .bundledWithHost)
+        #expect(updated.enabledPreference == enabled)
+        #expect(await restarted.registry.status(id)?.activation == (enabled ? .enabled : .disabled))
+        if !enabled { #expect(await restarted.enable(id) == nil) }
+        #expect(await restarted.invoke(InvocationRequest(ref: ref("version"), entry: .commandPalette)).output == .notice("1.0.1"))
+        #expect(await restarted.invoke(InvocationRequest(ref: ref("storage-read"), entry: .commandPalette)).output == .notice("中文内容"))
+        await restarted.shutdown()
+    }
+
     @Test func devBuildReplacesRebuiltDefaultWithSameVersionAndKeepsDataAndPreference() async throws {
         let zip = try PackageFixture.build()
         let (engine, paths) = try makeEngine()

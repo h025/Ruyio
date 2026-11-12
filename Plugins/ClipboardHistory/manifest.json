@@ -126,7 +126,7 @@
       "name": "历史剪贴板"
     }
   },
-  "minimumHostVersion": "0.0.1",
+  "minimumHostVersion": "0.0.8",
   "minimumMacOSVersion": "14.0",
   "name": "Clipboard History",
   "permissions": [
@@ -146,7 +146,7 @@
   "supportedUISchema": [
     1
   ],
-  "version": "1.0.0",
+  "version": "1.0.1",
   "views": [
     {
       "id": "history",
