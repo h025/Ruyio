@@ -132,9 +132,9 @@ public final class PluginStore: Sendable {
                     let body = try Self.encodeBody(document.body)
                     let size = Self.accountedSize(document, body: body)
                     let previous = try Int64.fetchOne(db, sql: "SELECT size FROM document WHERE collection = ? AND id = ?",
-                                                      arguments: [document.collection, document.id]) ?? 0
-                    growth += size - previous
-                    try Self.write(db, document: document, body: body, size: size)
+                                                      arguments: [document.collection, document.id])
+                    growth += size - (previous ?? 0)
+                    try Self.write(db, document: document, body: body, size: size, replacing: previous != nil)
                 case .delete(let key):
                     try Self.remove(db, collection: key.collection, id: key.id)
                 }
@@ -406,8 +406,10 @@ public final class PluginStore: Sendable {
         return Int64(size)
     }
 
-    static func write(_ db: Database, document: StoredDocument, body: String, size: Int64) throws {
-        try remove(db, collection: document.collection, id: document.id, keepBlobRefs: false)
+    static func write(_ db: Database, document: StoredDocument, body: String, size: Int64, replacing: Bool) throws {
+        // The batch already checked existence inside this transaction. New keys have no index/blob
+        // rows to remove; deleting a missing FTS row would otherwise scan the entire text index.
+        if replacing { try remove(db, collection: document.collection, id: document.id, keepBlobRefs: false) }
         try db.execute(sql: """
             INSERT INTO document (collection, id, body, search_text, sort_key, size, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, arguments: [document.collection, document.id, body, document.searchText, document.sortKey, size, Date().timeIntervalSince1970])

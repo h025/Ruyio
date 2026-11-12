@@ -30,6 +30,47 @@ struct PluginStoreTests {
         #expect(try store.get(collection: "records", id: "1") == nil)
     }
 
+    @Test func newWritesReplacementsAndRecreatesKeepAllIndexesInSync() throws {
+        let store = try makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        try store.batch([
+            .put(doc("same", text: "obsolete searchable text", kind: "url", sort: 1)),
+            .put(doc("same", text: "replacement searchable text", kind: "text", sort: 2)),
+            .put(doc("fresh", text: "other searchable text", kind: "image", sort: 3)),
+            .delete(StorageKey(collection: "records", id: "fresh")),
+            .put(doc("fresh", text: "recreated searchable text", kind: "file", sort: 4)),
+        ])
+        #expect(try store.usage().documentCount == 2)
+        #expect(try store.query(StorageQuery(collection: "records", search: "obsolete")).documents.isEmpty)
+        #expect(try store.query(StorageQuery(collection: "records", search: "replacement")).documents.map(\.id) == ["same"])
+        #expect(try store.query(StorageQuery(collection: "records", search: "other")).documents.isEmpty)
+        #expect(try store.query(StorageQuery(collection: "records", search: "recreated")).documents.map(\.id) == ["fresh"])
+        #expect(try store.count(StorageQuery(collection: "records", filters: [StorageFilter(field: "kind", value: "url")])) == 0)
+        #expect(try store.count(StorageQuery(collection: "records", filters: [StorageFilter(field: "kind", value: "file")])) == 1)
+    }
+
+    @Test func aFailedMixedWriteRollsBackNewAndReplacedDocumentsAndTheirIndexes() throws {
+        let store = try makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        try store.put(doc("existing", text: "original searchable text", kind: "url", sort: 1))
+        let originalUsage = try store.usage().bytes
+        var invalid = doc("invalid", text: "must roll back", sort: 4)
+        invalid.blobIDs = [String(repeating: "a", count: 64)]
+        #expect(throws: RuyioError.self) {
+            try store.batch([
+                .put(doc("existing", text: "changed searchable text", kind: "text", sort: 2)),
+                .put(doc("fresh", text: "fresh searchable text", sort: 3)),
+                .put(invalid),
+            ])
+        }
+        #expect(try store.usage().bytes == originalUsage)
+        #expect(try store.usage().documentCount == 1)
+        #expect(try store.query(StorageQuery(collection: "records", search: "original")).documents.map(\.id) == ["existing"])
+        #expect(try store.query(StorageQuery(collection: "records", search: "changed")).documents.isEmpty)
+        #expect(try store.query(StorageQuery(collection: "records", search: "fresh")).documents.isEmpty)
+        #expect(try store.count(StorageQuery(collection: "records", filters: [StorageFilter(field: "kind", value: "url")])) == 1)
+    }
+
     @Test func chineseSubstringSearchAndShortQueries() throws {
         let store = try makeStore()
         try store.batch([
