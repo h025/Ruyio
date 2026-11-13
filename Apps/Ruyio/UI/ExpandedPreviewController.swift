@@ -64,6 +64,7 @@ final class ExpandedPreviewController: NSObject, NSWindowDelegate {
         panel.delegate = nil
         sourceWindow?.removeChildWindow(panel)
         panel.orderOut(nil)
+        WindowResources.release(panel)
         panel.close()
         if returnFocus, sourceWindow?.isVisible == true { sourceWindow?.makeKeyAndOrderFront(nil) }
         onClose?()

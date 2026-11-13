@@ -65,6 +65,10 @@ final class AppModel: ObservableObject {
     @Published var appUpdatePhase: AppUpdatePhase = .idle
     /// A plugin whose settings sheet its detail page should open once shown.
     @Published var settingsRequest: PluginID?
+    /// Numeric scroll offsets survive window reconstruction without retaining any view or controller.
+    var mainWindowScrollOffsets: [NSPoint] = []
+    var mainWindowScrollRoute: String?
+    var mainWindowRoute: String { page.rawValue + "/" + (selectedPlugin?.rawValue ?? "") }
     #if DEBUG
     /// Visual fixtures use synthetic permission states and never inspect the system pasteboard.
     var isGallery = false

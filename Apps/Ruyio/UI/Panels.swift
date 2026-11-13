@@ -112,6 +112,7 @@ final class HUD {
             p.backgroundColor = .clear
             p.isOpaque = false
             p.ignoresMouseEvents = true
+            p.isReleasedWhenClosed = false
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
             return p
         }()
@@ -123,10 +124,23 @@ final class HUD {
         self.panel = panel
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
-        hideTask = Task {
-            try? await Task.sleep(for: .seconds(duration))
-            guard !Task.isCancelled else { return }
-            panel.orderOut(nil)
+        hideTask = Task { [weak self, weak panel] in
+            do { try await Task.sleep(for: .seconds(duration)) }
+            catch { return }
+            guard let self, let panel, self.panel === panel else { return }
+            self.hide()
+        }
+    }
+
+    func hide() {
+        hideTask?.cancel()
+        hideTask = nil
+        let oldPanel = panel
+        panel = nil
+        if let oldPanel {
+            oldPanel.orderOut(nil)
+            WindowResources.release(oldPanel)
+            oldPanel.close()
         }
     }
 }
@@ -271,11 +285,16 @@ final class OverlayController {
         expandedPreview = nil
         presentationID = UUID()
         clearSubscription()
-        panel?.orderOut(nil)
+        let oldPanel = panel
         let current = current
         self.panel = nil
         self.context = nil
         self.current = nil
+        if let oldPanel {
+            WindowResources.release(oldPanel)
+            oldPanel.orderOut(nil)
+            oldPanel.close()
+        }
         if let current {
             let previous = lifecycleTask
             lifecycleTask = Task {

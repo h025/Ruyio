@@ -24,6 +24,7 @@ final class CommandPaletteController: ObservableObject {
     @Published var selection: String?
     @Published var phase: Phase = .browsing
     private var usage: [String: (Int, Date)] = [:]
+    private var presentationID = UUID()
 
     init(model: AppModel) {
         self.model = model
@@ -34,12 +35,14 @@ final class CommandPaletteController: ObservableObject {
     func toggle() { isVisible ? close() : open() }
 
     func open() {
+        close()
         overlay?.close()
         PasteService.shared.rememberFrontmostApp()
         query = ""
         phase = .browsing
         usage = Dictionary(uniqueKeysWithValues: ((try? model.engine.database.usage()) ?? []).map { ("\($0.pluginID)/\($0.actionID)", ($0.count, $0.lastUsedAt)) })
         selection = results.first?.id
+        let ticket = presentationID
         let panel = panel ?? FloatingPanel(size: NSSize(width: 680, height: 460), minSize: NSSize(width: 680, height: 80), resizable: false)
         self.panel = panel
         let hosting = NSHostingView(rootView: CommandPaletteView(controller: self, model: model).environment(\.locale, Locale(identifier: model.language)))
@@ -54,7 +57,7 @@ final class CommandPaletteController: ObservableObject {
         panel.onKeyDown = { [weak self] event in self?.handleKey(event) ?? false }
         panel.onResignKey = { [weak self] in
             Task { @MainActor in
-                guard let self, NSApp.modalWindow == nil else { return }
+                guard let self, self.presentationID == ticket, NSApp.modalWindow == nil else { return }
                 // Clicking outside closes, except while an action that cannot be interrupted runs (PRD §19.2).
                 if case .running = self.phase { return }
                 if NSApp.keyWindow !== self.panel { self.close() }
@@ -76,7 +79,18 @@ final class CommandPaletteController: ObservableObject {
     }
 
     func close() {
-        panel?.orderOut(nil)
+        presentationID = UUID()
+        let oldPanel = panel
+        panel = nil
+        if let oldPanel {
+            WindowResources.release(oldPanel)
+            oldPanel.orderOut(nil)
+            oldPanel.close()
+        }
+        query = ""
+        selection = nil
+        phase = .browsing
+        usage.removeAll(keepingCapacity: false)
     }
 
     /// Empty query: suggestions by recent use. Otherwise local fuzzy match on title, keywords and plugin name.
@@ -132,21 +146,24 @@ final class CommandPaletteController: ObservableObject {
         }
     }
 
-    func run(_ entry: CommandEntry, parameters: [String: JSONValue] = [:]) {
+    @discardableResult
+    func run(_ entry: CommandEntry, parameters: [String: JSONValue] = [:]) -> Task<Void, Never>? {
         if (model.summary(entry.ref.pluginID)?.status.pendingOutcomeCount ?? 0) > 0,
            model.summary(entry.ref.pluginID)?.manifest.action(entry.ref.actionID)?.hasSideEffects == true {
             phase = .outcomePending(entry.ref, model.l.errorText(RuyioError(.outcomeUnknown)))
-            return
+            return nil
         }
         if let view = entry.opensView {
             try? model.engine.database.recordUsage(entry.ref)
             close()
             overlay?.open(pluginID: entry.ref.pluginID, viewID: view)
-            return
+            return nil
         }
         phase = .running(entry.ref)
-        Task {
+        let ticket = presentationID
+        return Task {
             let report = await model.engine.invoke(InvocationRequest(ref: entry.ref, entry: .commandPalette, parameters: parameters))
+            guard presentationID == ticket else { return }
             handle(report, entry: entry, parameters: parameters)
         }
     }

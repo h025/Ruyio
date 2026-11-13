@@ -9,7 +9,12 @@ import SwiftUI
 /// (SwiftUI toolbar bridging), with System Settings-style grouped content.
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate {
+    var onClose: (() -> Void)?
+    private let model: AppModel
+    private var needsScrollRestore = true
+
     init(model: AppModel) {
+        self.model = model
         let hosting = NSHostingController(rootView: MainView(model: model))
         hosting.sceneBridgingOptions = [.toolbars, .title]
         hosting.sizingOptions = []
@@ -30,11 +35,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     func show() {
-        if let window { DockPresence.shared.show(window) }
+        guard let window else { return }
+        DockPresence.shared.show(window)
+        guard needsScrollRestore else { return }
+        needsScrollRestore = false
+        let route = model.mainWindowRoute
+        DispatchQueue.main.async { [weak window, weak model] in
+            guard let window, let model, window.isVisible, model.mainWindowRoute == route,
+                  model.mainWindowScrollRoute == route else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            WindowScrollOffsets.restore(model.mainWindowScrollOffsets, in: window.contentView)
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let window { DockPresence.shared.windowWillClose(window) }
+        guard let window else { return }
+        model.mainWindowScrollRoute = model.mainWindowRoute
+        model.mainWindowScrollOffsets = WindowScrollOffsets.capture(in: window.contentView)
+        DockPresence.shared.windowWillClose(window)
+        WindowResources.release(window)
+        onClose?()
     }
 }
 

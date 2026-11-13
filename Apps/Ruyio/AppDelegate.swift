@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
         if CommandLine.arguments.contains("--selftest-media") { runMediaSelfTest(); return }
+        if let index = CommandLine.arguments.firstIndex(of: "--check-ui-lifecycle"), CommandLine.arguments.count > index + 1 {
+            UILifecycleCheck.run(out: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--ui-gallery"), CommandLine.arguments.count > index + 1 {
             NSApp.setActivationPolicy(.accessory)
             UIGallery.run(out: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
@@ -187,7 +191,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Windows
 
     @objc func showMainWindow() {
-        if mainWindow == nil { mainWindow = MainWindowController(model: model) }
+        if mainWindow == nil {
+            let controller = MainWindowController(model: model)
+            controller.onClose = { [weak self, weak controller] in
+                guard let self, self.mainWindow === controller else { return }
+                self.mainWindow = nil
+            }
+            mainWindow = controller
+        }
         mainWindow?.show()
     }
 
@@ -195,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if onboarding == nil {
             onboarding = OnboardingController(model: model)
             onboarding?.onFinish = { [weak self] openPalette in if openPalette { self?.palette.open() } }
+            onboarding?.onClose = { [weak self] in self?.onboarding = nil }
         }
         onboarding?.show()
     }
@@ -312,7 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let action = summary?.manifest.action(request.ref.actionID).map { summary!.manifest.actionTitle($0, locale: model.language).text } ?? ""
         // The window title names the plugin, so a form asking for input can never pass as Ruyio or macOS.
         let title = "\(summary?.displayName ?? request.ref.pluginID.rawValue) — \(action)"
-        if inputSheet == nil { inputSheet = InputSheetController(model: model) }
+        if inputSheet == nil {
+            inputSheet = InputSheetController(model: model)
+            inputSheet?.onClose = { [weak self] in self?.inputSheet = nil }
+        }
         inputSheet?.show(title: title, form: form) { [weak self] values in
             guard let self else { return }
             var next = request
@@ -356,11 +371,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Lightweight naming sheet for Finder actions that need input (PRD §19.18 step 1).
 @MainActor
-final class InputSheetController {
+final class InputSheetController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private var window: NSPanel?
+    var onClose: (() -> Void)?
+    #if DEBUG
+    var lifecycleWindow: NSWindow? { window }
+    #endif
 
-    init(model: AppModel) { self.model = model }
+    init(model: AppModel) { self.model = model; super.init() }
 
     func show(title: String, form: FormSpec, submit: @escaping ([String: JSONValue]) -> Void) {
         let l = model.l
@@ -372,12 +391,13 @@ final class InputSheetController {
         panel.title = title.replacingOccurrences(of: "…", with: "")
         panel.isReleasedWhenClosed = false
         panel.level = .floating
+        panel.delegate = self
         let root = VStack(alignment: .leading) {
-            SchemaFormView(spec: form, context: context) { [weak panel] values in
-                panel?.orderOut(nil)
+            SchemaFormView(spec: form, context: context) { [weak self] values in
+                self?.window?.close()
                 submit(values)
             }
-            HStack { Spacer(); Button(l.cancel) { [weak panel] in panel?.orderOut(nil) }.keyboardShortcut(.cancelAction) }.padding([.horizontal, .bottom])
+            HStack { Spacer(); Button(l.cancel) { [weak self] in self?.window?.close() }.keyboardShortcut(.cancelAction) }.padding([.horizontal, .bottom])
         }
         .frame(width: 460)
         panel.contentView = NSHostingView(rootView: root)
@@ -385,5 +405,13 @@ final class InputSheetController {
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
         window = panel
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let panel = notification.object as? NSPanel, panel === window else { return }
+        window = nil
+        panel.delegate = nil
+        WindowResources.release(panel)
+        onClose?()
     }
 }

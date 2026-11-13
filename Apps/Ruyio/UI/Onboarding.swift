@@ -11,6 +11,7 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
     private let model: AppModel
     let state = OnboardingState()
     var onFinish: ((_ openPalette: Bool) -> Void)?
+    var onClose: (() -> Void)?
 
     init(model: AppModel) {
         self.model = model
@@ -47,6 +48,9 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
         if let window { DockPresence.shared.windowWillClose(window) }
         PasteService.shared.inAppPasteTarget = nil
         if !model.settings.onboardingCompleted { model.update { $0.onboardingCompleted = true } }
+        if let window { WindowResources.release(window) }
+        state.practiceText = ""
+        onClose?()
     }
 
     func finish(openPalette: Bool) {
